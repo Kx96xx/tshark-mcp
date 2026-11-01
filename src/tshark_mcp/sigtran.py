@@ -170,7 +170,9 @@ def extract_rows(packets: list[Json]) -> list[dict[str, Any]]:
             row["dtid"] = _tid(first(tcap, "tcap.dtid"))
             row["components"] = _components(tcap, gsm_map)
             if gsm_map is not None or gsm_sms is not None:
-                row["imsi"] = first(gsm_map, "e212.imsi") or first(tcap, "e212.imsi")
+                row["imsi"] = (first(gsm_map, "e212.imsi") or first(tcap, "e212.imsi")
+                               or decode_tbcd(first(gsm_map, "gsm_map.sm.imsi") or first(gsm_map, "gsm_map.ms.imsi")
+                                              or first(gsm_map, "gsm_map.imsi")))
                 row["msisdn"] = _map_msisdn(gsm_map)
                 if gsm_sms is not None:
                     row["sms"] = compact({
@@ -182,13 +184,39 @@ def extract_rows(packets: list[Json]) -> list[dict[str, Any]]:
     return _link_transactions(rows)
 
 
+def decode_tbcd(raw: str | None, address_string: bool = False) -> str | None:
+    """Decode a colon-separated TBCD byte string ("00:01:01:21:43:65:87:f9") to digits.
+    With ``address_string`` the leading TON/NPI octet of an ISDN-AddressString is skipped.
+    Used when the tshark build does not emit the decoded e212/e164 field."""
+    if not raw:
+        return None
+    try:
+        data = bytes.fromhex(raw.replace(":", ""))
+    except ValueError:
+        return None
+    if address_string:
+        data = data[1:]
+    digits = []
+    for byte in data:
+        for nibble in (byte & 0x0F, byte >> 4):
+            if nibble == 0x0F:
+                break
+            digits.append(str(nibble) if nibble < 10 else "*#abc"[nibble - 10])
+    return "".join(digits) or None
+
+
 def _map_msisdn(obj: Any) -> str | None:
     """The subscriber MSISDN. ``e164.msisdn`` is emitted under every ISDN-AddressString
-    (VLR, HLR and SMSC numbers included), so only subtrees named msisdn count."""
+    (VLR, HLR and SMSC numbers included), so only subtrees named msisdn count. Older
+    dissectors leave the raw address string, which is decoded as TBCD."""
     if isinstance(obj, dict):
         for key, value in obj.items():
             if key.lower().endswith("msisdn_tree") and isinstance(value, dict):
                 found = first(value, "e164.msisdn")
+                if found:
+                    return found
+            if key.lower().endswith("msisdn") and isinstance(value, str):
+                found = decode_tbcd(value, address_string=True)
                 if found:
                     return found
         for value in obj.values():
@@ -330,6 +358,6 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
 
 __all__ = [
     "CHUNK_TYPES", "JSON_LAYERS", "MAP_ERRORS", "MAP_OPERATIONS", "MESSAGE_FILTER", "SCCP_TYPES", "SCTP_FIELDS",
-    "SCTP_FILTER", "all_values", "correlation_filter", "extract_rows", "identity_filter", "summarise_sctp",
+    "SCTP_FILTER", "all_values", "correlation_filter", "decode_tbcd", "extract_rows", "identity_filter", "summarise_sctp",
     "transaction_ids",
 ]

@@ -576,6 +576,8 @@ def _parse_capinfos(stdout: str) -> dict[str, Any]:
     mapping = {
         "File type": "file_type", "File encapsulation": "link_type", "Number of packets": "packets",
         "Capture duration": "duration_s", "Earliest packet time": "first_packet", "Latest packet time": "last_packet",
+        # capinfos before Wireshark 4.4 used these labels.
+        "First packet time": "first_packet", "Last packet time": "last_packet",
     }
     out: dict[str, Any] = {}
     for line in stdout.splitlines():

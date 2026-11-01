@@ -289,6 +289,12 @@ class TestSigtran:
         assert result["summary"]["by_operation"] == {"updateLocation": 2, "mo-forwardSM": 1}
         assert result["summary"]["unanswered_begins"] == 1 and result["summary"]["segmented"] == 1
 
+    def test_tbcd_fallback_decoder(self):
+        from tshark_mcp.sigtran import decode_tbcd
+        assert decode_tbcd("00:01:01:21:43:65:87:f9") == pcapgen.IMSI
+        assert decode_tbcd("91:51:55:10:00:21:f3", address_string=True) == pcapgen.MSISDN
+        assert decode_tbcd(None) is None and decode_tbcd("zz") is None
+
     def test_sigtran_filter(self, server, pcap_dir):
         result = server.sigtran_messages(str(pcap_dir / "sigtran.pcap"), filter="gsm_old.localValue == 46")
         assert len(result["messages"]) == 1 and result["messages"][0]["components"][0]["opcode"] == 46
