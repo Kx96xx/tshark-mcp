@@ -18,11 +18,11 @@ block is the real output of the tool against that file.
   "first_packet": "2023-11-14T22:13:20.000Z",
   "last_packet": "2023-11-14T22:21:42.000Z",
   "protocol_hierarchy": [
-    {"protocol": "frame/eth/ip/udp/sip", "frames": 9, "bytes": 3483},
-    {"protocol": "frame/eth/ip/sctp/diameter", "frames": 7, "bytes": 1970},
-    {"protocol": "frame/eth/ip/udp/gtpv2", "frames": 7, "bytes": 626},
-    {"protocol": "frame/eth/ip/udp/gtp", "frames": 6, "bytes": 918},
-    {"protocol": "frame/eth/ip/sctp/m3ua/sccp/tcap", "frames": 3, "bytes": 506}
+    {"protocol": "eth/ip/udp/sip", "frames": 9, "bytes": 3483},
+    {"protocol": "eth/ip/sctp/diameter", "frames": 7, "bytes": 1970},
+    {"protocol": "eth/ip/udp/gtpv2", "frames": 7, "bytes": 626},
+    {"protocol": "eth/ip/udp/gtp", "frames": 6, "bytes": 918},
+    {"protocol": "eth/ip/sctp/m3ua/sccp/tcap", "frames": 3, "bytes": 506}
   ],
   "limits": {"max_file_mb": 500.0, "max_packets": 500, "max_scan_packets": 20000, "max_output_kb": 200.0, "timeout_seconds": 60.0}
 }

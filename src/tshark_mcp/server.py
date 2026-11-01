@@ -621,7 +621,11 @@ def _parse_phs(stdout: str) -> list[dict[str, Any]]:
         while stack and stack[-1][0] >= indent:
             stack.pop()
         stack.append((indent, proto))
-        rows.append({"protocol": "/".join(p for _, p in stack), "frames": frames, "bytes": byts})
+        # tshark 4.4+ prints a "frame" root that older builds omit; drop it so paths match.
+        path = "/".join(p for _, p in stack if p != "frame")
+        if not path:
+            continue
+        rows.append({"protocol": path, "frames": frames, "bytes": byts})
     return rows
 
 

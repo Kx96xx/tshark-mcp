@@ -170,10 +170,9 @@ def extract_rows(packets: list[Json]) -> list[dict[str, Any]]:
             row["dtid"] = _tid(first(tcap, "tcap.dtid"))
             row["components"] = _components(tcap, gsm_map)
             if gsm_map is not None or gsm_sms is not None:
-                row["imsi"] = (first(gsm_map, "e212.imsi") or first(tcap, "e212.imsi")
-                               or decode_tbcd(first(gsm_map, "gsm_map.sm.imsi") or first(gsm_map, "gsm_map.ms.imsi")
-                                              or first(gsm_map, "gsm_map.imsi")))
-                row["msisdn"] = _map_msisdn(gsm_map)
+                app_layers = [l for l in (gsm_map, gsm_sms, tcap) if l is not None]
+                row["imsi"] = _map_imsi(app_layers)
+                row["msisdn"] = _map_msisdn(app_layers)
                 if gsm_sms is not None:
                     row["sms"] = compact({
                         "tp_da": first(gsm_sms, "gsm_sms.tp-da"),
@@ -205,31 +204,47 @@ def decode_tbcd(raw: str | None, address_string: bool = False) -> str | None:
     return "".join(digits) or None
 
 
+def _map_imsi(obj: Any) -> str | None:
+    """The IMSI: the decoded ``e212.imsi`` when the dissector emits it, otherwise the raw
+    TBCD bytes of any ``*.imsi`` field (older tshark builds leave some MAP IMSIs raw)."""
+    found = first(obj, "e212.imsi")
+    if found:
+        return found
+    for key, value in _walk_items(obj):
+        if key.lower().endswith(".imsi") and isinstance(value, str) and ":" in value:
+            decoded = decode_tbcd(value)
+            if decoded:
+                return decoded
+    return None
+
+
+def _walk_items(obj: Any):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            yield key, value
+            if isinstance(value, (dict, list)):
+                yield from _walk_items(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_items(item)
+
+
 def _map_msisdn(obj: Any) -> str | None:
     """The subscriber MSISDN. ``e164.msisdn`` is emitted under every ISDN-AddressString
     (VLR, HLR and SMSC numbers included), so only subtrees named msisdn count. Older
     dissectors leave the raw address string, which is decoded as TBCD."""
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if key.lower().endswith("msisdn_tree") and isinstance(value, dict):
-                found = first(value, "e164.msisdn")
-                if found:
-                    return found
-            if key.lower().endswith("msisdn") and isinstance(value, str):
-                found = decode_tbcd(value, address_string=True)
-                if found:
-                    return found
-        for value in obj.values():
-            if isinstance(value, (dict, list)):
-                found = _map_msisdn(value)
-                if found:
-                    return found
-    elif isinstance(obj, list):
-        for item in obj:
-            found = _map_msisdn(item)
+    for key, value in _walk_items(obj):
+        if key.lower().endswith("msisdn_tree") and isinstance(value, dict):
+            found = first(value, "e164.msisdn")
+            if found:
+                return found
+    for key, value in _walk_items(obj):
+        if key.lower().endswith("msisdn") and isinstance(value, str) and ":" in value:
+            found = decode_tbcd(value, address_string=True)
             if found:
                 return found
     return None
+
 
 
 def _tid(value: str | None) -> str | None:

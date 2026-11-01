@@ -98,7 +98,7 @@ class TestGenericTools:
         assert info["first_packet"].startswith("2023-11-14T22:13:20")
         assert info["duration_s"] == pytest.approx(3.004)
         protos = {r["protocol"] for r in info["protocol_hierarchy"]}
-        assert "frame/eth/ip/sctp/diameter" in protos
+        assert "eth/ip/sctp/diameter" in protos
         assert info["limits"]["max_packets"] == 500
 
     def test_conversations(self, server, pcap_dir):
@@ -126,7 +126,9 @@ class TestGenericTools:
     def test_parse_phs_builds_paths(self):
         text = "frame   frames:3 bytes:300\n  eth    frames:3 bytes:300\n    ip   frames:3 bytes:300\n      udp frames:2 bytes:200\n      tcp frames:1 bytes:100\n"
         rows = _parse_phs(text)
-        assert [r["protocol"] for r in rows] == ["frame", "frame/eth", "frame/eth/ip", "frame/eth/ip/udp", "frame/eth/ip/tcp"]
+        assert [r["protocol"] for r in rows] == ["eth", "eth/ip", "eth/ip/udp", "eth/ip/tcp"]
+        # tshark 4.2 prints the same tree without the frame root
+        assert _parse_phs(text.replace("frame   frames:3 bytes:300\n", "")) == rows
 
     def test_parse_conversations_handles_units(self):
         line = "10.0.0.1:1  <->  10.0.0.2:2   3 1 kB   4 2 MB   7 3 bytes   0.000000000   3.0000"

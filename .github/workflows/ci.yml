@@ -33,6 +33,14 @@ jobs:
       - name: Run tests
         run: python -m pytest -v
 
+      - name: Dump dissection of the synthetic captures (diagnostics on failure)
+        if: failure()
+        run: |
+          python tests/pcapgen.py /tmp/pcaps
+          tshark -n -r /tmp/pcaps/sigtran.pcap -V -Y "frame.number == 3"
+          tshark -n -r /tmp/pcaps/sigtran.pcap -T json --no-duplicate-keys -Y "frame.number == 3"
+          capinfos -M /tmp/pcaps/diameter.pcap
+
       - name: Server starts and refuses to run without an allowlist
         run: |
           if tshark-mcp; then echo "expected a non-zero exit"; exit 1; fi
