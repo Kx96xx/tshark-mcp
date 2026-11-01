@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tshark-mcp"
+version = "0.1.0"
+description = "Read-only MCP server for analysing packet captures with tshark: Diameter, GTP, SIP, SIGTRAN, with hard safety limits"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Karl Hulse" }]
+requires-python = ">=3.10"
+keywords = ["mcp", "tshark", "wireshark", "pcap", "diameter", "gtp", "sip", "sigtran", "telecom", "llm-agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Telecommunications Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = ["mcp>=1.2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "scapy>=2.5"]
+
+[project.scripts]
+tshark-mcp = "tshark_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/Kx96xx/tshark-mcp"
+Issues = "https://github.com/Kx96xx/tshark-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning:scapy.*", "ignore::DeprecationWarning:cryptography.*"]
