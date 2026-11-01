@@ -11,7 +11,7 @@ from tshark_mcp.limits import Limits
 from tshark_mcp.server import _fit, _parse_conversations, _parse_phs
 
 from . import pcapgen
-from .conftest import requires_tshark
+from .conftest import requires_tshark, tshark_version
 
 pytestmark = requires_tshark
 
@@ -279,7 +279,13 @@ class TestSigtran:
 
         mo_fsm = msgs[2]
         assert mo_fsm["components"][0]["operation"] == "mo-forwardSM"
-        assert mo_fsm["imsi"] == pcapgen.IMSI and mo_fsm["msisdn"] == pcapgen.MSISDN
+        assert mo_fsm["msisdn"] == pcapgen.MSISDN
+        # The optional trailing imsi in MO-ForwardSM-Arg (TS 29.002) is only in the MAP
+        # ASN.1 of newer Wireshark releases; 4.2 reports it as beyond the sequence.
+        if tshark_version() >= (4, 6):
+            assert mo_fsm["imsi"] == pcapgen.IMSI
+        else:
+            assert mo_fsm.get("imsi") in (pcapgen.IMSI, None)
         assert mo_fsm["sms"]["tp_da"] == "15550101555"
         assert mo_fsm["unanswered"] is True
 

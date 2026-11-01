@@ -17,6 +17,18 @@ HAVE_TSHARK = os.access(TSHARK, os.X_OK)
 requires_tshark = pytest.mark.skipif(not HAVE_TSHARK, reason="tshark is not installed")
 
 
+def tshark_version() -> tuple[int, ...]:
+    """(major, minor) of the installed tshark, or (0, 0) when unavailable."""
+    if not HAVE_TSHARK:
+        return (0, 0)
+    import re
+    import subprocess
+
+    out = subprocess.run([TSHARK, "--version"], capture_output=True, text=True).stdout
+    m = re.search(r"(\d+)\.(\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 @pytest.fixture(scope="session")
 def pcap_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Synthetic captures, generated once per session with scapy."""
