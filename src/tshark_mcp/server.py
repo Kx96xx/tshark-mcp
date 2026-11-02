@@ -16,8 +16,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
@@ -92,6 +93,8 @@ value gives the same token in every result, so join rows on tokens, and pass a
 token as an argument (imsi, msisdn, call_id, filter, path, ...) exactly as
 shown; the server swaps it back. Never guess the value behind a token. Pass
 redact="ids" (or "ids+ips" to hide every IP) on any call to redact its result.
+redaction.complete=false means the capture could not be pre-scanned in full, so
+some UE addresses or short numbers may show; a warning says which capture.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -106,6 +109,10 @@ class ServerState:
     log_path: Path | None
     redactor: redaction.Redactor
     redact_mode: str = "off"
+    prescans: dict[tuple[str, int, int], "Prescan"] = field(default_factory=dict)
+    """Redaction pre-scan outcomes by (capture path, mtime, size); in memory only."""
+    prescan_locks: dict[tuple[str, int, int], threading.Lock] = field(default_factory=dict)
+    prescan_guard: threading.Lock = field(default_factory=threading.Lock)
 
 
 _STATE: ServerState | None = None
@@ -200,6 +207,65 @@ def _redact_mode() -> str:
     return redaction.stronger(st.redact_mode if st else "off", _CALL_MODE.get())
 
 
+_TOUCHED: contextvars.ContextVar[list[Path] | None] = contextvars.ContextVar("touched_captures", default=None)
+"""Captures the running call opened through :func:`_resolve` (pre-scanned before its result leaves)."""
+
+
+@dataclass(frozen=True)
+class Prescan:
+    """What the redaction pre-scan of one capture found."""
+
+    complete: bool
+    values: int
+    seconds: float
+    reason: str | None = None
+
+
+def _prescan(capture: Path) -> Prescan:
+    """Seed the redaction table with the UE addresses and subscriber numbers of
+    ``capture``: one ``tshark -r -T fields`` run under the usual frame, time and
+    stdout caps, once per capture path, mtime and size for the server run."""
+    st = state()
+    try:
+        info = capture.stat()
+    except OSError as exc:
+        return Prescan(False, 0, 0.0, f"the capture could not be read again: {exc}")
+    key = (str(capture), info.st_mtime_ns, info.st_size)
+    with st.prescan_guard:
+        lock = st.prescan_locks.setdefault(key, threading.Lock())
+    with lock:
+        done = st.prescans.get(key)
+        if done is not None:
+            return done
+        started = time.monotonic()
+        try:
+            known = field_catalogue(st.runner)
+            columns = [f for f in (*redaction.PRESCAN_VALUE_FIELDS, *redaction.PRESCAN_LAYOUT_FIELDS) if f in known]
+            protocols = [p for p in redaction.PRESCAN_PROTOCOLS if p in known]
+            kept, scan = _fields_core(capture, " || ".join(protocols), columns, st.limits.max_scan_packets,
+                                      redaction.PRESCAN_AGGREGATOR)
+        except ToolError as exc:
+            done = Prescan(False, 0, round(time.monotonic() - started, 3), f"the pre-scan failed ({exc.type}: {exc.message})")
+        else:
+            learnt, dropped = st.redactor.seed(redaction.prescan_pairs((body for _, body in kept), columns))
+            reason = None
+            if scan.hit_read_cap:
+                reason = f"the pre-scan read only the first {scan.read_cap} frames (max_scan_packets)"
+            elif dropped:
+                reason = f"the redaction table is full ({redaction.MAX_KNOWN} values); {dropped} values were not remembered"
+            done = Prescan(reason is None, learnt, round(time.monotonic() - started, 3), reason)
+        st.prescans[key] = done
+        return done
+
+
+def _prescan_warning(capture: Path, outcome: Prescan, mode: str) -> str:
+    what = ("numbers shorter than 14 digits" if mode == "ids+ips"
+            else "UE addresses and numbers shorter than 14 digits")
+    advice = "" if mode == "ids+ips" else "; call again with redact='ids+ips' to hide every IP address"
+    return (f"redaction may be incomplete for {capture.name}: {outcome.reason}. Past that point {what} are "
+            f"replaced only where a tool shows them in a known field{advice}")
+
+
 # ------------------------------------------------------------------ guard rail
 CAPTURE_FREE_TOOLS = frozenset({"find_fields", "check_filter"})  # their text comes from tshark, not packets
 
@@ -208,6 +274,7 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     started = time.monotonic()
     status = "ok"
     token = begin_warnings()
+    touched_token = _TOUCHED.set([])
     try:
         result = fn()
     except ToolError as exc:
@@ -216,15 +283,26 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     except Exception as exc:  # noqa: BLE001 - never leak a traceback to the client
         status = "internal_error"
         result = ToolError("internal_error", f"{type(exc).__name__}: {exc}").to_dict()
+    finally:
+        touched = _TOUCHED.get() or []
+        _TOUCHED.reset(touched_token)
     warnings = collect_warnings(token)
     rows_key = result.pop(_ROWS_KEY, None)
     mode = _redact_mode()
     block = None
     if mode != "off":
+        complete = True
+        if "error" not in result:
+            # Seed the table from every capture this call read before anything leaves.
+            for capture in dict.fromkeys(touched):
+                outcome = _prescan(capture)
+                if not outcome.complete:
+                    complete = False
+                    warnings.append(_prescan_warning(capture, outcome, mode))
         # Before the length caps, so a cut can never leave half an identifier behind.
         redactor = state().redactor
         (result, warnings, args), replaced = redactor.apply([result, warnings, args], mode)
-        block = {**redactor.describe(mode), "replaced": replaced}
+        block = {**redactor.describe(mode), "replaced": replaced, "complete": complete}
     if "error" not in result and tool not in CAPTURE_FREE_TOOLS:
         result = untrusted.apply(result)
     if warnings and "error" not in result:
@@ -375,8 +453,14 @@ def _audit(tool: str, args: dict[str, Any], duration_ms: int, status: str, paylo
 
 # ------------------------------------------------------------------ shared helpers
 def _resolve(path: str) -> Path:
+    """An allowed capture; with redaction on it is pre-scanned before the call's result
+    leaves (find_identifier resolves its files directly: its rows carry no packet content)."""
     st = state()
-    return st.allowlist.resolve(path, st.limits)
+    capture = st.allowlist.resolve(path, st.limits)
+    touched = _TOUCHED.get()
+    if touched is not None:
+        touched.append(capture)
+    return capture
 
 
 def _filter(user_filter: str | None, base: str | None = None) -> str | None:

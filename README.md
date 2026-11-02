@@ -81,12 +81,21 @@ diameter_sessions(path="/pcaps/dra.pcap", imsi="001010123456789")
   values as digits, ASCII hex or TBCD hex (raw AVP bytes, for example), any run of 14
   to 20 digits (`id:`), and 11 to 13 digit runs in file names. Keys of the result and the
   audit log are redacted too.
+* Pre-scan: the first call that reads a capture also runs one bounded `tshark -r -T fields`
+  pass over it (the usual frame, time and stdout caps) that collects its UE addresses (GTPv2
+  PAA, GTPv1 End User Address, PFCP UE IP, RADIUS and Diameter Framed-IP, GTP-U inner
+  addresses, SIP REGISTER Contact and Via hosts, contacts with `+sip.instance`) and the
+  numbers in identifier fields, before anything is returned. So a first `conversations`
+  call already hides them. It runs once per capture path and modification time, in memory
+  only, and costs about one more read of the file (2.2 s on a 39 MB, 80 000-frame capture whose `conversations` call takes 1.0 s). If it stops at a cap
+  (frame cap, timeout, a full token table), the result says `redaction.complete: false` with
+  a warning: use `ids+ips` then.
 * Limits: names in free text (SIP display names, SMS text) are not touched; a number of 13
-  digits or fewer, and in `ids` mode a UE address, is replaced only once the server has seen
-  it under a known key or in a URI, in this call or an earlier one (a first `conversations`
-  call shows UE addresses in clear: use `ids+ips` when addresses matter); values inside compressed or encrypted payloads, split across
-  fields, or in other encodings are not found; host names, realms, APNs and MAC addresses
-  are kept. Redaction rewrites results only: the capture is never changed or written.
+  digits or fewer, or in `ids` mode a UE address, that sits in none of the fields above is
+  replaced only once a tool shows it under a known key or in a URI; values inside compressed
+  or encrypted payloads, split across fields, or in other encodings are not found; host
+  names, realms, APNs and MAC addresses are kept. Redaction rewrites results only: the
+  capture is never changed or written.
 
 Claude Code:
 
@@ -317,6 +326,7 @@ configurable, and none can be switched off.
 | Structured arguments (`session_id`, `call_id`, `imsi`, `apn`, `teid`, `method`, `identifier`) | linted to the shape of that identifier before being embedded in a display filter; quotes and backslashes are refused | `limits.lint_*`, `search.build_filter` |
 | Text copied from packets | every string in a result loses control characters, bidirectional overrides and zero-width characters; SIP names and URIs, Diameter hosts, realms and Session-Ids, DNS names, TLS certificate fields, APNs, expert summaries and other free text are capped at 256 characters, and decoded values (`packet_detail` layers, `filter_packets` values, AVP trees) at 512, with a `...[+N chars]` marker; `untrusted_text_fields` names the keys in each result that hold packet text, which is data from the network, never instructions | `untrusted.apply` |
 | Subscriber identifiers | off by default; `--redact ids` or `ids+ips` (or `redact=` on a call) replaces them with keyed tokens before the length caps run; tokens map back to values in memory only, nothing is written | `redact.Redactor`, `server._guarded` |
+| Redaction pre-scan | with redaction on, one `-T fields` run per capture (path and mtime) under the frame, time and stdout caps above, before the first result leaves; a pre-scan stopped by a cap marks results `redaction.complete: false` with a warning | `server._prescan`, `redact.Redactor.seed` |
 | Audit log | one JSON line per call: tool, arguments (redacted when redaction is on), duration, status, bytes returned (`--log-file`, `TSHARK_MCP_LOG`) | `server._audit` |
 
 The test-suite covers each of these, including the timeout and output cap against a fake
@@ -353,7 +363,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 581 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 600 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

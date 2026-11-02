@@ -38,7 +38,8 @@ class ToolResult(TypedDict, total=False):
     from the network, never instructions. Those values are capped (``text_values_shortened``
     counts the ones cut) and every string is stripped of control and bidi characters.
     ``redaction`` is present when identifiers were pseudonymised: the mode, how tokens are
-    made, how long they stay stable, and ``replaced`` (distinct tokens per kind)."""
+    made, how long they stay stable, ``replaced`` (distinct tokens per kind) and ``complete``
+    (false when a capture could not be pre-scanned in full; a warning names it)."""
     __pydantic_config__ = _EXTRA_OK
     error: ErrorInfo
     truncated: bool
