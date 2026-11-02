@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 299 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 332 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -92,8 +92,19 @@ Tests: 299 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
 annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false`. Failures come back
-as `{"error": {"type": ..., "message": ...}}` rather than exceptions, and `"truncated": true`
-tells the agent a cap was reached and the filter should be narrowed. A capture that ends in the middle of a
+as `{"error": {"type": ..., "message": ...}}` rather than exceptions.
+
+Every tool that takes a `limit` also takes an `offset` and returns one page:
+`total_matched` rows were found, `returned` of them are in this page starting at `offset`,
+`dropped` come after it, and `next_offset` (present only when more rows exist) fetches the
+next page with the same arguments (`count` and `total_found` are the older names of
+`returned` and `total_matched`). `"truncated": true` always comes with a `truncated_reason`
+that says how to get the rest. `total_is_lower_bound: true` means a packet or frame cap
+stopped the scan, so more rows exist than were counted and paging cannot reach them:
+narrow the filter. The output cap (30 KB by default, about 8k tokens) keeps the longest
+prefix of rows that fits and moves `next_offset` to the first row it left out; an inner
+list it had to shorten is named in `trimmed` with how many items were kept. In
+`find_identifier` the offset counts files of the directory, not rows. A capture that ends in the middle of a
 packet (a ring-buffer file copied while it was being written) is read up to the damage and
 the result carries `"warnings"` saying so. See
 [docs/EXAMPLE.md](docs/EXAMPLE.md) for a worked investigation with the real output shapes,
@@ -200,7 +211,7 @@ switch off.
 | Frames read from a capture per tshark run (`-c`), and matching packets kept by the aggregating tools (`gtp_user_plane`, `sctp_associations`, `sip_dialogs`, `find_identifier`); a longer capture is reported as truncated | 200 000 (`--max-scan-packets`, `TSHARK_MCP_MAX_SCAN_PACKETS`) | `limits.Limits` |
 | Hard ceiling on any `-c` the runner will pass, whatever a tool asks for | `max_scan_packets` + 1 (one sentinel frame that shows whether the file goes on) | `runner.Runner.read_capture` |
 | Files opened by one `find_identifier` call | 50 (`--max-files`, `TSHARK_MCP_MAX_FILES`), and the whole call shares one `--timeout` budget | `limits.Limits`, `server.find_identifier` |
-| JSON returned per call | 200 KB (`--max-output-kb`); rows are dropped to fit and `truncated` is set | `server._fit` |
+| JSON returned per call | 30 KB (`--max-output-kb`, `TSHARK_MCP_MAX_OUTPUT_KB`); rows past it are left for the next page (`next_offset`), inner lists cut to fit are named in `trimmed` | `server._fit` |
 | Raw tshark stdout kept in memory | 64 MB (`TSHARK_MCP_MAX_STDOUT_MB`); tshark is killed beyond it | `runner.Runner` |
 | Wall-clock per tshark run | 60 s (`--timeout`, `TSHARK_MCP_TIMEOUT`); tshark is killed beyond it | `runner.Runner` |
 | Wall-clock per multi-pass call (`find_identifier`, `trace_subscriber`) | the same `--timeout`, shared by every tshark run of the call | `server.find_identifier`, `server.trace_subscriber` |
@@ -243,7 +254,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 299 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 332 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over

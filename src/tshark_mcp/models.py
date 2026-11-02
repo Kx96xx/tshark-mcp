@@ -24,21 +24,43 @@ class ErrorInfo(TypedDict, total=False):
     message: str
 
 
+class TrimmedList(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    path: str
+    kept: int
+    of: int
+
+
 class ToolResult(TypedDict, total=False):
-    """Keys every tool may return: the structured error and the truncation flags."""
+    """Keys every tool may return: the structured error and the truncation flags.
+    ``trimmed`` lists the inner lists the output cap shortened (path, items kept, items there were)."""
     __pydantic_config__ = _EXTRA_OK
     error: ErrorInfo
     truncated: bool
     truncated_reason: str
     warnings: list[str]
+    trimmed: list[TrimmedList]
 
 
 class RowsResult(ToolResult, total=False):
-    """A capped list of rows: ``count`` rows returned out of ``total_found``.
-    ``packets_scanned`` is the number of matching packets the call dissected."""
+    """One page of rows. ``total_matched`` rows were found; ``returned`` of them are in
+    this page, starting at ``offset``; ``dropped`` come after it and ``next_offset``
+    (present when more rows exist) fetches the next page with the same arguments.
+    ``total_is_lower_bound`` means a packet or frame cap stopped the scan, so more rows
+    exist than were counted and paging cannot reach them: narrow the filter.
+    ``count`` and ``total_found`` are the older names of ``returned`` and ``total_matched``.
+    ``packets_scanned`` is the number of matching packets the call dissected and
+    ``packets_matched`` (when the packet cap stopped it) how many matched in all."""
     count: int
     total_found: int
+    total_matched: int
+    returned: int
+    dropped: int
+    offset: int
+    next_offset: int
+    total_is_lower_bound: bool
     packets_scanned: int
+    packets_matched: int
 
 
 # ----------------------------------------------------------------- generic tools
@@ -583,6 +605,7 @@ class FindIdentifierResult(RowsResult, total=False):
     total_hits: int
     errors: list[FileError]
     partially_scanned: list[str]
+    files_not_scanned: int
 
 
 # ----------------------------------------------------------------- capture comparison
@@ -681,7 +704,7 @@ class SubscriberLoop(TypedDict, total=False):
     regular: bool
 
 
-class MessageRatesResult(ToolResult, total=False):
+class MessageRatesResult(RowsResult, total=False):
     protocol: str
     interval_s: float
     display_filter: str
@@ -695,6 +718,7 @@ class MessageRatesResult(ToolResult, total=False):
     duration_s: float
     by_message: list[MessageRate]
     bursts: list[Burst]
+    bursts_total: int
     subscriber_loops: list[SubscriberLoop]
     timeline: list[dict[str, Any]]
     timeline_interval_s: float

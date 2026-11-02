@@ -15,7 +15,7 @@ class TestLimits:
         lim = Limits()
         assert lim.max_file_bytes == 500 * 1024 * 1024
         assert lim.max_packets == 500
-        assert lim.max_output_bytes == 200 * 1024
+        assert lim.max_output_bytes == 30 * 1024
         assert lim.timeout_seconds == 60.0
 
     @pytest.mark.parametrize("field", ["max_file_bytes", "max_packets", "max_output_bytes", "timeout_seconds"])

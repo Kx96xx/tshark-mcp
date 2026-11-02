@@ -5,10 +5,11 @@
 ## What it can and cannot do
 
 - Reads capture files that already exist inside directories the operator allowed with `--allow-dir`. Every path an agent passes must resolve (symlinks followed) inside one of them; anything else is refused before the file is looked at.
-- Every call is bounded: file size (500 MB), matching packets dissected in full (500 per call), frames read per tshark run (200 000), JSON returned (200 KB, rows are dropped and `truncated: true` is set), tshark run time (60 s), files opened by one multi-file call (50).
+- Every call is bounded: file size (500 MB), matching packets dissected in full (500 per call), frames read per tshark run (200 000), JSON returned (30 KB by default, about 8k tokens; rows past it go to the next page), tshark run time (60 s), files opened by one multi-file call (50).
 - tshark is started with an argv list, never a shell, always with `-n` (no name resolution) and `-r` (read a file). Capture, write, export and extension flags are refused before a process starts.
 - Display filters are linted and compiled against an empty capture before touching the real file. Field names must exist in `tshark -G fields`.
 - Failures come back as `{"error": {"type": ..., "message": ...}}`, never as exceptions.
+- Every tool with a `limit` also takes `offset` (in `find_identifier` it skips files of the directory).
 - A capture that ends mid-packet is read up to the damage; the result then carries `warnings`.
 - Every call is written to a JSON-lines audit log when `--log-file` is set.
 - Supported transport: stdio. `--transport streamable-http` exists for local experiments only and has no authentication.
@@ -38,7 +39,7 @@
 
 1. `find_identifier` on the directory, then `pcap_info` on the file it points at.
 2. `trace_subscriber` for the subscriber (or `compare_captures` when a working capture exists too), then the protocol tool whose row needs more detail, using the structured filters (`imsi`, `session_id`, `call_id`, `teid`, `apn`, `method`) before raw display filters.
-3. `truncated: true` means a cap was reached: narrow the filter or lower `limit` rather than retrying the same call.
+3. List tools return one page: `total_matched`, `returned`, `dropped` after the page, and `next_offset` when more rows exist. Call again with `offset=next_offset` and the same arguments for the next page. `truncated: true` always comes with a `truncated_reason` saying how to get the rest; `total_is_lower_bound: true` means a packet or frame cap stopped the scan, so narrow the filter instead of paging. Never conclude something is absent from a truncated result.
 4. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`.
 
 ## Links
