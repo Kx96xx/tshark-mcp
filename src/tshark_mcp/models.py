@@ -297,6 +297,8 @@ class MessageSummary(TypedDict, total=False):
     by_message: dict[str, int]
     unanswered: int
     failed: int
+    legs_without_response: int
+    duplicates: int
 
 
 class PairedRow(TypedDict, total=False):
@@ -310,6 +312,10 @@ class PairedRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     unmatched_answer: bool
+    leg_without_response: bool
+    duplicate_of_frame: int
+    chain: dict[str, Any]
+    note: str
 
 
 class DiameterTransactionRow(PairedRow, total=False):
@@ -634,6 +640,37 @@ class SipDialogsResult(RowsResult, total=False):
     selection: str | None
 
 
+class SipCallTiming(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    post_dial_delay_ms: float
+    post_dial_delay_to: int
+    ringing_ms: float
+    answer_ms: float
+    setup_ms: float
+    early_media: str
+    call_duration_s: float
+    call_duration_note: str
+
+
+class SipCallDetail(SipDialogRow, total=False):  # type: ignore[misc]
+    outcome: str
+    caller: str
+    final_response: dict[str, Any]
+    provisional: list[str]
+    timing: SipCallTiming
+    retransmissions: dict[str, int]
+    reasons: list[dict[str, Any]]
+    warnings: list[dict[str, Any]]
+    ended_by: dict[str, Any]
+    media: dict[str, Any]
+
+
+class SipCallDetailResult(ToolResult, total=False):
+    call: SipCallDetail
+    found: bool
+    packets_scanned: int
+
+
 # ----------------------------------------------------------------- RTP / media
 class SdpMedia(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
@@ -840,6 +877,10 @@ class TimelineRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     failed: bool
+    leg_without_response: bool
+    duplicate_of_frame: int
+    chain: dict[str, Any]
+    note: str
 
 
 class SubscriberIdentity(TypedDict, total=False):
