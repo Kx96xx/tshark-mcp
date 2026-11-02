@@ -540,3 +540,50 @@ def test_icmp_errors_about_echo_probes_differing_only_in_sequence(configure, tmp
         cap.add(Ether() / IP(src=ROUTER, dst=CLI, id=0) / ICMP(type=11, code=0) / quoted)
     out = run(configure, tmp_path, cap)
     assert out["duplicates"]["copies"] == 0
+
+
+def _sctp(payload, chksum: int | None = None):
+    from scapy.layers.sctp import SCTP  # type: ignore
+
+    sctp = SCTP(sport=2905, dport=2905, tag=0x5151) / payload
+    if chksum is not None:
+        sctp.chksum = chksum
+    return Ether() / IP(src=g.STP_A, dst=g.STP_B, id=0, flags="DF") / sctp
+
+
+def test_sctp_without_ip_id_different_tsns_are_not_copies(configure, tmp_path: Path):
+    """Linux sends SCTP with IP ID 0: DATA and SACK packets of one association 0.1 ms apart,
+    same size, differ only in their TSNs and checksum."""
+    from scapy.layers.sctp import SCTPChunkData, SCTPChunkSACK  # type: ignore
+
+    cap = Cap(step=0.0001)
+    for tsn in (100, 101):
+        cap.add(_sctp(SCTPChunkData(tsn=tsn, stream_id=1, stream_seq=tsn, proto_id=3, data=b"x" * 40)))
+    for cum in (500, 501):
+        cap.add(_sctp(SCTPChunkSACK(cumul_tsn_ack=cum, a_rwnd=65000)))
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 0
+
+
+def test_sctp_copy_before_and_after_checksum_offload_is_a_copy(configure, tmp_path: Path):
+    """The same DATA packet seen on two interfaces, once with the CRC32c still 0 (offload)."""
+    from scapy.layers.sctp import SCTPChunkData  # type: ignore
+
+    cap = Cap()
+    data = SCTPChunkData(tsn=7, stream_id=1, stream_seq=7, proto_id=3, data=b"y" * 40)
+    cap.add(_sctp(data, chksum=0))
+    cap.add(_sctp(data), t=cap.t + 0.0008)
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 1
+
+
+def test_sctp_heartbeats_on_two_paths_are_not_copies(configure, tmp_path: Path):
+    """Two HEARTBEAT ACKs 0.1 ms apart, one per path: only the heartbeat information differs."""
+    from scapy.layers.sctp import SCTPChunkHeartbeatAck, SCTPChunkParamHeartbeatInfo  # type: ignore
+
+    cap = Cap(step=0.0001)
+    for path_id in (1, 2):
+        info = SCTPChunkParamHeartbeatInfo(data=bytes([2, 0, path_id]) + b"\x00" * 33)
+        cap.add(_sctp(SCTPChunkHeartbeatAck(params=[info])))
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 0

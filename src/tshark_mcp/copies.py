@@ -71,7 +71,10 @@ def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
     """The key a copy of a generic packet record (``packets.record``) shares with the original.
     Without an IP ID the transport (or ICMP) checksum is part of it: it differs with the payload.
     The ICMP checksum and the quoted echo sequence need ``icmp.checksum``, ``icmpv6.checksum``,
-    ``icmp.seq`` and ``icmpv6.echo.sequence_number`` in the caller's field list."""
+    ``icmp.seq`` and ``icmpv6.echo.sequence_number`` in the caller's field list, and the SCTP
+    fields ``sctp.verification_tag``, ``sctp.chunk_type``, ``sctp.data_tsn_raw``,
+    ``sctp.sack_cumulative_tsn_ack_raw``, ``sctp.sack_a_rwnd`` and
+    ``sctp.parameter_heartbeat_information``."""
     if not rec.get("src"):
         return None
     tcp, udp = rec.get("tcp"), rec.get("udp")
@@ -80,6 +83,15 @@ def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
                             tcp["rst"], None if has_id else tcp.get("checksum_value"))
     elif udp:
         transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"))
+    elif rec.get("sctp"):
+        # SCTP without an IP ID (Linux sends it with DF and ID 0): two SACKs, DATA packets or
+        # heartbeats of one association a fraction of a millisecond apart are different packets,
+        # and they differ in the TSNs, the acknowledged TSN or the heartbeat information. The
+        # CRC32c is left out: a copy taken before checksum offload carries 0 there and the copy
+        # on the wire the real value.
+        sc = rec["sctp"]
+        transport = ("sctp",) if has_id else ("sctp", sc["vtag"], sc["chunks"], sc["tsns"], sc["cum_tsn"], sc["a_rwnd"],
+                                              sc["heartbeat"])
     else:
         # ICMP without an IP ID: the checksum tells an echo or other message from the next one. It
         # cannot tell two errors apart, though: when the quoted packets differ only in fields their

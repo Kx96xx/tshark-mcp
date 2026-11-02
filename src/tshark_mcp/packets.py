@@ -137,6 +137,12 @@ def record(raw: dict[str, list[str]]) -> dict[str, Any]:
         }
     elif transport in ("icmp", "icmpv6"):
         rec["icmp"] = _icmp(raw, transport)
+    elif transport == "sctp":
+        # Every chunk of the packet: one SCTP layer, several chunks (bundled DATA, SACK + DATA).
+        rec["sctp"] = {"vtag": get(raw, "sctp.verification_tag"), "chunks": tuple(raw.get("sctp.chunk_type", [])),
+                       "tsns": tuple(raw.get("sctp.data_tsn_raw", [])),
+                       "cum_tsn": get(raw, "sctp.sack_cumulative_tsn_ack_raw"), "a_rwnd": get(raw, "sctp.sack_a_rwnd"),
+                       "heartbeat": get(raw, "sctp.parameter_heartbeat_information")}
     rec["outer_checksums"] = _outer_checksums(raw, layers)
     return rec
 
