@@ -17,7 +17,7 @@ from tshark_mcp.limits import (
 )
 
 from . import pcapgen
-from .conftest import requires_tshark
+from .conftest import requires_tshark, tshark_version
 
 SID1 = "mme01.epc.mnc001.mcc001.3gppnetwork.org;1700000000;1"
 SID2 = "mme01.epc.mnc001.mcc001.3gppnetwork.org;1700000000;2"
@@ -325,8 +325,12 @@ class TestFindIdentifier:
     def test_directory_scan_for_imsi(self, server, pcap_dir):
         result = server.find_identifier(str(pcap_dir), pcapgen.IMSI)
         assert result["kind"] == "subscriber" and result["files_found"] == 7 and result["files_scanned"] == 7
-        assert self._names(result) == [("all.pcap", 5), ("diameter.pcap", 2), ("sigtran.pcap", 2), ("gtpv2.pcap", 1)]
-        assert result["files_with_hits"] == 4 and result["total_hits"] == 10 and result["errors"] == []
+        # tshark 4.2 does not decode the optional trailing imsi of MO-ForwardSM-Arg (see test_sigtran_messages),
+        # so the mo-forwardSM Begin counts as a hit only on newer releases.
+        map_hits = 2 if tshark_version() >= (4, 6) else 1
+        assert self._names(result) == sorted([("all.pcap", 3 + map_hits), ("diameter.pcap", 2), ("sigtran.pcap", map_hits),
+                                              ("gtpv2.pcap", 1)], key=lambda r: (-r[1], r[0]))
+        assert result["files_with_hits"] == 4 and result["total_hits"] == 6 + 2 * map_hits and result["errors"] == []
         diam = next(f for f in result["files"] if f["path"].endswith("diameter.pcap"))
         assert diam["first"] == "2023-11-14T22:13:20.000Z" and diam["last"] == "2023-11-14T22:13:22.000Z"
         assert diam["protocols"] == {"DIAMETER": 2}
