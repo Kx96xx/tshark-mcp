@@ -22,7 +22,7 @@ pytestmark = requires_tshark
 EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
-    "diameter_avps", "compare_captures",
+    "diameter_avps", "compare_captures", "gtp_tunnel_health",
 }
 
 
@@ -51,6 +51,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("trace_subscriber", {"path": f"{d}/all.pcap", "imsi": pcapgen.IMSI, "msisdn": pcapgen.MSISDN}),
         ("find_identifier", {"path": d, "identifier": pcapgen.IMSI, "max_files": 3}),
         ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
+        ("gtp_tunnel_health", {"path": f"{d}/gtpu.pcap"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
@@ -164,6 +165,9 @@ def test_every_tool_call_returns_structured_content(client_run):
 
     avp = by_name[("diameter_avps", ("command_code", "path"))]
     assert avp["transactions"][0]["request_avps"]["ULR-Flags"].startswith("34 [")
+
+    health = by_name[("gtp_tunnel_health", ("path",))]
+    assert health["summary"]["tunnels"] >= 1 and "outer_icmp" in health
 
     diff = by_name[("compare_captures", ("imsi", "path_a", "path_b"))]
     assert diff["a"]["steps"] > diff["b"]["steps"] and diff["first_divergence"]["op"] == "only_a"

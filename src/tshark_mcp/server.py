@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, gtp, models, search, sigtran, sip
+from . import __version__, avps, compare, diameter, gtp, models, search, sigtran, sip, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -650,6 +650,45 @@ def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -
                          total_packets=sum(r["packets"] for r in rows),
                          total_payload_bytes=sum(r["payload_bytes"] for r in rows))
     return _guarded("gtp_user_plane", {"path": path, "teid": teid, "limit": limit}, run)
+
+
+@app.tool(title="GTP-U tunnel health", annotations=READ_ONLY)
+def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500, limit: int = 200) -> models.GtpTunnelHealthResult:
+    """User-plane health per GTP-U tunnel (TEID), read from the packets inside it: inner
+    TCP segments, flows, SYN/SYN-ACK and the MSS values they carry, retransmissions
+    (with the share of data segments), fast retransmissions, duplicate ACKs, lost
+    segments, zero windows and resets; inner ICMP by type, including fragmentation
+    needed / packet too big with the next-hop MTU; the largest outer and inner IP
+    packets, the tunnel overhead and DF-flagged packets above `mtu` (the path MTU to
+    check against, default 1500); and whether the reverse direction carries traffic.
+    `issues` spells out what looks wrong, e.g. an MSS whose segments cannot fit the
+    path once tunnelled, a retransmission share of 5% or more, or a one-way tunnel.
+    `outer_icmp` lists ICMP errors sent about the tunnel packets themselves (a
+    transport MTU or reachability problem). `teid` (decimal or 0x hex) narrows to one
+    tunnel; tunnels with issues come first."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        teid_int = lint_teid(teid) if teid is not None and str(teid).strip() != "" else None
+        path_mtu = to_int(str(mtu))
+        if path_mtu is None or not 576 <= path_mtu <= 65535:
+            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {mtu!r}")
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        stdout, scan = _fields_run(capture, tunnels.display_filter(teid_int), tunnels.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=tunnels.AGGREGATOR)
+        gpdus, outer = tunnels.parse(stdout)
+        rows, outer_errors = tunnels.summarise(gpdus, outer, path_mtu)
+        tcp_rows = [r["tcp"] for r in rows if r.get("tcp")]
+        summary = {
+            "tunnels": len(rows),
+            "tunnels_with_issues": sum(1 for r in rows if r.get("issues")),
+            "g_pdus": len(gpdus),
+            "inner_tcp_segments": sum(t.get("segments", 0) for t in tcp_rows),
+            "inner_tcp_retransmissions": sum(t.get("retransmissions", 0) for t in tcp_rows),
+            "outer_icmp_errors": len(outer),
+        }
+        return _envelope("tunnels", rows, cap, scan, path_mtu=path_mtu, summary=summary, outer_icmp=outer_errors)
+    return _guarded("gtp_tunnel_health", {"path": path, "teid": teid, "mtu": mtu, "limit": limit}, run)
 
 
 @app.tool(title="SIP dialogs", annotations=READ_ONLY)

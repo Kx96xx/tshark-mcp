@@ -301,6 +301,64 @@ class GtpUserPlaneResult(RowsResult, total=False):
 
 
 # ----------------------------------------------------------------- SIP
+class TunnelTcp(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    segments: int
+    data_segments: int
+    flows: int
+    syn: int
+    syn_ack: int
+    mss_in_syn: dict[str, int]
+    retransmissions: int
+    retransmission_ratio: float
+    fast_retransmissions: int
+    duplicate_acks: int
+    lost_segments: int
+    zero_windows: int
+    resets: int
+
+
+class TunnelHealthRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    teid: str
+    outer_src: str
+    outer_dst: str
+    packets: int
+    frame_bytes: int
+    first: str
+    last: str
+    duration_s: float
+    inner_protocols: dict[str, int]
+    inner_src: list[str]
+    inner_dst: list[str]
+    max_outer_ip_len: int
+    max_inner_ip_len: int
+    tunnel_overhead: int
+    inner_df_above_mtu: int
+    tcp: TunnelTcp
+    icmp: dict[str, int]
+    icmp_frag_needed_mtu: dict[str, int]
+    reverse_teids: list[str]
+    reverse_seen: bool
+    issues: list[str]
+
+
+class OuterIcmpError(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    error: str
+    count: int
+    mtu: int
+    teids: list[str]
+    first: str
+
+
+class GtpTunnelHealthResult(RowsResult, total=False):
+    tunnels: list[TunnelHealthRow]
+    path_mtu: int
+    summary: dict[str, int]
+    outer_icmp: list[OuterIcmpError]
+
+
 class SipMessage(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     frame: int

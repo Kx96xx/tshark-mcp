@@ -1,6 +1,6 @@
 # tshark-mcp
 
-> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Fourteen tools return compact JSON for Diameter, GTPv2-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Fifteen tools return compact JSON for Diameter, GTPv2-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
 
 ## What it can and cannot do
 
@@ -24,6 +24,7 @@
 - `diameter_avps(path, session_id=None, imsi=None, command_code=None, frame=None, filter=None, detail="key", max_avps=200, limit=20)`: the AVPs of paired Diameter transactions. `key` gives result codes, procedure flags with bit names (ULR, CLR, PUR, PUA, IDR, ...), Cancellation-Type, RAT-Type, Gx request type and rule reports, and a Subscription-Data digest with one line per APN; `full` gives the whole AVP tree, capped per message. Use it when a transaction row needs the why (what the HSS sent, why the MME asked).
 - `gtp_sessions(path, imsi=None, apn=None, teid=None, filter=None, limit=200)`: GTPv2-C requests paired with responses by sequence number; IMSI, APN, F-TEIDs, cause, PAA.
 - `gtp_user_plane(path, teid=None, limit=200)`: GTP-U packets and bytes per tunnel endpoint id with inner addresses.
+- `gtp_tunnel_health(path, teid=None, mtu=1500, limit=200)`: user-plane health per GTP-U tunnel: inner TCP retransmissions, reordering, resets and the MSS in SYNs against the tunnel overhead and path MTU, inner and outer ICMP errors (fragmentation needed), one-way tunnels, all summed up in `issues`. Use it for slow or stalled data sessions instead of raw tshark; it ignores duplicate copies of packets, which tshark's own analysis counts as retransmissions.
 - `sip_dialogs(path, call_id=None, number=None, method=None, filter=None, limit=200)`: SIP grouped by Call-ID with the method chain, From/To, final status, time to final response and duration; several messages in one TCP segment are each counted in their own dialog.
 - `sctp_associations(path, limit=200)`: SCTP handshake state, heartbeats, retransmissions, aborts per endpoint pair.
 - `sigtran_messages(path, filter=None, limit=200)`: M3UA/SCCP/TCAP/MAP messages with global titles, operation names, IMSI and MSISDN.
