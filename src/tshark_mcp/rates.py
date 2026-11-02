@@ -35,12 +35,14 @@ PROTOCOLS = ("auto", "diameter", "gtpv2", "gtpv1", "sip", "map")
 FILTERS = {"diameter": "diameter", "gtpv2": "gtpv2", "gtpv1": f"({gtpv1.BASE_FILTER})", "sip": "sip", "map": "gsm_map"}
 AGGREGATOR = "|"
 
-_DIAMETER = ["diameter.cmd.code", "diameter.flags.request", "diameter.User-Name", "diameter.endtoendid"]
+_DIAMETER = ["diameter.cmd.code", "diameter.flags.request", "diameter.User-Name", "diameter.endtoendid",
+             "diameter.Origin-Host", "diameter.Destination-Host", "diameter.Destination-Realm"]
 _GTP = ["gtpv2.message_type", "e212.imsi", "gtpv2.seq"]
 _GTPV1 = ["gtp.message", "gtp.seq_number"]
 # Raw TBCD IMSI fields, decoded when the build does not emit e212.imsi for them.
 _MAP_RAW_IMSI = ["gsm_map.imsi", "gsm_map.ms.imsi", "gsm_map.sm.imsi", "gsm_map.ch.imsi", "gsm_old.imsi"]
-_MAP = ["gsm_map.old.Component", "gsm_old.localValue", "gsm_old.invokeID", "tcap.tid", "tcap.otid", "tcap.dtid", *_MAP_RAW_IMSI]
+_MAP = ["gsm_map.old.Component", "gsm_old.localValue", "gsm_old.invokeID", "tcap.tid", "tcap.otid", "tcap.dtid", *_MAP_RAW_IMSI,
+        "sccp.calling.digits", "sccp.called.digits", "m3ua.protocol_data_opc", "m3ua.protocol_data_dpc"]
 _SIP = [f for f in sip.FIELDS if f not in ("frame.number", "frame.time_epoch", "ip.src", "ip.dst")]
 FIELDS = ["frame.number", "frame.time_epoch", "ip.src", "ip.dst", *_DIAMETER, *_GTP, *_GTPV1, *_MAP,
           *[f for f in _SIP if f not in _DIAMETER + _GTP + _GTPV1 + _MAP]]
@@ -95,6 +97,31 @@ def _split(value: str) -> list[str]:
     return value.split(AGGREGATOR) if value else []
 
 
+def _pick(values: list[str], i: int, n: int) -> str | None:
+    """The value for message ``i`` of ``n`` in one packet: by position when every message
+    has one, else the packet's only value."""
+    if len(values) == n and values[i]:
+        return values[i]
+    distinct = {v for v in values if v}
+    return distinct.pop() if len(distinct) == 1 else None
+
+
+def _ip(rec: dict[str, str], name: str) -> str | None:
+    """The innermost address (the signalling's own header when it is tunnelled)."""
+    values = [v for v in _split(rec.get(name, "")) if v]
+    return values[-1] if values else None
+
+
+def _map_node(rec: dict[str, str], gt: str, pc: str, ip: str) -> str | None:
+    """A MAP node: the SCCP global title, else the M3UA point code, else the IP address.
+    Bundled messages with different values give the next identifier down."""
+    for field, label in ((gt, "GT"), (pc, "PC")):
+        distinct = {v for v in _split(rec[field]) if v}
+        if len(distinct) == 1:
+            return f"{label} {distinct.pop()}"
+    return _ip(rec, ip)
+
+
 def _diameter(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
     codes, flags = _split(rec["diameter.cmd.code"]), _split(rec["diameter.flags.request"])
     users = _split(rec["diameter.User-Name"])
@@ -103,15 +130,21 @@ def _diameter(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
     # User-Name is in requests only; it can be matched to a message when every request of the packet has one.
     req_idx = [i for i, r in enumerate(requests) if r]
     user_of = dict(zip(req_idx, users)) if len(users) == len(req_idx) else {}
+    origins = _split(rec["diameter.Origin-Host"])
+    dest_hosts, dest_realms = _split(rec["diameter.Destination-Host"]), _split(rec["diameter.Destination-Realm"])
     out = []
     for i, code in enumerate(codes):
         c = to_int(code)
         if c is None:
             continue
         is_req = requests[i]
+        dest_host = _pick(dest_hosts, i, len(codes))
+        dest_realm = _pick(dest_realms, i, len(codes))
         out.append({"t": ts, "protocol": "diameter", "message": diameter.command_name(c, bool(is_req)),
                     "request": is_req, "subscriber": user_of.get(i),
-                    "key": ("diameter", e2e[i], c, is_req) if len(e2e) == len(codes) else None})
+                    "key": ("diameter", e2e[i], c, is_req) if len(e2e) == len(codes) else None,
+                    "from": _pick(origins, i, len(codes)) or _ip(rec, "ip.src"),
+                    "to": dest_host or (f"realm {dest_realm}" if dest_realm else _ip(rec, "ip.dst"))})
     return out
 
 
@@ -127,7 +160,8 @@ def _gtpv2(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
         out.append({"t": ts, "protocol": "gtpv2", "message": gtp.message_name(m), "request": m not in gtp.RESPONSE_TYPES,
                     "subscriber": imsis[i] if len(imsis) == len(types) else None,
                     "key": ("gtpv2", seqs[i], m) if len(seqs) == len(types) else None,
-                    "seq": seqs[i] if len(seqs) == len(types) else None, "type": m})
+                    "seq": seqs[i] if len(seqs) == len(types) else None, "type": m,
+                    "from": _ip(rec, "ip.src"), "to": _ip(rec, "ip.dst")})
     return out
 
 
@@ -138,7 +172,8 @@ def _gtpv1(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
     imsi = rec["e212.imsi"].split(AGGREGATOR)[0] or None
     seq = rec["gtp.seq_number"].split(AGGREGATOR)[0] or None
     return [{"t": ts, "protocol": "gtpv1", "message": gtpv1.message_name(m), "request": m not in gtpv1.RESPONSE_TYPES,
-             "subscriber": imsi, "key": ("gtpv1", seq, m) if seq else None, "seq": seq, "type": m}]
+             "subscriber": imsi, "key": ("gtpv1", seq, m) if seq else None, "seq": seq, "type": m,
+             "from": _ip(rec, "ip.src"), "to": _ip(rec, "ip.dst")}]
 
 
 def _gtp_response_subscribers(evts: list[dict[str, Any]]) -> None:
@@ -192,6 +227,8 @@ def _map(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
     single = len(otids) <= 1 and len(dtids) <= 1 and (otids or dtids)
     dialogue = {"otid": otids[0] if otids else None, "dtid": dtids[0] if dtids else None,
                 "imsis": _map_imsis(rec)} if single else None
+    calling = _map_node(rec, "sccp.calling.digits", "m3ua.protocol_data_opc", "ip.src")
+    called = _map_node(rec, "sccp.called.digits", "m3ua.protocol_data_dpc", "ip.dst")
     invokes = [i for i, c in enumerate(comps) if c == 1]
     op_of = dict(zip(invokes, values)) if len(values) >= len(invokes) and len(values) == len(comps) else {}
     if not op_of and len(invokes) == 1 and len(values) == 1:
@@ -205,7 +242,8 @@ def _map(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
         else:
             name = kind
         out.append({"t": ts, "protocol": "map", "message": name, "request": c == 1, "subscriber": None,
-                    "key": ("map", tid, i, invoke_ids[i], c, name) if tid else None, "dialogue": dialogue})
+                    "key": ("map", tid, i, invoke_ids[i], c, name) if tid else None, "dialogue": dialogue,
+                    "from": calling, "to": called})
     return out
 
 
@@ -266,7 +304,8 @@ def _sip(rec: dict[str, str], ts: float) -> list[dict[str, Any]]:
         user = m["sip.from.addr"] or None
         out.append({"t": ts, "protocol": "sip", "message": name, "request": is_req,
                     "subscriber": user.split("@")[0].replace("sip:", "").replace("tel:", "") if user else None,
-                    "key": ("sip", m["sip.Call-ID"], m["sip.CSeq.seq"], m["sip.CSeq.method"], name)})
+                    "key": ("sip", m["sip.Call-ID"], m["sip.CSeq.seq"], m["sip.CSeq.method"], name),
+                    "from": _ip(rec, "ip.src"), "to": _ip(rec, "ip.dst")})
     return out
 
 
@@ -363,19 +402,35 @@ def _bursts(counts: list[int], baseline: float, burst_min: int) -> list[tuple[in
     return found
 
 
+MAX_NODES = 5
+
+
 def _loops(evts: list[dict[str, Any]], storm_min: int) -> list[dict[str, Any]]:
-    """Subscribers repeating one request: count, rate and how regular the repeats are."""
+    """Subscribers repeating one request: count, rate, how regular the repeats are, and
+    the nodes that sent and received them (`from_nodes`, `to_nodes`: the SCCP global
+    title for MAP, Origin-Host and Destination-Host or realm for Diameter, else the IP
+    address). When the repeats switch back and forth between exactly two nodes (at least
+    every other repeat, such as a location ping-pong between two VLRs), `alternating`
+    names the side: from, to, or both. A Diameter realm and the subscriber's MGT (labelled
+    `MGT`) are not nodes for this."""
     times: dict[tuple[str, str, str], list[float]] = defaultdict(list)
     frames: dict[tuple[str, str, str], list[int | None]] = defaultdict(list)
+    nodes: dict[tuple[str, str, str], list[tuple[str | None, str | None]]] = defaultdict(list)
     for e in evts:
         if e["request"] and e["subscriber"]:
-            times[(e["subscriber"], e["protocol"], e["message"])].append(e["t"])
-            frames[(e["subscriber"], e["protocol"], e["message"])].append(e.get("frame"))
+            k = (e["subscriber"], e["protocol"], e["message"])
+            times[k].append(e["t"])
+            frames[k].append(e.get("frame"))
+            nodes[k].append((e.get("from"), e.get("to")))
     rows = []
     for (who, proto, msg), ts in times.items():
         fr = frames[(who, proto, msg)]
         if len(ts) < storm_min:
             continue
+        sides = {}
+        for side, idx in (("from", 0), ("to", 1)):
+            seq = [_mgt_label(n[idx], who) for n in nodes[(who, proto, msg)] if n[idx]]
+            sides[side] = (Counter(seq), seq)
         gaps = [b - a for a, b in zip(ts, ts[1:])]
         median = statistics.median(gaps)
         spread = statistics.pstdev(gaps) / statistics.mean(gaps) if statistics.mean(gaps) > 0 else 0.0
@@ -385,8 +440,37 @@ def _loops(evts: list[dict[str, Any]], storm_min: int) -> list[dict[str, Any]]:
             "min_gap_s": round(min(gaps), 3), "max_gap_s": round(max(gaps), 3), "regular": spread < 0.5,
             "first_frame": fr[0], "last_frame": fr[-1],
         })
+        alternating = []
+        for side, (counts, seq) in sides.items():
+            if counts:
+                rows[-1][f"{side}_nodes"] = [{"node": n, "count": c} for n, c in counts.most_common(MAX_NODES)]
+            switches = sum(1 for a, b in zip(seq, seq[1:]) if a != b)
+            # A Diameter request without Destination-Host names only the realm, and a MAP
+            # request routed on the subscriber's MGT names the HLR by the IMSI: neither is
+            # a node of its own, so a host and its realm (or an HLR's GT and the MGT) in
+            # turn are not a ping-pong.
+            concrete = not any(n.startswith(("realm ", "MGT ")) for n in counts)
+            if len(counts) == 2 and concrete and switches * 2 >= len(seq) - 1:
+                alternating.append(side)
+        if alternating:
+            rows[-1]["alternating"] = " and ".join(alternating)
     rows.sort(key=lambda r: (-r["count"], r["subscriber"], r["message"]))
     return rows
+
+
+def _mgt_label(node: str, imsi: str) -> str:
+    """'GT <digits>' becomes 'MGT <digits>' when the digits are the subscriber's E.214
+    mobile global title: the HLR's country and network code followed by the start of the
+    MSIN (at least six digits of it), as a request routed on the IMSI is addressed."""
+    if not node.startswith("GT ") or not imsi.isdigit():
+        return node
+    gt = node[3:]
+    for mnc_len in (2, 3):
+        msin = imsi[3 + mnc_len:]
+        for k in range(len(msin), 5, -1):
+            if len(gt) > k and gt.endswith(msin[:k]):
+                return f"MGT {gt}"
+    return node
 
 
 def _timeline(evts: list[dict[str, Any]], t0: float, step: float) -> list[dict[str, Any]]:
@@ -407,5 +491,23 @@ def _storm_lines(bursts: list[dict[str, Any]], loops: list[dict[str, Any]], inte
                      f'(peak {b["peak_per_interval"]} per {interval} s, usually {b["baseline_per_interval"]})')
     for lp in loops[:5]:
         how = f'about every {lp["median_gap_s"]} s' if lp["regular"] else f'{lp["min_gap_s"]} to {lp["max_gap_s"]} s apart'
-        lines.append(f'{lp["count"]} {lp["message"]} for {lp["subscriber"]} over {lp["span_s"]} s, {how}')
+        lines.append(f'{lp["count"]} {lp["message"]} for {lp["subscriber"]} over {lp["span_s"]} s, {how}{_route(lp)}')
     return lines
+
+
+def _route(lp: dict[str, Any]) -> str:
+    """', from A (66) and B (65), alternating, to C' for a loop row."""
+    out = ""
+    for side in ("from", "to"):
+        found = lp.get(f"{side}_nodes")
+        if not found:
+            continue
+        if len(found) == 1:
+            out += f", {side} {found[0]['node']}"
+        else:
+            named = [f"{n['node']} ({n['count']})" for n in found[:3]]
+            listed = ", ".join(named[:-1]) + f" and {named[-1]}" if len(found) <= 3 else ", ".join(named) + " and others"
+            out += f", {side} {listed}"
+            if side in lp.get("alternating", ""):
+                out += ", alternating"
+    return out

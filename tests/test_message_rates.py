@@ -85,7 +85,8 @@ def test_relayed_copies_count_once_and_the_loop_is_found(configure, tmp_path: Pa
     assert set(loops) == {(g.IMSI, "ULR"), (g.IMSI, "PUR")}
     pur = loops[(g.IMSI, "PUR")]
     assert pur["count"] == 6 and pur["median_gap_s"] == 10.0 and pur["regular"] is True
-    assert f"6 ULR for {g.IMSI} over 50.0 s, about every 10.0 s" in result["storms"]
+    assert pur["from_nodes"] == [{"node": MME, "count": 6}] and pur["to_nodes"] == [{"node": f"realm {REALM}", "count": 6}]
+    assert f"6 ULR for {g.IMSI} over 50.0 s, about every 10.0 s, from {MME}, to realm {REALM}" in result["storms"]
 
 
 def test_burst_against_the_usual_rate(configure, tmp_path: Path):
