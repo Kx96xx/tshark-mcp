@@ -485,3 +485,57 @@ class FindIdentifierResult(RowsResult, total=False):
     total_hits: int
     errors: list[FileError]
     partially_scanned: list[str]
+
+
+# ----------------------------------------------------------------- capture comparison
+class LadderStep(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    index: int
+    time: str
+    offset_s: float
+    protocol: str
+    message: str
+    result: str
+    rtt_ms: float
+    request_frame: int
+    answer_frame: int
+    unanswered: bool
+    failed: bool
+    repeat: int
+
+
+class LadderEntry(TypedDict, total=False):
+    """One aligned position: ``op`` is same, changed, replaced, only_a or only_b;
+    ``differences`` maps a field (``result``, ``answer_avps.ULA-Flags``, ``apn``, ...)
+    to its value in each capture."""
+    __pydantic_config__ = _EXTRA_OK
+    op: str
+    a: LadderStep
+    b: LadderStep
+    differences: dict[str, Any]
+    ladder_position: int
+    after: list[str]
+
+
+class CaptureSide(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    path: str
+    identity: dict[str, str] | None
+    steps: int
+    messages: int
+    duration_s: float | None
+    by_protocol: dict[str, int]
+    unanswered: int
+    failed: int
+    passes: dict[str, Any]
+
+
+class CompareCapturesResult(RowsResult, total=False):
+    ladder: list[LadderEntry]
+    a: CaptureSide
+    b: CaptureSide
+    summary: dict[str, int]
+    first_divergence: LadderEntry | None
+    identical: bool
+    timing: dict[str, Any]
+    notes: list[str]

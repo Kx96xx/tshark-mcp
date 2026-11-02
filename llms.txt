@@ -1,6 +1,6 @@
 # tshark-mcp
 
-> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Thirteen tools return compact JSON for Diameter, GTPv2-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Fourteen tools return compact JSON for Diameter, GTPv2-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
 
 ## What it can and cannot do
 
@@ -27,12 +27,13 @@
 - `sip_dialogs(path, call_id=None, number=None, method=None, filter=None, limit=200)`: SIP grouped by Call-ID with the method chain, From/To, final status, time to final response and duration; several messages in one TCP segment are each counted in their own dialog.
 - `sctp_associations(path, limit=200)`: SCTP handshake state, heartbeats, retransmissions, aborts per endpoint pair.
 - `sigtran_messages(path, filter=None, limit=200)`: M3UA/SCCP/TCAP/MAP messages with global titles, operation names, IMSI and MSISDN.
+- `compare_captures(path_a, path_b, imsi=None, msisdn=None, imsi_b=None, msisdn_b=None, collapse_repeats=True, limit=100)`: a working and a failing capture of the same procedure: aligned message ladders, the first divergence, the AVP/IE differences of each changed step and the timing gaps. Give `imsi_b` when the failing capture is another subscriber; with no identity every transaction is compared.
 - `trace_subscriber(path, imsi=None, msisdn=None, limit=300)`: one time-ordered timeline for a subscriber across Diameter, GTPv2-C, MAP and SIP; all its passes share one time budget. Start here for "why did subscriber X fail".
 
 ## How to work with it
 
 1. `find_identifier` on the directory, then `pcap_info` on the file it points at.
-2. `trace_subscriber` for the subscriber, then the protocol tool whose row needs more detail, using the structured filters (`imsi`, `session_id`, `call_id`, `teid`, `apn`, `method`) before raw display filters.
+2. `trace_subscriber` for the subscriber (or `compare_captures` when a working capture exists too), then the protocol tool whose row needs more detail, using the structured filters (`imsi`, `session_id`, `call_id`, `teid`, `apn`, `method`) before raw display filters.
 3. `truncated: true` means a cap was reached: narrow the filter or lower `limit` rather than retrying the same call.
 4. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`.
 

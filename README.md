@@ -15,7 +15,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent thirteen narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent fourteen narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply.
 
@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 249 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 256 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -83,6 +83,7 @@ Tests: 249 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
+| `compare_captures(path_a, path_b, imsi, msisdn, imsi_b, msisdn_b, collapse_repeats, limit)` | A working and a failing capture of the same procedure side by side: both message ladders (the subscriber trace, or every transaction without an identity), keepalives dropped, identical retries merged with a `repeat` count, aligned by protocol and message; `first_divergence`, every step as same, changed, replaced, only_a or only_b, the `differences` of changed steps (result, pairing, key Diameter AVPs, GTP IEs; identities ignored) and the largest round-trip and offset gaps |
 | `trace_subscriber(path, imsi, msisdn, limit)` | One time-ordered timeline for a subscriber across Diameter, GTPv2-C (following control-plane TEIDs), MAP and SIP, each row with protocol, message, result and pairing; all passes share one time budget and a spent budget returns the partial timeline with `truncated` |
 
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
@@ -139,6 +140,18 @@ diameter_avps(path="/pcaps/diameter.pcap", command_code=316)
      "request_avps": {"ULR-Flags": "34 [S6a/S6d-Indicator, Initial-Attach-Indicator]", "RAT-Type": "EUTRAN (1004)", ...},
      "answer_avps": {"Result-Code": 2001, "subscription": {"MSISDN": "15550100123", "Subscriber-Status": "SERVICE_GRANTED (0)",
                      "apns": [{"context": 1, "apn": "internet.test", "pdn_type": "IPv4v6 (2)", "qci": 9, ...}]}}}]}
+```
+
+Where a failing attach first departs from a working one:
+
+```
+compare_captures(path_a="/pcaps/working.pcap", path_b="/pcaps/failing.pcap", imsi="001010123456789")
+-> {"summary": {"same": 0, "changed": 2, "replaced": 0, "only_a": 0, "only_b": 0},
+    "first_divergence": {"op": "changed", "a": {"message": "ULR/ULA", ...}, "b": {"message": "ULR/ULA", ...},
+                         "differences": {"answer_avps.subscription.apns[ims].apn": {"a": "ims", "b": null}, ...}},
+    "ladder": [..., {"op": "changed", "a": {"message": "Create Session Request", "result": "Request accepted"},
+                     "b": {"message": "Create Session Request", "result": "Missing or unknown APN"},
+                     "differences": {"result": {...}, "paa_allocated": {"a": true, "b": false}, ...}}]}
 ```
 
 Top talkers on the Diameter port only:
@@ -205,7 +218,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 249 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 256 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over

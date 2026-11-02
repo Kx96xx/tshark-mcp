@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, diameter, gtp, models, search, sigtran, sip
+from . import __version__, avps, compare, diameter, gtp, models, search, sigtran, sip
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -47,7 +47,9 @@ tools. For "why did subscriber X fail" questions call trace_subscriber first,
 then drill into diameter_sessions, diameter_transactions, gtp_sessions,
 sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
-Diameter transaction (subscription data, flags, cancellation type). Results are JSON; "truncated": true means a
+Diameter transaction (subscription data, flags, cancellation type).
+With a working and a failing capture of the same procedure, compare_captures
+reports where they first diverge. Results are JSON; "truncated": true means a
 cap was reached and you should narrow the filter.
 """
 
@@ -843,156 +845,305 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
         imsi_d = lint_digits(imsi, "imsi") if imsi else None
         msisdn_d = lint_digits(msisdn, "msisdn") if msisdn else None
         cap = clamp_limit(limit, st.limits.max_packets, 300)
-        timeline: list[dict[str, Any]] = []
-        notes: dict[str, Any] = {}
-
-        # One time budget for the whole call: every tshark run gets only what is left of it,
-        # and a spent budget ends the trace with what the earlier passes found.
         deadline = _now() + st.limits.timeout_seconds
-        stage = "diameter"
-        stopped: str | None = None
-        try:
-            # Diameter: sessions naming the subscriber, then every message of those sessions.
-            sessions: set[str] = set()
-            flt = diameter.identity_filter(imsi_d, msisdn_d)
-            if flt:
-                stdout, scan = _fields_run(capture, flt, ["diameter.Session-Id"], st.limits.max_scan_packets, timeout=_left(deadline))
-                sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
-                notes["diameter"] = {"sessions": 0, "truncated": scan.truncated}
-            corr = diameter.correlation_filter(sessions)
-            if corr:
-                packets, scan = _json_run(capture, corr, diameter.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-                messages = diameter.extract_messages(packets)
-                mine = diameter.subscriber_sessions(messages, imsi_d, msisdn_d)
-                notes["diameter"]["sessions"] = len(mine)
-                for tx in diameter.pair(messages):
-                    row = diameter.transaction_row(tx)
-                    if row.get("session_id") not in mine:
-                        continue
-                    timeline.append(_timeline_row("diameter", row, message=f'{row.get("request")}/{row.get("answer") or "-"}',
-                                                  detail=row.get("command"), result=row.get("result"),
-                                                  identity=row.get("user_name"), extra={"application": row.get("application"),
-                                                  "origin_host": row.get("origin_host"), "destination_host": row.get("destination_host")}))
-                notes["diameter"]["truncated"] = notes["diameter"]["truncated"] or scan.truncated
-
-            stage = "gtpv2"
-            # GTPv2-C: requests naming the subscriber, then the same sequence numbers and TEIDs.
-            flt = gtp.identity_filter(imsi_d, msisdn_d)
-            if flt:
-                packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-                seed = gtp.extract_messages(packets)
-                seqs, teids = gtp.sequence_numbers(seed), gtp.control_teids(seed)
-                notes["gtpv2"] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids),
-                                  "truncated": scan.truncated}
-                corr = gtp.correlation_filter(seqs, teids)
-                # Pass two fetches the paired responses; they reveal the peer's control-plane
-                # TEIDs, which later messages (Modify/Delete Session) carry in their header, so
-                # pass three follows those. Both passes are bounded like any other call.
-                collected: dict[tuple, Any] = {}
-                try:
-                    for _pass in range(2):
-                        if not corr:
-                            break
-                        packets, scan = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-                        fetched = gtp.extract_messages(packets)
-                        for m in fetched:
-                            collected.setdefault((m.frame, m.src, m.dst, m.fields.get("seq"), m.fields.get("message_type")), m)
-                        learnt: set[int] = set()
-                        for tx in gtp.pair(fetched):
-                            if _gtp_row_belongs(gtp.transaction_row(tx), imsi_d, msisdn_d, teids, seqs):
-                                learnt |= gtp.control_teids([m for m in (tx.request, tx.answer) if m is not None])
-                        notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or scan.truncated
-                        new_teids = learnt - teids
-                        teids |= new_teids
-                        notes["gtpv2"]["control_teids"] = len(teids)
-                        corr = gtp.correlation_filter(set(), new_teids)
-                finally:
-                    # Pair once over every pass: a request fetched by a TEID learnt in pass three
-                    # still meets the response that pass two fetched by sequence number.
-                    for tx in gtp.pair(list(collected.values())):
-                        row = gtp.transaction_row(tx)
-                        if not _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
-                            continue
-                        timeline.append(_timeline_row("gtpv2", row, message=row.get("message"), detail=row.get("response"),
-                                                      result=row.get("cause_name"), identity=row.get("imsi") or row.get("msisdn"),
-                                                      extra={"apn": row.get("apn"), "paa": row.get("paa"), "teid": row.get("teid"),
-                                                             "request_fteids": row.get("request_fteids"),
-                                                             "response_fteids": row.get("response_fteids")}))
-
-            stage = "map"
-            # MAP: components naming the subscriber, then the whole TCAP transactions.
-            flt = sigtran.identity_filter(imsi_d, msisdn_d)
-            if flt:
-                stdout, scan = _fields_run(capture, flt, ["tcap.tid"], st.limits.max_scan_packets, timeout=_left(deadline))
-                tids = {_colonise(t) for ln in stdout.splitlines() for t in ln.strip().split(",") if t.strip()}
-                notes["map"] = {"transactions": len(tids), "truncated": scan.truncated}
-                corr = sigtran.correlation_filter(tids)
-                if corr:
-                    packets, scan = _json_run(capture, corr, sigtran.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-                    for row in sigtran.extract_rows(packets):
-                        comps = row.get("components", [])
-                        names = [c.get("operation") or c.get("error") or c.get("type") for c in comps]
-                        result = next((c.get("error") for c in comps if c.get("error")), None)
-                        if result is None and any(c.get("type", "").startswith("returnResult") for c in comps):
-                            result = "returnResult"
-                        timeline.append(_timeline_row("map", row, message=f'{row.get("tcap", row.get("sccp"))} {" ".join(n for n in names if n)}'.strip(),
-                                                      detail=f'{row.get("calling_gt")} > {row.get("called_gt")}', result=result,
-                                                      identity=row.get("imsi") or row.get("msisdn"),
-                                                      extra={"frame": row.get("frame"), "sccp": row.get("sccp"),
-                                                             "segmentation": row.get("segmentation"),
-                                                             "answered_in_frame": row.get("answered_in_frame"),
-                                                             "in_response_to_frame": row.get("in_response_to_frame")}))
-                    notes["map"]["truncated"] = notes["map"]["truncated"] or scan.truncated
-
-            stage = "sip"
-            # SIP: dialogs whose identities contain the MSISDN (or IMSI), then the full dialogs.
-            flt = sip.identity_filter(imsi_d, msisdn_d)
-            if flt:
-                stdout, scan = _fields_run(capture, flt, ["sip.Call-ID"], st.limits.max_scan_packets, timeout=_left(deadline))
-                alone, shared = sip.selected_call_ids(stdout)
-                notes["sip"] = {"dialogs": len(alone | shared), "truncated": scan.truncated}
-                corr = sip.correlation_filter(alone | shared)
-                if corr:
-                    stdout, scan = _fields_run(capture, corr, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR,
-                                               timeout=_left(deadline))
-                    dialogs = sip.group_dialogs(stdout)
-                    if shared:
-                        keep = sip.matching_call_ids(stdout, number=msisdn_d, imsi=imsi_d)
-                        dialogs = [d for d in dialogs if d["call_id"] not in shared or d["call_id"] in keep]
-                        notes["sip"]["dialogs"] = len(dialogs)
-                    for row in dialogs:
-                        final = row.get("outcome_status") or row.get("final_status")
-                        timeline.append(_timeline_row("sip", row, message=f'{row.get("initial_method")} -> {final if final else "no final response"}',
-                                                      detail=row.get("request_uri"), result=str(final) if final else None,
-                                                      identity=row.get("p_asserted_identity") or row.get("from"),
-                                                      extra={"call_id": row.get("call_id"), "from": row.get("from"), "to": row.get("to"),
-                                                             "time_to_final_ms": row.get("time_to_final_ms"), "methods": row.get("methods")}))
-                    notes["sip"]["truncated"] = notes["sip"]["truncated"] or scan.truncated
-
-        except ToolError as exc:
-            if exc.type != "timeout":
-                raise
-            stopped = stage
-
-        timeline.sort(key=lambda r: (r.get("time") or "", r.get("request_frame") or r.get("frame") or 0))
+        timeline, notes, stopped = _trace_timeline(capture, imsi_d, msisdn_d, deadline)
         by_protocol: dict[str, int] = {}
         for r in timeline:
             by_protocol[r["protocol"]] = by_protocol.get(r["protocol"], 0) + 1
         failures = [r for r in timeline if r.get("unanswered") or r.get("failed")]
         out = _envelope("timeline", timeline, cap, None, identity={"imsi": imsi_d, "msisdn": msisdn_d},
                         by_protocol=by_protocol, failures=len(failures), passes=notes)
-        reasons = []
-        if stopped is not None:
-            notes.setdefault(stopped, {})["timed_out"] = True
-            reasons.append(f"time budget of {st.limits.timeout_seconds}s used up during the {stopped} pass; "
-                           "later passes did not run and the timeline is incomplete")
-        if any(n.get("truncated") for n in notes.values()):
-            reasons.append("a pass hit the packet or frame cap (see passes); the timeline may be incomplete")
+        reasons = _trace_reasons(notes, stopped, st.limits.timeout_seconds)
         if reasons:
             out["truncated"] = True
             out["truncated_reason"] = "; ".join(reasons)
         return out
     return _guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit}, run)
+
+
+def _trace_reasons(notes: dict[str, Any], stopped: str | None, budget: float) -> list[str]:
+    reasons = []
+    if stopped is not None:
+        reasons.append(f"time budget of {budget}s used up during the {stopped} pass; "
+                       "later passes did not run and the timeline is incomplete")
+    if any(n.get("truncated") for n in notes.values()):
+        reasons.append("a pass hit the packet or frame cap (see passes); the timeline may be incomplete")
+    return reasons
+
+
+def _trace_timeline(capture: Path, imsi_d: str | None, msisdn_d: str | None, deadline: float,
+                    with_avps: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+    """The subscriber timeline behind trace_subscriber: (rows in time order, per-pass
+    notes, the pass the time budget ran out in or None). Every tshark run gets only
+    what is left before ``deadline``; a spent budget ends the trace with what the
+    earlier passes found. ``with_avps`` adds the key AVPs to each Diameter row."""
+    st = state()
+    timeline: list[dict[str, Any]] = []
+    notes: dict[str, Any] = {}
+    stage = "diameter"
+    stopped: str | None = None
+    try:
+        # Diameter: sessions naming the subscriber, then every message of those sessions.
+        sessions: set[str] = set()
+        flt = diameter.identity_filter(imsi_d, msisdn_d)
+        if flt:
+            stdout, scan = _fields_run(capture, flt, ["diameter.Session-Id"], st.limits.max_scan_packets, timeout=_left(deadline))
+            sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
+            notes["diameter"] = {"sessions": 0, "truncated": scan.truncated}
+        corr = diameter.correlation_filter(sessions)
+        if corr:
+            packets, scan = _json_run(capture, corr, diameter.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+            messages = diameter.extract_messages(packets, keep_raw=with_avps)
+            mine = diameter.subscriber_sessions(messages, imsi_d, msisdn_d)
+            notes["diameter"]["sessions"] = len(mine)
+            for tx in diameter.pair(messages):
+                row = diameter.transaction_row(tx)
+                if row.get("session_id") not in mine:
+                    continue
+                timeline.append(_diameter_step(tx, row, with_avps))
+            notes["diameter"]["truncated"] = notes["diameter"]["truncated"] or scan.truncated
+
+        stage = "gtpv2"
+        # GTPv2-C: requests naming the subscriber, then the same sequence numbers and TEIDs.
+        flt = gtp.identity_filter(imsi_d, msisdn_d)
+        if flt:
+            packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+            seed = gtp.extract_messages(packets)
+            seqs, teids = gtp.sequence_numbers(seed), gtp.control_teids(seed)
+            notes["gtpv2"] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids),
+                              "truncated": scan.truncated}
+            corr = gtp.correlation_filter(seqs, teids)
+            # Pass two fetches the paired responses; they reveal the peer's control-plane
+            # TEIDs, which later messages (Modify/Delete Session) carry in their header, so
+            # pass three follows those. Both passes are bounded like any other call.
+            collected: dict[tuple, Any] = {}
+            try:
+                for _pass in range(2):
+                    if not corr:
+                        break
+                    packets, scan = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+                    fetched = gtp.extract_messages(packets)
+                    for m in fetched:
+                        collected.setdefault((m.frame, m.src, m.dst, m.fields.get("seq"), m.fields.get("message_type")), m)
+                    learnt: set[int] = set()
+                    for tx in gtp.pair(fetched):
+                        if _gtp_row_belongs(gtp.transaction_row(tx), imsi_d, msisdn_d, teids, seqs):
+                            learnt |= gtp.control_teids([m for m in (tx.request, tx.answer) if m is not None])
+                    notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or scan.truncated
+                    new_teids = learnt - teids
+                    teids |= new_teids
+                    notes["gtpv2"]["control_teids"] = len(teids)
+                    corr = gtp.correlation_filter(set(), new_teids)
+            finally:
+                # Pair once over every pass: a request fetched by a TEID learnt in pass three
+                # still meets the response that pass two fetched by sequence number.
+                for tx in gtp.pair(list(collected.values())):
+                    row = gtp.transaction_row(tx)
+                    if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
+                        timeline.append(_gtp_step(row))
+
+        stage = "map"
+        # MAP: components naming the subscriber, then the whole TCAP transactions.
+        flt = sigtran.identity_filter(imsi_d, msisdn_d)
+        if flt:
+            stdout, scan = _fields_run(capture, flt, ["tcap.tid"], st.limits.max_scan_packets, timeout=_left(deadline))
+            tids = {_colonise(t) for ln in stdout.splitlines() for t in ln.strip().split(",") if t.strip()}
+            notes["map"] = {"transactions": len(tids), "truncated": scan.truncated}
+            corr = sigtran.correlation_filter(tids)
+            if corr:
+                packets, scan = _json_run(capture, corr, sigtran.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+                for row in sigtran.extract_rows(packets):
+                    timeline.append(_map_step(row))
+                notes["map"]["truncated"] = notes["map"]["truncated"] or scan.truncated
+
+        stage = "sip"
+        # SIP: dialogs whose identities contain the MSISDN (or IMSI), then the full dialogs.
+        flt = sip.identity_filter(imsi_d, msisdn_d)
+        if flt:
+            stdout, scan = _fields_run(capture, flt, ["sip.Call-ID"], st.limits.max_scan_packets, timeout=_left(deadline))
+            alone, shared = sip.selected_call_ids(stdout)
+            notes["sip"] = {"dialogs": len(alone | shared), "truncated": scan.truncated}
+            corr = sip.correlation_filter(alone | shared)
+            if corr:
+                stdout, scan = _fields_run(capture, corr, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR,
+                                           timeout=_left(deadline))
+                dialogs = sip.group_dialogs(stdout)
+                if shared:
+                    keep = sip.matching_call_ids(stdout, number=msisdn_d, imsi=imsi_d)
+                    dialogs = [d for d in dialogs if d["call_id"] not in shared or d["call_id"] in keep]
+                    notes["sip"]["dialogs"] = len(dialogs)
+                for row in dialogs:
+                    timeline.append(_sip_step(row))
+                notes["sip"]["truncated"] = notes["sip"]["truncated"] or scan.truncated
+    except ToolError as exc:
+        if exc.type != "timeout":
+            raise
+        stopped = stage
+        notes.setdefault(stopped, {})["timed_out"] = True
+
+    timeline.sort(key=lambda r: (r.get("time") or "", r.get("request_frame") or r.get("frame") or 0))
+    return timeline, notes, stopped
+
+
+def _capture_steps(capture: Path, deadline: float) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+    """Every Diameter, GTPv2-C, MAP and SIP transaction of a capture as timeline rows
+    (each protocol under the usual packet caps), for comparing two captures without a
+    subscriber. Returns (rows in time order, per-protocol notes, the pass the time
+    budget ran out in or None)."""
+    st = state()
+    steps: list[dict[str, Any]] = []
+    notes: dict[str, Any] = {}
+    stage = "diameter"
+    try:
+        packets, scan = _json_run(capture, "diameter", diameter.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+        txs = diameter.pair(diameter.extract_messages(packets, keep_raw=True))
+        steps += [_diameter_step(tx, diameter.transaction_row(tx), True) for tx in txs]
+        notes["diameter"] = {"transactions": len(txs), "truncated": scan.truncated}
+        stage = "gtpv2"
+        packets, scan = _json_run(capture, "gtpv2", gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+        txs = gtp.pair(gtp.extract_messages(packets))
+        steps += [_gtp_step(gtp.transaction_row(tx)) for tx in txs]
+        notes["gtpv2"] = {"transactions": len(txs), "truncated": scan.truncated}
+        stage = "map"
+        packets, scan = _json_run(capture, sigtran.MESSAGE_FILTER, sigtran.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+        rows = [r for r in sigtran.extract_rows(packets) if r.get("components") or r.get("tcap")]
+        steps += [_map_step(r) for r in rows]
+        notes["map"] = {"messages": len(rows), "truncated": scan.truncated}
+        stage = "sip"
+        stdout, scan = _fields_run(capture, "sip", sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR,
+                                   timeout=_left(deadline))
+        dialogs = sip.group_dialogs(stdout)
+        steps += [_sip_step(d) for d in dialogs]
+        notes["sip"] = {"dialogs": len(dialogs), "truncated": scan.truncated}
+    except ToolError as exc:
+        if exc.type != "timeout":
+            raise
+        notes.setdefault(stage, {})["timed_out"] = True
+        steps.sort(key=lambda r: (r.get("time") or "", r.get("request_frame") or r.get("frame") or 0))
+        return steps, notes, stage
+    steps.sort(key=lambda r: (r.get("time") or "", r.get("request_frame") or r.get("frame") or 0))
+    return steps, notes, None
+
+
+@app.tool(title="Compare two captures", annotations=READ_ONLY)
+def compare_captures(path_a: str, path_b: str, imsi: str | None = None, msisdn: str | None = None,
+                     imsi_b: str | None = None, msisdn_b: str | None = None, collapse_repeats: bool = True,
+                     limit: int = 100) -> models.CompareCapturesResult:
+    """Compare a working and a failing capture of the same procedure. Builds the message
+    ladder of each (the trace_subscriber timeline for `imsi`/`msisdn`; give `imsi_b`/
+    `msisdn_b` when capture B is a different subscriber; without any identity, every
+    Diameter, GTPv2-C, MAP and SIP transaction of the file), drops keepalives (CER, DWR,
+    Echo), merges consecutive identical retries into one step with `repeat`, aligns the
+    two ladders by protocol and message, and reports `first_divergence` (the first step
+    that is missing, replaced or different), every aligned step with its `op` (same,
+    changed, replaced, only_a, only_b) and, for changed steps, the `differences`: result,
+    pairing, the key Diameter AVPs (flags, Cancellation-Type, subscription APNs, ...) and
+    the GTP IEs (APN, RAT, cause, F-TEID interfaces, PAA allocated); identities are
+    ignored. `timing` lists the largest round-trip and offset gaps. Both captures share
+    one time budget. `limit` caps the ladder rows returned (default 100)."""
+    def run() -> dict[str, Any]:
+        st = state()
+        capture_a, capture_b = _resolve(path_a), _resolve(path_b)
+        ids = {}
+        for name, value in (("imsi", imsi), ("msisdn", msisdn), ("imsi_b", imsi_b), ("msisdn_b", msisdn_b)):
+            ids[name] = lint_digits(value, name) if value else None
+        if (ids["imsi_b"] or ids["msisdn_b"]) and not (ids["imsi"] or ids["msisdn"]):
+            raise ToolError("invalid_argument", "imsi_b/msisdn_b need imsi or msisdn for capture A")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        deadline = _now() + st.limits.timeout_seconds
+        sides = {}
+        stopped = None
+        for side, capture, ident in (("a", capture_a, (ids["imsi"], ids["msisdn"])),
+                                     ("b", capture_b, (ids["imsi_b"] or (None if ids["msisdn_b"] else ids["imsi"]),
+                                                       ids["msisdn_b"] or (None if ids["imsi_b"] else ids["msisdn"])))):
+            if stopped is not None:
+                sides[side] = ([], {"skipped": True}, ident)
+                continue
+            if ident[0] or ident[1]:
+                steps, notes, stop = _trace_timeline(capture, ident[0], ident[1], deadline, with_avps=True)
+            else:
+                steps, notes, stop = _capture_steps(capture, deadline)
+            if stop is not None:
+                stopped = f"{side}:{stop}"
+            sides[side] = (steps, notes, ident)
+        a = compare.prepare(sides["a"][0], collapse_repeats)
+        b = compare.prepare(sides["b"][0], collapse_repeats)
+        ladder = compare.align(a, b)
+        out = _envelope("ladder", ladder, cap, None)
+        out.update({
+            "a": dict(compare.side_summary(a), path=str(capture_a), identity=_identity(sides["a"][2]), passes=sides["a"][1]),
+            "b": dict(compare.side_summary(b), path=str(capture_b), identity=_identity(sides["b"][2]), passes=sides["b"][1]),
+            "summary": compare.summarise(ladder),
+            "first_divergence": compare.first_divergence(ladder),
+            "identical": all(e["op"] == "same" for e in ladder),
+            "timing": compare.timing(ladder),
+        })
+        empty = [side.upper() for side, steps in (("a", a), ("b", b)) if not steps]
+        if empty:
+            what = "the subscriber" if any(sides[s][2][0] or sides[s][2][1] for s in ("a", "b")) else "any transaction"
+            out["notes"] = [f"capture {' and '.join(empty)} has no Diameter, GTPv2-C, MAP or SIP signalling for {what}; "
+                            "a user-plane capture is better read with gtp_user_plane"]
+        reasons = [out["truncated_reason"]] if out.get("truncated_reason") else []
+        if stopped is not None:
+            reasons.append(f"time budget of {st.limits.timeout_seconds}s used up during the {stopped} pass; "
+                           "the ladders are incomplete")
+        if any(n.get("truncated") for side in ("a", "b") for n in sides[side][1].values() if isinstance(n, dict)):
+            reasons.append("a pass hit the packet or frame cap (see a.passes and b.passes); the ladders may be incomplete")
+        if reasons:
+            out["truncated"] = True
+            out["truncated_reason"] = "; ".join(reasons)
+        return out
+    return _guarded("compare_captures", {"path_a": path_a, "path_b": path_b, "imsi": imsi, "msisdn": msisdn,
+                                         "imsi_b": imsi_b, "msisdn_b": msisdn_b, "collapse_repeats": collapse_repeats,
+                                         "limit": limit}, run)
+
+
+def _identity(ident: tuple[str | None, str | None]) -> dict[str, str] | None:
+    out = {k: v for k, v in (("imsi", ident[0]), ("msisdn", ident[1])) if v}
+    return out or None
+
+
+def _diameter_step(tx: Any, row: dict[str, Any], with_avps: bool = False) -> dict[str, Any]:
+    extra: dict[str, Any] = {"application": row.get("application"), "origin_host": row.get("origin_host"),
+                             "destination_host": row.get("destination_host")}
+    if with_avps:
+        for side, msg in (("request_avps", tx.request), ("answer_avps", tx.answer)):
+            if msg is not None and msg.fields.get("raw"):
+                extra[side] = avps.key_view(avps.avp_tree(msg.fields["raw"], avps.HARD_MAX_AVPS)[0])
+    return _timeline_row("diameter", row, message=f'{row.get("request")}/{row.get("answer") or "-"}',
+                         detail=row.get("command"), result=row.get("result"), identity=row.get("user_name"), extra=extra)
+
+
+def _gtp_step(row: dict[str, Any]) -> dict[str, Any]:
+    return _timeline_row("gtpv2", row, message=row.get("message"), detail=row.get("response"),
+                         result=row.get("cause_name"), identity=row.get("imsi") or row.get("msisdn"),
+                         extra={"apn": row.get("apn"), "paa": row.get("paa"), "teid": row.get("teid"),
+                                "rat_type": row.get("rat_type"), "request_fteids": row.get("request_fteids"),
+                                "response_fteids": row.get("response_fteids")})
+
+
+def _map_step(row: dict[str, Any]) -> dict[str, Any]:
+    comps = row.get("components", [])
+    names = [c.get("operation") or c.get("error") or c.get("type") for c in comps]
+    result = next((c.get("error") for c in comps if c.get("error")), None)
+    if result is None and any(c.get("type", "").startswith("returnResult") for c in comps):
+        result = "returnResult"
+    return _timeline_row("map", row, message=f'{row.get("tcap", row.get("sccp"))} {" ".join(n for n in names if n)}'.strip(),
+                         detail=f'{row.get("calling_gt")} > {row.get("called_gt")}', result=result,
+                         identity=row.get("imsi") or row.get("msisdn"),
+                         extra={"frame": row.get("frame"), "sccp": row.get("sccp"),
+                                "segmentation": row.get("segmentation"),
+                                "answered_in_frame": row.get("answered_in_frame"),
+                                "in_response_to_frame": row.get("in_response_to_frame")})
+
+
+def _sip_step(row: dict[str, Any]) -> dict[str, Any]:
+    final = row.get("outcome_status") or row.get("final_status")
+    return _timeline_row("sip", row, message=f'{row.get("initial_method")} -> {final if final else "no final response"}',
+                         detail=row.get("request_uri"), result=str(final) if final else None,
+                         identity=row.get("p_asserted_identity") or row.get("from"),
+                         extra={"call_id": row.get("call_id"), "from": row.get("from"), "to": row.get("to"),
+                                "time_to_final_ms": row.get("time_to_final_ms"), "methods": row.get("methods")})
 
 
 def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, detail: str | None, result: str | None,
