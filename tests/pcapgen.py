@@ -710,6 +710,42 @@ def write_voice_problems_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+CALL_ID_DTMF = "voice-dtmf-5@ue.example"
+
+
+def write_voice_dtmf_pcap(path: Path) -> Path:
+    """A call that negotiates telephone-event as payload type 100 (8 kHz). The UE sends
+    digit 1 as PT 100 without an end packet, then # as PT 101 (not negotiated) with
+    three end packets; it also sends SIP INFO application/dtmf "9" (answered 415) and
+    application/dtmf-relay "*" (answered 200)."""
+    t0 = 1_700_001_100.0
+    frames: list[tuple[float, bytes]] = []
+    req, resp = _voice_sip(CALL_ID_DTMF, "d5")
+
+    def ue(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, msg)))
+
+    def net(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, msg)))
+
+    ue(t0, req("INVITE", 1, body=_sdp(UE_SIP_IP, 40006, [0, 100], ["0 PCMU/8000", "100 telephone-event/8000"])))
+    net(t0 + 0.5, resp(200, "OK", 1, "INVITE", body=_sdp(MEDIA_GW_IP, 30008, [0, 100],
+                                                          ["0 PCMU/8000", "100 telephone-event/8000"])))
+    ue(t0 + 0.52, req("ACK", 1, to_tag="net"))
+    _audio(frames, t0 + 0.6, UE_SIP_IP, 40006, MEDIA_GW_IP, 30008, 0x77777777, 0, 8000, 150, 1, 0,
+           events={40: [(100, 1, False, 160), (100, 1, False, 320)],
+                   90: [(101, 11, False, 160), (101, 11, True, 400), (101, 11, True, 400), (101, 11, True, 400)]})
+    _audio(frames, t0 + 0.605, MEDIA_GW_IP, 30008, UE_SIP_IP, 40006, 0x88888888, 0, 8000, 150, 1, 0)
+    ue(t0 + 3.0, req("INFO", 2, to_tag="net", body="9", ctype="application/dtmf"))
+    net(t0 + 3.02, resp(415, "Unsupported Media Type", 2, "INFO"))
+    ue(t0 + 3.5, req("INFO", 3, to_tag="net", body="Signal=*\r\nDuration=250\r\n", ctype="application/dtmf-relay"))
+    net(t0 + 3.52, resp(200, "OK", 3, "INFO"))
+    ue(t0 + 4.0, req("BYE", 4, to_tag="net"))
+    net(t0 + 4.02, resp(200, "OK", 4, "BYE"))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 def write_rtp_without_sdp_pcap(path: Path) -> Path:
     """One PCMU stream with no SIP at all: tshark decodes it only with heuristics."""
     frames: list[tuple[float, bytes]] = []
@@ -725,6 +761,7 @@ def write_voice_pcaps(directory: Path) -> dict[str, Path]:
         "voice_call": write_voice_call_pcap(directory / "voice_call.pcap"),
         "voice_problems": write_voice_problems_pcap(directory / "voice_problems.pcap"),
         "rtp_no_sdp": write_rtp_without_sdp_pcap(directory / "rtp_no_sdp.pcap"),
+        "voice_dtmf": write_voice_dtmf_pcap(directory / "voice_dtmf.pcap"),
     }
 
 

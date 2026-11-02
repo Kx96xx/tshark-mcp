@@ -20,10 +20,11 @@ from .conftest import TSHARK, requires_tshark
 pytestmark = requires_tshark
 
 EXPECTED_TOOLS = {
+    "pfcp_sessions",
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events",
 }
 
 
@@ -40,6 +41,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
     d = str(pcap_dir)
     return [
         ("pcap_info", {"path": f"{d}/diameter.pcap"}),
+        ("pfcp_sessions", {"path": f"{d}/all.pcap"}),
         ("conversations", {"path": f"{d}/gtpv2.pcap", "layer": "udp", "filter": "gtpv2"}),
         ("filter_packets", {"path": f"{d}/diameter.pcap", "display_filter": "diameter.cmd.code == 318"}),
         ("diameter_transactions", {"path": f"{d}/diameter.pcap"}),
@@ -62,6 +64,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("packet_detail", {"path": f"{d}/diameter.pcap", "frame": 1, "layers": ["diameter"]}),
         ("expert_info", {"path": f"{d}/all.pcap", "severity": "note"}),
         ("media_path_check", {"path": f"{d}/voice/voice_problems.pcap", "call_id": pcapgen.CALL_ID_NAT}),
+        ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),

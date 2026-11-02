@@ -143,10 +143,11 @@ class TestRegistration:
         tools = asyncio.run(app.list_tools())
         names = sorted(t.name for t in tools)
         assert names == sorted([
+            "pfcp_sessions",
             "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions",
             "gtp_sessions", "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages",
             "trace_subscriber", "find_identifier", "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates", "gtpv1_sessions",
-            "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check",
+            "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events",
         ])
         by_name = {t.name: t for t in tools}
 

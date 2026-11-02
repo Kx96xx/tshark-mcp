@@ -173,6 +173,7 @@ class TestPaging:
         ("diameter_avps", {"path": "diameter.pcap"}),
         ("gtp_sessions", {"path": "gtpv2.pcap"}),
         ("gtpv1_sessions", {"path": "gtpv2.pcap"}),
+        ("pfcp_sessions", {"path": "all.pcap"}),
         ("gtp_user_plane", {"path": "gtpu.pcap"}),
         ("gtp_tunnel_health", {"path": "gtpu.pcap"}),
         ("sctp_associations", {"path": "sctp.pcap"}),
