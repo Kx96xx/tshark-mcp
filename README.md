@@ -15,9 +15,11 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent nineteen narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent twenty narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
-GTP cause 78, MAP opcode 46) and flag what never got a reply.
+GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
+itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
+frames, checksum offload and clocks that run backwards.
 
 ## Install
 
@@ -67,12 +69,13 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 334 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 366 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
 | `find_identifier(path, identifier, kind, max_files)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned` |
 | `pcap_info(path)` | Packet count, duration, first/last timestamp, size, link type, top 15 protocol-hierarchy entries, active limits |
+| `capture_quality(path)` | Whether loss and timing conclusions can be drawn from the capture: duplicate copies of the same packet with the likely cause (two VLANs or interfaces, a Linux any capture, tunnelled and decapsulated, rebuilt copies with zeroed TCP headers); TCP bytes the receiver acknowledged that the capture never saw (dropped by the capture, or the file was filtered) versus gaps a retransmission filled (lost on the network before the capture point); frames cut to the snapshot length; packets above 1500 bytes (segmentation offload); bad IP/TCP/UDP checksums and whether they are offload artifacts (one sender, data acknowledged anyway); TCP streams seen in one direction only and unanswered SYNs; timestamps going backwards, identical stamps, resolution, longest silence; a `verdict` (trustworthy, use with care, not trustworthy) with the reasons |
 | `conversations(path, layer, filter, limit)` | Top talkers at `ip`, `ipv6`, `tcp`, `udp`, `sctp` or `eth` with frames and bytes per direction, optionally restricted by a display filter |
 | `filter_packets(path, display_filter, fields, limit)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered and failed counts, worst RTT, and the paired transactions |
@@ -181,6 +184,19 @@ gtp_tunnel_health(path="/pcaps/userplane.pcap")
     "outer_icmp": [{"error": "fragmentation needed", "mtu": 1450, "count": 1, "teids": ["0x00001001"]}]}
 ```
 
+Can a missing packet in this file be read as network loss?
+
+```
+capture_quality(path="/pcaps/span.pcap")
+-> {"duplicates": {"copies": 10, "share": 0.2857, "causes": {"seen on two VLANs (SPAN of both ingress and egress)": 10}, ...},
+    "tcp_capture_gaps": {"missed_by_capture": 1, "missed_bytes": 400, "lost_before_capture": 0, ...},
+    "checksums": {"bad": {"tcp": 10}, "bad_tcp_segments_acknowledged": 10, "likely_offload": true, ...},
+    "verdict": {"loss_conclusions": "not trustworthy",
+                "reasons": ["10 duplicate copies (28.6% of IP packets; seen on two VLANs ...): raw tshark retransmission and duplicate-ACK flags count these copies ...",
+                            "the capture missed 1 TCP gap (400 bytes) that the receiver acknowledged: the capture dropped them ..."],
+                "notes": ["bad checksums are checksum offload: ... Not a network fault"]}}
+```
+
 Is this a purge storm, and how fast is it looping?
 
 ```
@@ -216,7 +232,7 @@ switch off.
 | Raw tshark stdout kept in memory | 64 MB (`TSHARK_MCP_MAX_STDOUT_MB`); tshark is killed beyond it | `runner.Runner` |
 | Wall-clock per tshark run | 60 s (`--timeout`, `TSHARK_MCP_TIMEOUT`); tshark is killed beyond it | `runner.Runner` |
 | Wall-clock per multi-pass call (`find_identifier`, `trace_subscriber`) | the same `--timeout`, shared by every tshark run of the call | `server.find_identifier`, `server.trace_subscriber` |
-| Read-only argv | `-r` is mandatory; `-i`, `-w`, `-D`, `-f`, `-a`, `-b`, `-X`, `-o`, `--export-*` and the other capture, write and extension flags are refused before a process is created | `runner.assert_read_only` |
+| Read-only argv | `-r` is mandatory; `-i`, `-w`, `-D`, `-f`, `-a`, `-b`, `-X`, `-o`, `--export-*` and the other capture, write and extension flags are refused before a process is created. The one exception is `-o` followed by exactly `ip.check_checksum:TRUE`, `tcp.check_checksum:TRUE` or `udp.check_checksum:TRUE`, which `capture_quality` sets itself to validate checksums; no agent argument reaches `-o` | `runner.assert_read_only`, `runner.ALLOWED_PREFERENCES` |
 | No shell, no name resolution | argv list only, `-n` on every run | `runner.Runner` |
 | Display filters | linted for control characters and shell metacharacters outside quoted strings, then compiled by tshark against an empty capture before touching the real file | `limits.lint_display_filter`, `runner.validate_display_filter` |
 | Field names | must exist in `tshark -G fields` (cached once) | `fields.validate_fields` |
@@ -257,7 +273,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 334 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 366 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
