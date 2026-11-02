@@ -450,3 +450,4 @@ class FindIdentifierResult(RowsResult, total=False):
     files_with_hits: int
     total_hits: int
     errors: list[FileError]
+    partially_scanned: list[str]
