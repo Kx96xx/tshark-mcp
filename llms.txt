@@ -26,7 +26,7 @@
 - `sip_dialogs(path, call_id=None, number=None, method=None, filter=None, limit=200)`: SIP grouped by Call-ID with the method chain, From/To, final status, time to final response and duration.
 - `sctp_associations(path, limit=200)`: SCTP handshake state, heartbeats, retransmissions, aborts per endpoint pair.
 - `sigtran_messages(path, filter=None, limit=200)`: M3UA/SCCP/TCAP/MAP messages with global titles, operation names, IMSI and MSISDN.
-- `trace_subscriber(path, imsi=None, msisdn=None, limit=300)`: one time-ordered timeline for a subscriber across Diameter, GTPv2-C, MAP and SIP. Start here for "why did subscriber X fail".
+- `trace_subscriber(path, imsi=None, msisdn=None, limit=300)`: one time-ordered timeline for a subscriber across Diameter, GTPv2-C, MAP and SIP; all its passes share one time budget. Start here for "why did subscriber X fail".
 
 ## How to work with it
 

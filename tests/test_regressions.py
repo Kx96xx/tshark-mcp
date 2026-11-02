@@ -418,3 +418,51 @@ class TestApnOperatorIdentifier:
         path = str(_roaming_apn(tmp_path))
         assert [r["seq"] for r in srv.gtp_sessions(path, apn="internet.test.mnc001.mcc001.gprs")["transactions"]] == [0x31]
         assert srv.gtp_sessions(path, apn="internet")["transactions"] == []
+
+
+# ------------------------------------------- trace_subscriber keeps to one time budget
+def _slow_tshark(tmp_path: Path, seconds: float) -> Path:
+    import sys
+    import textwrap
+
+    fake = tmp_path / "slow-tshark"
+    # Filter dry runs and the field list return at once; every read of the capture
+    # takes ``seconds`` and prints nothing, as a large file with no match would.
+    fake.write_text(f"#!{sys.executable}\nimport sys, time\n" + textwrap.dedent(f"""
+        argv = sys.argv[1:]
+        if "-G" in argv or "-" in argv:
+            sys.exit(0)
+        time.sleep({seconds})
+    """))
+    fake.chmod(0o755)
+    return fake
+
+
+def test_trace_subscriber_shares_one_time_budget(tmp_path: Path):
+    import time
+
+    from tshark_mcp import server as server_module
+
+    caps = tmp_path / "caps"
+    caps.mkdir()
+    (caps / "big.pcap").write_bytes(b"\x00" * 64)
+    server_module.configure([str(caps)], limits=Limits(timeout_seconds=3.0), tshark=str(_slow_tshark(tmp_path, 2.0)))
+    try:
+        started = time.monotonic()
+        result = server_module.trace_subscriber(str(caps / "big.pcap"), imsi=pcapgen.IMSI, msisdn=pcapgen.MSISDN)
+        elapsed = time.monotonic() - started
+    finally:
+        server_module._STATE = None
+    # Four selection passes of 2 s each: about 8 s before the fix, one 3 s budget after.
+    assert elapsed < 3.8, elapsed
+    assert "error" not in result
+    assert result["truncated"] is True and "time budget of 3.0s" in result["truncated_reason"]
+    assert result["passes"]["gtpv2"]["timed_out"] is True
+    assert "map" not in result["passes"] and "sip" not in result["passes"]
+
+
+def test_trace_subscriber_within_budget_is_not_truncated(configure, pcap_dir: Path):
+    srv = configure(limits=Limits(timeout_seconds=30.0))
+    result = srv.trace_subscriber(str(pcap_dir / "all.pcap"), imsi=pcapgen.IMSI, msisdn=pcapgen.MSISDN)
+    assert "truncated" not in result
+    assert not any(p.get("timed_out") for p in result["passes"].values())
