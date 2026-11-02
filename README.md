@@ -21,7 +21,7 @@ GTP cause 78, MAP opcode 46) and flag what never got a reply.
 
 ## Install
 
-Requires Python 3.10+, the `mcp` package 1.12 or newer (installed automatically) and tshark
+Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically) and tshark
 4.0 or newer (tested with 4.2 and 4.6). tshark comes with
 Wireshark: `brew install --cask wireshark` on macOS, `apt-get install tshark` on Debian or
 Ubuntu, `dnf install wireshark-cli` on Fedora.
@@ -243,7 +243,7 @@ pytest
 ```
 
 The suite is 286 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
-tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
+tshark that Ubuntu 24.04 ships (4.2), and once more on 3.10 with the oldest supported `mcp` and `pydantic`. Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
 M3UA), so nothing in the repository contains traffic from a real network.
