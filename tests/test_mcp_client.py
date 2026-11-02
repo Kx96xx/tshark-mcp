@@ -23,7 +23,7 @@ EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes",
 }
 
 
