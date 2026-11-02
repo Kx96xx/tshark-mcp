@@ -276,6 +276,7 @@ class SipMessage(TypedDict, total=False):
     status: int
     cseq: str
     reason: str
+    resend: bool
 
 
 # "from" is a keyword, so this one uses the functional form.
@@ -292,6 +293,9 @@ SipDialogRow = TypedDict("SipDialogRow", {
     "p_asserted_identity": str,
     "final_status": int,
     "time_to_final_ms": float,
+    "outcome_status": int,
+    "attempts": int,
+    "resent_messages": int,
     "no_final_response": bool,
     "message_count": int,
     "methods": list[str],

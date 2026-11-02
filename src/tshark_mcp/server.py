@@ -536,6 +536,9 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
     """Group SIP messages by Call-ID. Each dialog lists the method/response sequence with
     timestamps, From, To, Request-URI, P-Asserted-Identity, the method chain, the final
     status of the initial request, time to that final response and the dialog duration;
+    `outcome_status` is the final status after any 401/407 challenge was retried (a
+    REGISTER answered 401 then 200 succeeded), `attempts` counts transactions of the
+    initial method and `resent_messages` counts retransmissions;
     `no_final_response: true` marks requests that never completed. Narrow with `call_id`
     (exact), `number` (digits found in From, To, Request-URI or P-Asserted-Identity) or
     `method` (INVITE, REGISTER, MESSAGE, ...): matching messages select the dialogs, then
@@ -562,8 +565,7 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
             flt = f"({base}) && ({corr})"
         stdout, scan = _fields_run(capture, flt, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
         rows = sip.group_dialogs(stdout)
-        summary = _summarise(rows, "initial_method", "no_final_response",
-                             lambda r: (r.get("final_status") or 0) >= 400)
+        summary = _summarise(rows, "initial_method", "no_final_response", sip.dialog_failed)
         return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
                                     "filter": filter, "limit": limit}, run)
@@ -793,7 +795,7 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
             if corr:
                 stdout, scan = _fields_run(capture, corr, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
                 for row in sip.group_dialogs(stdout):
-                    final = row.get("final_status")
+                    final = row.get("outcome_status") or row.get("final_status")
                     timeline.append(_timeline_row("sip", row, message=f'{row.get("initial_method")} -> {final if final else "no final response"}',
                                                   detail=row.get("request_uri"), result=str(final) if final else None,
                                                   identity=row.get("p_asserted_identity") or row.get("from"),
@@ -825,7 +827,7 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
     if row.get("unanswered") or row.get("no_final_response"):
         out["unanswered"] = True
     failed = (row.get("success") is False or row.get("accepted") is False
-              or (protocol == "sip" and (row.get("final_status") or 0) >= 400)
+              or (protocol == "sip" and sip.dialog_failed(row))
               or (protocol == "map" and any(c.get("type") == "returnError" for c in row.get("components", []))))
     if failed:
         out["failed"] = True
