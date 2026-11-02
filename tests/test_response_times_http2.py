@@ -80,7 +80,7 @@ def h2_capture(path: Path) -> Path:
 
 def grpc_capture(path: Path) -> Path:
     cap = Capture()
-    # 8080 is one of tshark's HTTP ports; on 50051 tshark before 4.4 does not find HTTP/2 by itself.
+    # 8080 is one of tshark's HTTP ports. On 50051, tshark 4.2 (CI) does not find HTTP/2 by itself; 4.4.0 and later do.
     c = start(cap, "203.0.113.70", port=8080)
     ct = (("content-type", "application/grpc"), ("te", "trailers"))
     msg = b"\x00" + struct.pack("!I", 7) + b"\x0a\x05hello"
