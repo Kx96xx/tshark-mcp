@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, expert, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
 from .fields import (
     compact, dicts_with, field_catalogue, iso, parse_packets, parse_time, split_fields_line, to_int, validate_fields,
 )
@@ -70,7 +70,8 @@ arguments for the next page. "truncated": true always says why and how to get
 the rest; total_is_lower_bound means a packet or frame cap stopped the scan, so
 narrow the filter instead of paging. Rows carry frame numbers (frame,
 request_frame, answer_frame, first_frame, ...): cite them, and open one with
-packet_detail to check a claim against the full dissection.
+packet_detail to check a claim against the full dissection. expert_info lists
+tshark's own warnings and malformed packets: check it when a decode looks wrong.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -723,6 +724,40 @@ def _bounded_layers(tree: dict[str, Any], cap: int) -> tuple[dict[str, Any], int
             continue
         out[name] = copy(value, [budgets[name]])
     return out, counter["kept"], counter["dropped"], counter["shortened"]
+
+
+@app.tool(title="Expert info (warnings, malformed packets)", annotations=READ_ONLY)
+def expert_info(path: str, severity: str = "warn", filter: str | None = None, limit: int = 100,
+                offset: int = 0) -> models.ExpertInfoResult:
+    """tshark's own expert information (`-z expert`): the warnings, errors and
+    malformed-packet flags its dissectors raised while decoding, grouped by severity,
+    group (Malformed, Undecoded, Sequence, Protocol, Checksum, ...), protocol and summary,
+    with the count, the first frame and up to five sample frames of each. `severity` is
+    the lowest level kept: error, warn (default), note or chat. `filter` is a display
+    filter that restricts which packets are examined, e.g. `diameter` or
+    `sctp.port == 3868`. `summary` gives counts by severity and protocol and the number
+    of malformed frames. Use it to catch decode problems (a malformed Diameter AVP, an
+    unknown vendor, a GTP IE tshark could not parse) before trusting the protocol
+    tools, and for the TCP sequence problems tshark already flags."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if severity not in expert.SEVERITIES:
+            raise ToolError("invalid_argument", f"severity must be one of {', '.join(expert.SEVERITIES)}")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        flt = _filter(filter)
+        stat = check_result(st.runner.read_capture(capture, ["-q", "-z", expert.stat_arg(severity, flt)],
+                                                   max_packets=st.limits.max_scan_packets))
+        rows = expert.parse_stat(stat.stdout)
+        found_flt = f"_ws.expert && ({flt})" if flt else "_ws.expert"
+        stdout, scan = _fields_run(capture, found_flt, expert.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=expert.AGGREGATOR)
+        frames = expert.parse_frames(stdout)
+        rows = expert.merge(rows, frames)
+        return _envelope("items", rows, cap, scan, offset=offset, severity=severity, display_filter=flt,
+                         summary=expert.summarise(rows, frames))
+    return _guarded("expert_info", {"path": path, "severity": severity, "filter": filter, "limit": limit,
+                                    "offset": offset}, run)
 
 
 DEFAULT_FIELDS = ["frame.number", "frame.time_epoch", "ip.src", "ip.dst", "_ws.col.protocol", "_ws.col.info"]

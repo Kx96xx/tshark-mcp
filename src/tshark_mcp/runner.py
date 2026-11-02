@@ -89,6 +89,11 @@ ALLOWED_PREFERENCES: frozenset[str] = frozenset({
     "ip.check_checksum:TRUE", "tcp.check_checksum:TRUE", "udp.check_checksum:TRUE",
 })
 
+
+# Statistics (-z) tshark may compute. Each only reads the dissected packets and
+# prints a table; anything else after -z is refused.
+ALLOWED_STATS: frozenset[str] = frozenset({"io", "conv", "endpoints", "expert", "rtp", "sip", "diameter", "dns", "http"})
+
 # A tiny but complete pcap file (global header only) fed on stdin to compile a
 # display filter without touching the user's capture.
 EMPTY_PCAP = bytes.fromhex("d4c3b2a1" "0200" "0400" "00000000" "00000000" "ffff0000" "01000000")
@@ -120,6 +125,10 @@ def find_tshark(explicit: str | None = None) -> str:
 def assert_read_only(args: Sequence[str]) -> None:
     """Raise if ``args`` (everything after the program name) could capture or write."""
     for index, arg in enumerate(args):
+        if arg == "-z":
+            stat = args[index + 1] if index + 1 < len(args) else ""
+            if stat.split(",", 1)[0] not in ALLOWED_STATS:
+                raise ToolError("forbidden_flag", f"refusing statistic -z {stat.split(',', 1)[0]!r}")
         head = arg.split("=", 1)[0] if arg.startswith("--") else arg
         if arg == "-o" and index + 1 < len(args) and args[index + 1] in ALLOWED_PREFERENCES:
             continue
