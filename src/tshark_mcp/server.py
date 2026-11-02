@@ -50,8 +50,13 @@ call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
-their answers and shows unanswered queries, rcodes and slow resolvers. Results are JSON; "truncated": true means a
-cap was reached and you should narrow the filter.
+their answers and shows unanswered queries, rcodes and slow resolvers. Results
+are JSON. List tools return one page: total_matched rows found, returned in
+this page from offset, dropped after it;
+when next_offset is present, call again with offset=next_offset and the same
+arguments for the next page. "truncated": true always says why and how to get
+the rest; total_is_lower_bound means a packet or frame cap stopped the scan, so
+narrow the filter instead of paging.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -104,11 +109,12 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
         status = "internal_error"
         result = ToolError("internal_error", f"{type(exc).__name__}: {exc}").to_dict()
     warnings = collect_warnings(token)
+    rows_key = result.pop(_ROWS_KEY, None)
     if warnings and "error" not in result:
         result["warnings"] = warnings
     try:
         limits = state().limits
-        result = _fit(result, limits.max_output_bytes)
+        result = _fit(result, limits.max_output_bytes, rows_key)
     except ToolError:
         pass
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -117,27 +123,120 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     return result
 
 
-def _fit(result: dict[str, Any], max_bytes: int) -> dict[str, Any]:
-    """Drop rows from the largest list until the JSON fits within ``max_bytes``."""
-    def size(obj: Any) -> int:
-        return len(json.dumps(obj, separators=(",", ":"), default=str).encode())
+def _size(obj: Any) -> int:
+    return len(json.dumps(obj, separators=(",", ":"), default=str).encode())
 
-    if size(result) <= max_bytes:
+
+def _fit(result: dict[str, Any], max_bytes: int, rows_key: str | None = None) -> dict[str, Any]:
+    """Make the JSON fit within ``max_bytes`` without losing count of what was cut.
+
+    The tool's own row list (named by the private ``_rows_key`` marker that
+    :func:`_envelope` leaves) is cut to the longest prefix that fits, and the
+    paging fields are rewritten so ``next_offset`` fetches exactly the rows left
+    out. Any other list that is too large (a nested transaction list, a side
+    table) is halved and recorded under ``trimmed`` with its path and sizes."""
+    rows_key = result.pop(_ROWS_KEY, None) or rows_key
+    if _size(result) <= max_bytes:
         return result
     out = dict(result)
+    trimmed: list[dict[str, Any]] = list(out.get("trimmed") or [])
     for _ in range(64):
-        lists = [(k, v) for k, v in out.items() if isinstance(v, list) and len(v) > 1]
-        if not lists:
+        found = _largest_list(out, rows_key)
+        if found is None:
             break
-        key, value = max(lists, key=lambda kv: size(kv[1]))
-        out[key] = value[: max(1, len(value) // 2)]
-        out["truncated"] = True
-        out["truncated_reason"] = f"output exceeded {max_bytes} bytes; rows were dropped, narrow the filter or lower limit"
-        if size(out) <= max_bytes:
-            return out
-    out["truncated"] = True
-    out["truncated_reason"] = f"output exceeded {max_bytes} bytes even after dropping rows"
+        path, value, container, key = found
+        if container is out and key == rows_key:
+            _cut_rows(out, rows_key, max_bytes)
+            if _size(out) <= max_bytes:
+                break
+            continue
+        keep = max(1, len(value) // 2)
+        container[key] = value[:keep]
+        previous = next((t for t in trimmed if t["path"] == path), None)
+        if previous is None:
+            trimmed.append({"path": path, "kept": keep, "of": len(value)})
+        else:
+            previous["kept"] = keep
+        out["trimmed"] = trimmed
+        _note(out, f"output cap of {max_bytes} bytes: lists named in trimmed were shortened; "
+                   "lower limit or narrow the filter to see them whole")
+        if _size(out) <= max_bytes:
+            break
+    if _size(out) > max_bytes:
+        _note(out, f"output exceeded {max_bytes} bytes even after dropping rows; narrow the filter")
     return out
+
+
+def _largest_list(out: dict[str, Any], rows_key: str | None) -> tuple[str, list, Any, Any] | None:
+    """The biggest list of two or more items anywhere in ``out`` as (path, list, parent, key).
+    A list nested in the row list is never bigger than the row list itself, so rows
+    (which paging recovers) are cut before anything inside them."""
+    best: tuple[int, tuple[str, list, Any, Any]] | None = None
+    stack: list[tuple[str, Any]] = [("", out)]
+    while stack:
+        prefix, node = stack.pop()
+        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        for key, value in items:
+            if node is out and key in ("trimmed", "warnings"):
+                continue
+            path = f"{prefix}[{key}]" if isinstance(node, list) else (f"{prefix}.{key}" if prefix else str(key))
+            if isinstance(value, list) and len(value) > 1:
+                weight = _size(value)
+                if best is None or weight > best[0]:
+                    best = (weight, (path, value, node, key))
+            if isinstance(value, (dict, list)):
+                stack.append((path, value))
+    return best[1] if best else None
+
+
+def _cut_rows(out: dict[str, Any], rows_key: str, max_bytes: int) -> None:
+    """Keep the longest prefix of the row list that fits and rewrite the paging fields."""
+    rows = out[rows_key]
+    start = int(out.get("offset") or 0)
+    total = out.get("total_matched")
+    base_reason = out.get("truncated_reason")
+
+    def apply(keep: int) -> int:
+        out[rows_key] = rows[:keep]
+        out["count"] = out["returned"] = keep
+        out["next_offset"] = start + keep
+        if isinstance(total, int):
+            out["dropped"] = max(0, total - start - keep)
+        out["truncated_reason"] = base_reason
+        _drop_note(out, _PAGING_PREFIX)
+        _note(out, f"output cap of {max_bytes} bytes: returned {keep} of the {len(rows)} rows of this page; "
+                   f"{_PAGING_PREFIX}{start + keep} (same arguments) for the rest, or lower limit")
+        return _size(out)
+
+    lo, hi, keep = 1, len(rows) - 1, 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if apply(mid) <= max_bytes:
+            keep, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    apply(keep)
+
+
+_ROWS_KEY = "_rows_key"
+_PAGING_PREFIX = "call again with offset="
+
+
+def _note(out: dict[str, Any], reason: str) -> None:
+    out["truncated"] = True
+    old = out.get("truncated_reason")
+    if not old:
+        out["truncated_reason"] = reason
+    elif reason not in old:
+        out["truncated_reason"] = f"{old}; {reason}"
+
+
+def _drop_note(out: dict[str, Any], marker: str) -> None:
+    """Remove the reason sentence containing ``marker`` (it is about to be restated)."""
+    old = out.get("truncated_reason")
+    if old:
+        kept = [part for part in old.split("; ") if marker not in part]
+        out["truncated_reason"] = "; ".join(kept)
 
 
 def _audit(tool: str, args: dict[str, Any], duration_ms: int, status: str, payload_bytes: int) -> None:
@@ -182,6 +281,7 @@ class Scan:
     """
 
     matched: int = 0
+    seen: int = 0
     match_cap: int = 0
     read_cap: int = 0
     hit_match_cap: bool = False
@@ -228,6 +328,7 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
         if frame is not None and frame > read_cap:
             scan.hit_read_cap = True
             continue
+        scan.seen += 1
         if scan.matched >= max_matched:
             scan.hit_match_cap = True
             continue
@@ -276,20 +377,54 @@ def _left(deadline: float | None) -> float | None:
     return remaining
 
 
+def _offset(value: Any) -> int:
+    """A model-supplied row offset: a non-negative integer."""
+    try:
+        start = int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        raise ToolError("invalid_argument", f"offset must be a non-negative integer, got {value!r}") from None
+    if start < 0:
+        raise ToolError("invalid_argument", f"offset must be a non-negative integer, got {value!r}")
+    return start
+
+
 def _envelope(rows_key: str, rows: list[dict[str, Any]], limit: int, scan: Scan | None = None,
-              **extra: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {rows_key: rows[:limit], "count": len(rows[:limit]), "total_found": len(rows)}
+              offset: Any = 0, more: bool = False, total: int | None = None, **extra: Any) -> dict[str, Any]:
+    """One page of ``rows`` with the paging contract every list tool shares.
+
+    ``total_matched`` rows were found, ``returned`` are in this page starting at
+    ``offset`` and ``dropped`` come after it; ``next_offset`` fetches the next page.
+    ``count`` and ``total_found`` are the older names of ``returned`` and
+    ``total_matched``. ``more`` says rows exist beyond ``rows`` (a paging cap was
+    reached), so the totals are lower bounds; ``total`` gives the true count when
+    ``rows`` holds only the rows up to the end of this page."""
+    start = _offset(offset)
+    page = rows[start:start + limit]
+    total = len(rows) if total is None else max(total, len(rows))
+    out: dict[str, Any] = {rows_key: page, "count": len(page), "total_found": total,
+                           "total_matched": total, "returned": len(page), "offset": start,
+                           "dropped": max(0, total - start - len(page))}
     if scan is not None:
         out["packets_scanned"] = scan.matched
+        if scan.hit_match_cap:
+            out["packets_matched"] = scan.seen  # every match under the frame cap, dissected or not
     out.update(extra)
     reasons = []
     if scan is not None and scan.truncated:
         reasons.append(scan.reason())
-    if len(rows) > limit:
-        reasons.append("more rows than limit; narrow the filter or page with a tighter filter")
+    if (scan is not None and scan.truncated) or more:
+        out["total_is_lower_bound"] = True
+    if out["dropped"] or more:
+        out["next_offset"] = start + len(page)
+        what = f"{out['dropped']} more rows" if out["dropped"] else "more rows"
+        reasons.append(f"{what} after this page: {_PAGING_PREFIX}{start + len(page)} (same arguments) "
+                       "for the next page, or narrow the filter")
+    if start and start >= total and total:
+        reasons.append(f"offset {start} is past the last row ({total} matched)")
     if reasons:
         out["truncated"] = True
         out["truncated_reason"] = "; ".join(r for r in reasons if r)
+    out[_ROWS_KEY] = rows_key
     return out
 
 
@@ -297,7 +432,7 @@ def _merge_scans(first: Scan | None, second: Scan) -> Scan:
     """Combine the selection pass and the fetch pass of a two-pass tool into one summary."""
     if first is None:
         return second
-    return Scan(matched=second.matched, match_cap=second.match_cap, read_cap=second.read_cap,
+    return Scan(matched=second.matched, seen=second.seen, match_cap=second.match_cap, read_cap=second.read_cap,
                 hit_match_cap=first.hit_match_cap or second.hit_match_cap,
                 hit_read_cap=first.hit_read_cap or second.hit_read_cap)
 
@@ -332,7 +467,7 @@ CONVERSATION_LAYERS = ("ip", "ipv6", "tcp", "udp", "sctp", "eth")
 
 
 @app.tool(title="Conversations (top talkers)", annotations=READ_ONLY)
-def conversations(path: str, layer: str = "ip", filter: str | None = None, limit: int = 200) -> models.ConversationsResult:
+def conversations(path: str, layer: str = "ip", filter: str | None = None, limit: int = 200, offset: int = 0) -> models.ConversationsResult:
     """List conversations (top talkers) at one layer: `layer` is one of ip, ipv6, tcp,
     udp, sctp or eth. Each row has both endpoints, frames and bytes in each direction,
     totals, relative start time and duration. `filter` is an optional display filter
@@ -348,14 +483,14 @@ def conversations(path: str, layer: str = "ip", filter: str | None = None, limit
         result = check_result(state().runner.read_capture(capture, ["-q", "-z", stat]))
         rows = _parse_conversations(result.stdout)
         rows.sort(key=lambda r: -r["frames_total"])
-        return _envelope("conversations", rows, cap, None, layer=layer, display_filter=flt,
+        return _envelope("conversations", rows, cap, None, offset=offset, layer=layer, display_filter=flt,
                          total_frames=sum(r["frames_total"] for r in rows),
                          total_bytes=sum(r["bytes_total"] for r in rows))
-    return _guarded("conversations", {"path": path, "layer": layer, "filter": filter, "limit": limit}, run)
+    return _guarded("conversations", {"path": path, "layer": layer, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="Filter packets", annotations=READ_ONLY)
-def filter_packets(path: str, display_filter: str, fields: list[str] | None = None, limit: int = 200) -> models.FilterPacketsResult:
+def filter_packets(path: str, display_filter: str, fields: list[str] | None = None, limit: int = 200, offset: int = 0) -> models.FilterPacketsResult:
     """Return packets matching a Wireshark display filter as rows of fields. Default
     fields: frame.number, frame.time_epoch, ip.src, ip.dst, _ws.col.protocol, _ws.col.info.
     Pass `fields` (tshark field names such as "diameter.cmd.code") to choose your own;
@@ -370,15 +505,24 @@ def filter_packets(path: str, display_filter: str, fields: list[str] | None = No
             raise ToolError("invalid_argument", "fields must not be empty")
         validate_fields(st.runner, names)
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        stdout, scan = _fields_run(capture, flt, names, cap)
+        start = _offset(offset)
+        if start >= st.limits.max_scan_packets:
+            raise ToolError("invalid_argument", f"offset must be below max_scan_packets ({st.limits.max_scan_packets})")
+        # One row per matching packet in frame order, so packets up to offset + limit are
+        # read and the page is the tail of them; a match beyond that means more pages.
+        stdout, scan = _fields_run(capture, flt, names, min(start + cap, st.limits.max_scan_packets))
+        # Every match under the frame cap was counted, so the total is exact unless that cap was hit.
+        total = scan.seen
+        scan.hit_match_cap = False
         rows = []
         for line in stdout.splitlines():
             cols = split_fields_line(line)
             if len(cols) != len(names):
                 continue
             rows.append({k: v for k, v in zip(names, cols) if v != ""})
-        return _envelope("packets", rows, cap, scan, fields=names, display_filter=flt)
-    return _guarded("filter_packets", {"path": path, "display_filter": display_filter, "fields": fields, "limit": limit}, run)
+        return _envelope("packets", rows, cap, scan, offset=start, total=total + len(rows) - scan.matched,
+                         fields=names, display_filter=flt)
+    return _guarded("filter_packets", {"path": path, "display_filter": display_filter, "fields": fields, "limit": limit, "offset": offset}, run)
 
 
 DEFAULT_FIELDS = ["frame.number", "frame.time_epoch", "ip.src", "ip.dst", "_ws.col.protocol", "_ws.col.info"]
@@ -406,7 +550,7 @@ def _protocol_column(runner: Runner) -> str | None:
 
 
 @app.tool(title="Diameter transactions", annotations=READ_ONLY)
-def diameter_transactions(path: str, filter: str | None = None, limit: int = 200) -> models.DiameterTransactionsResult:
+def diameter_transactions(path: str, filter: str | None = None, limit: int = 200, offset: int = 0) -> models.DiameterTransactionsResult:
     """Pair Diameter requests with their answers (Hop-by-Hop + End-to-End id, checked
     against Session-Id). Each transaction gives command code and name (ULR/ULA, AIR/AIA,
     CCR/CCA, ...), application, origin/destination host and realm, User-Name (IMSI),
@@ -422,13 +566,13 @@ def diameter_transactions(path: str, filter: str | None = None, limit: int = 200
         txs = diameter.pair(diameter.extract_messages(packets))
         rows = [diameter.transaction_row(t) for t in txs]
         summary = _summarise(rows, "request", "unanswered", lambda r: r.get("success") is False)
-        return _envelope("transactions", rows, cap, scan, summary=summary)
-    return _guarded("diameter_transactions", {"path": path, "filter": filter, "limit": limit}, run)
+        return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary)
+    return _guarded("diameter_transactions", {"path": path, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="Diameter sessions", annotations=READ_ONLY)
 def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None = None,
-                      command_code: int | None = None, filter: str | None = None, limit: int = 200) -> models.DiameterSessionsResult:
+                      command_code: int | None = None, filter: str | None = None, limit: int = 200, offset: int = 0) -> models.DiameterSessionsResult:
     """Group Diameter traffic by Session-Id. Each session gives the application, origin
     and destination hosts and realms, User-Name (IMSI), first/last timestamp and duration,
     the request and answer command codes seen, every Result-Code or Experimental-Result-Code,
@@ -453,7 +597,7 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         select = diameter.session_filter(sid, imsi_d, code)
         messages, scan = _diameter_fetch(capture, base, select)
         if messages is None:
-            return _envelope("sessions", [], cap, scan, summary={"sessions": 0, "unanswered": 0, "failed": 0,
+            return _envelope("sessions", [], cap, scan, offset=offset, summary={"sessions": 0, "unanswered": 0, "failed": 0,
                                                                   "without_session_id": 0}, selection=select)
         txs = diameter.pair(messages)
         rows, without = diameter.session_rows(txs)
@@ -471,9 +615,9 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
             "without_session_id": without,
             "by_application": _count(rows, "application"),
         }
-        return _envelope("sessions", rows, cap, scan, summary=summary, selection=select)
+        return _envelope("sessions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("diameter_sessions", {"path": path, "session_id": session_id, "imsi": imsi,
-                                          "command_code": command_code, "filter": filter, "limit": limit}, run)
+                                          "command_code": command_code, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 def _diameter_fetch(capture: Path, base: str, select: str | None, keep_raw: bool = False,
@@ -507,7 +651,7 @@ AVP_DETAIL = ("key", "full")
 @app.tool(title="Diameter AVP detail", annotations=READ_ONLY)
 def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = None, command_code: int | None = None,
                   frame: int | None = None, filter: str | None = None, detail: str = "key", max_avps: int = 200,
-                  limit: int = 20) -> models.DiameterAvpsResult:
+                  limit: int = 20, offset: int = 0) -> models.DiameterAvpsResult:
     """The AVPs of Diameter requests and answers, paired as in diameter_transactions.
     Select with `session_id`, `imsi` (User-Name digits), `command_code` (316 ULR, 317 CLR,
     318 AIR, 319 IDR, 321 PUR, 272 CCR, ...) and/or `frame` (a request or answer frame
@@ -545,7 +689,7 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
         select = " && ".join(parts) if parts else None
         messages, scan = _diameter_fetch(capture, base, select, keep_raw=True, fallback_to_selection=True)
         if messages is None:
-            return _envelope("transactions", [], cap, scan, detail=detail, selection=select)
+            return _envelope("transactions", [], cap, scan, offset=offset, detail=detail, selection=select)
         txs = diameter.pair(messages)
         mine = diameter.subscriber_sessions(messages, imsi_d, None, exact_imsi=True) if imsi_d else None
         rows = []
@@ -574,7 +718,7 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
                 if dropped and detail == "full":
                     out[f"{side}_avps_dropped"] = dropped
             rows.append(out)
-        out = _envelope("transactions", rows, cap, scan, detail=detail, selection=select)
+        out = _envelope("transactions", rows, cap, scan, offset=offset, detail=detail, selection=select)
         if detail == "full" and any(k.endswith("_avps_dropped") for r in rows for k in r):
             note = f"some messages have more than {leaves} AVPs; raise max_avps (server cap {avps.HARD_MAX_AVPS})"
             out["truncated"] = True
@@ -582,12 +726,12 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
         return out
     return _guarded("diameter_avps", {"path": path, "session_id": session_id, "imsi": imsi, "command_code": command_code,
                                       "frame": frame, "filter": filter, "detail": detail, "max_avps": max_avps,
-                                      "limit": limit}, run)
+                                      "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="GTPv2-C sessions", annotations=READ_ONLY)
 def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, teid: str | int | None = None,
-                 filter: str | None = None, limit: int = 200) -> models.GtpSessionsResult:
+                 filter: str | None = None, limit: int = 200, offset: int = 0) -> models.GtpSessionsResult:
     """Pair GTPv2-C requests with responses by sequence number and peer pair. A response
     sent by the request's target towards another address (a NAT or proxy boundary) is
     paired too and its path is given as `response_path`. Reports
@@ -614,7 +758,7 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
             seqs = {s for ln in stdout.splitlines() for s in (to_int(v) for v in ln.strip().split(",")) if s is not None}
             corr = gtp.correlation_filter(seqs, set())
             if corr is None:
-                return _envelope("transactions", [], cap, pre,
+                return _envelope("transactions", [], cap, pre, offset=offset,
                                  summary={"by_message": {}, "unanswered": 0, "failed": 0}, selection=select)
             flt = f"({base}) && ({corr})"
         packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
@@ -624,14 +768,14 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         if select:
             rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
-        return _envelope("transactions", rows, cap, scan, summary=summary, selection=select)
+        return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("gtp_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
-                                     "limit": limit}, run)
+                                     "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="GTPv1-C PDP contexts", annotations=READ_ONLY)
 def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, teid: str | int | None = None,
-                   filter: str | None = None, limit: int = 200) -> models.Gtpv1SessionsResult:
+                   filter: str | None = None, limit: int = 200, offset: int = 0) -> models.Gtpv1SessionsResult:
     """Pair GTPv1-C (Gn/Gp, TS 29.060) requests with responses by sequence number and
     peer pair, across a proxy or NAT too (`response_path`): Create, Update and Delete PDP
     Context, Echo, SGSN Context, Forward Relocation, PDU Notification, ... Each row gives
@@ -657,7 +801,7 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
             seqs = {s for ln in stdout.splitlines() for s in (to_int(v) for v in ln.strip().split(",")) if s is not None}
             corr = gtpv1.correlation_filter(seqs, set())
             if corr is None:
-                return _envelope("transactions", [], cap, pre,
+                return _envelope("transactions", [], cap, pre, offset=offset,
                                  summary={"by_message": {}, "unanswered": 0, "failed": 0}, selection=select)
             flt = f"({base}) && ({corr})"
         packets, scan = _json_run(capture, flt, gtpv1.JSON_LAYERS, st.limits.max_packets)
@@ -666,13 +810,13 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
         if select:
             rows = [r for r in rows if gtpv1.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
-        return _envelope("transactions", rows, cap, scan, summary=summary, selection=select)
+        return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("gtpv1_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
-                                       "limit": limit}, run)
+                                       "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="GTP-U tunnels", annotations=READ_ONLY)
-def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -> models.GtpUserPlaneResult:
+def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200, offset: int = 0) -> models.GtpUserPlaneResult:
     """Summarise GTP-U (G-PDU) traffic per tunnel endpoint id: packets, bytes, first and
     last time, outer endpoints and the inner IP sources/destinations. A TEID is one
     direction of a bearer; look up the matching F-TEIDs with gtp_sessions. `teid` may be
@@ -689,14 +833,14 @@ def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -
         stdout, scan = _fields_run(capture, gtp.user_plane_filter(teid_int), gtp.USER_PLANE_FIELDS,
                                    st.limits.max_scan_packets)
         rows = gtp.summarise_user_plane(stdout)
-        return _envelope("tunnels", rows, cap, scan,
+        return _envelope("tunnels", rows, cap, scan, offset=offset,
                          total_packets=sum(r["packets"] for r in rows),
                          total_payload_bytes=sum(r["payload_bytes"] for r in rows))
-    return _guarded("gtp_user_plane", {"path": path, "teid": teid, "limit": limit}, run)
+    return _guarded("gtp_user_plane", {"path": path, "teid": teid, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="GTP-U tunnel health", annotations=READ_ONLY)
-def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500, limit: int = 200) -> models.GtpTunnelHealthResult:
+def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500, limit: int = 200, offset: int = 0) -> models.GtpTunnelHealthResult:
     """User-plane health per GTP-U tunnel (TEID), read from the packets inside it: inner
     TCP segments, flows, SYN/SYN-ACK and the MSS values they carry, retransmissions
     (with the share of data segments), fast retransmissions, duplicate ACKs, lost
@@ -730,13 +874,13 @@ def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500,
             "inner_tcp_retransmissions": sum(t.get("retransmissions", 0) for t in tcp_rows),
             "outer_icmp_errors": len(outer),
         }
-        return _envelope("tunnels", rows, cap, scan, path_mtu=path_mtu, summary=summary, outer_icmp=outer_errors)
-    return _guarded("gtp_tunnel_health", {"path": path, "teid": teid, "mtu": mtu, "limit": limit}, run)
+        return _envelope("tunnels", rows, cap, scan, offset=offset, path_mtu=path_mtu, summary=summary, outer_icmp=outer_errors)
+    return _guarded("gtp_tunnel_health", {"path": path, "teid": teid, "mtu": mtu, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="Message rates and storms", annotations=READ_ONLY)
 def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi: str | None = None,
-                  filter: str | None = None, burst_min: int = 5, storm_min: int = 5, limit: int = 50) -> models.MessageRatesResult:
+                  filter: str | None = None, burst_min: int = 5, storm_min: int = 5, limit: int = 50, offset: int = 0) -> models.MessageRatesResult:
     """Message rates over time and storm detection for Diameter, GTPv2-C, GTPv1-C, SIP
     and MAP (`protocol` auto, diameter, gtpv2, gtpv1, sip or map). Every message is
     counted by name (ULR, ULA, PUR, Create Session Request, Create PDP Context Request,
@@ -773,19 +917,22 @@ def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi
         evts = rates.events(stdout, protocol)
         if imsi_d:
             evts = [e for e in evts if e.get("subscriber") and imsi_d in e["subscriber"]]
-        out = rates.summarise(evts, step, b_min, s_min, cap)
-        out.update({"protocol": protocol, "interval_s": step, "display_filter": flt, "packets_scanned": scan.matched})
-        if scan.truncated:
-            out["truncated"] = True
-            out["truncated_reason"] = scan.reason()
+        summary = rates.summarise(evts, step, b_min, s_min, len(evts) or 1)
+        by_message = summary.pop("by_message")
+        bursts = summary.pop("bursts")
+        out = _envelope("by_message", by_message, cap, scan, offset=offset, **summary)
+        out.update({"bursts": bursts[:cap], "bursts_total": len(bursts), "protocol": protocol, "interval_s": step,
+                    "display_filter": flt})
+        if len(bursts) > cap:
+            _note(out, f"{len(bursts) - cap} more bursts than limit={cap}; raise limit or narrow the filter")
         return out
     return _guarded("message_rates", {"path": path, "protocol": protocol, "interval": interval, "imsi": imsi,
-                                      "filter": filter, "burst_min": burst_min, "storm_min": storm_min, "limit": limit}, run)
+                                      "filter": filter, "burst_min": burst_min, "storm_min": storm_min, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="DNS transactions", annotations=READ_ONLY)
 def dns_transactions(path: str, name: str | None = None, filter: str | None = None,
-                     limit: int = 200) -> models.DnsTransactionsResult:
+                     limit: int = 200, offset: int = 0) -> models.DnsTransactionsResult:
     """DNS queries paired with their responses (by transport, client and server address
     and port, DNS id and question name), including the queries that never got one,
     which tshark's own dns.time cannot show. Each transaction gives name, type (A,
@@ -812,13 +959,14 @@ def dns_transactions(path: str, name: str | None = None, filter: str | None = No
         messages, icmp = dns.parse(stdout)
         out = dns.summarise(messages, icmp, wanted)
         rows = sorted(out.pop("transactions"), key=lambda r: (0 if dns.is_problem(r) else 1, r.get("frame") or 0))
-        return _envelope("transactions", rows, cap, scan, display_filter=flt, **out)
-    return _guarded("dns_transactions", {"path": path, "name": name, "filter": filter, "limit": limit}, run)
+        return _envelope("transactions", rows, cap, scan, offset=offset, display_filter=flt, **out)
+    return _guarded("dns_transactions", {"path": path, "name": name, "filter": filter, "limit": limit,
+                                         "offset": offset}, run)
 
 
 @app.tool(title="SIP dialogs", annotations=READ_ONLY)
 def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None, method: str | None = None,
-                filter: str | None = None, limit: int = 200) -> models.SipDialogsResult:
+                filter: str | None = None, limit: int = 200, offset: int = 0) -> models.SipDialogsResult:
     """Group SIP messages by Call-ID. Each dialog lists the method/response sequence with
     timestamps, From, To, Request-URI, P-Asserted-Identity, the method chain, the final
     status of the initial request, time to that final response and the dialog duration;
@@ -848,7 +996,7 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
             alone, shared = sip.selected_call_ids(stdout)
             corr = sip.correlation_filter(alone | shared)
             if corr is None:
-                return _envelope("dialogs", [], cap, pre, summary={"by_message": {}, "unanswered": 0, "failed": 0},
+                return _envelope("dialogs", [], cap, pre, offset=offset, summary={"by_message": {}, "unanswered": 0, "failed": 0},
                                  selection=select)
             flt = f"({base}) && ({corr})"
         stdout, scan = _fields_run(capture, flt, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
@@ -857,13 +1005,13 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
             keep = sip.matching_call_ids(stdout, cid, num, meth)
             rows = [r for r in rows if r["call_id"] not in shared or r["call_id"] in keep]
         summary = _summarise(rows, "initial_method", "no_final_response", sip.dialog_failed)
-        return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), summary=summary, selection=select)
+        return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), offset=offset, summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
-                                    "filter": filter, "limit": limit}, run)
+                                    "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="Find identifier across captures", annotations=READ_ONLY)
-def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: int = 20) -> models.FindIdentifierResult:
+def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: int = 20, offset: int = 0) -> models.FindIdentifierResult:
     """Find which capture files mention an identifier. `path` is one capture or a
     directory inside the allowed roots (its .pcap/.pcapng/.cap files are scanned, not
     subdirectories). `identifier` is an IMSI, MSISDN, IPv4/IPv6 address, SIP Call-ID or
@@ -887,6 +1035,10 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             candidates = search.list_captures(target)
         else:
             candidates = [target]
+        # Paging is over the directory listing (sorted by name): offset skips files.
+        start = _offset(offset)
+        files_found = len(candidates)
+        candidates = candidates[start:]
         fields = ["frame.time_epoch", "frame.number"]
         protocol_field = _protocol_column(st.runner)
         protocol_col = protocol_field is not None
@@ -899,12 +1051,17 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
         partial: list[str] = []
         scanned = 0
         truncated_reason = None
+        stopped_early = False
         for candidate in candidates:
             if scanned >= file_cap:
-                truncated_reason = f"more than {file_cap} files; raise max_files (server cap {st.limits.max_files}) or narrow the directory"
+                truncated_reason = (f"more than {file_cap} files; {_PAGING_PREFIX}{start + scanned} (same arguments) for the "
+                                    f"next files, or raise max_files (server cap {st.limits.max_files}) or narrow the directory")
+                stopped_early = True
                 break
             if _now() >= deadline:
-                truncated_reason = f"time budget of {st.limits.timeout_seconds}s used up after {scanned} files"
+                truncated_reason = (f"time budget of {st.limits.timeout_seconds}s used up after {scanned} files; "
+                                    f"{_PAGING_PREFIX}{start + scanned} (same arguments) for the rest")
+                stopped_early = True
                 break
             scanned += 1
             try:
@@ -915,7 +1072,9 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             except ToolError as exc:
                 errors.append({"path": str(candidate), "error": exc.type, "message": exc.message})
                 if exc.type == "timeout":
-                    truncated_reason = f"time budget of {st.limits.timeout_seconds}s used up while reading this file"
+                    truncated_reason = (f"time budget of {st.limits.timeout_seconds}s used up while reading this file; "
+                                        f"{_PAGING_PREFIX}{start + scanned} (same arguments) for the files after it")
+                    stopped_early = start + scanned < files_found
                     break
                 continue
             summary = search.summarise_hits(stdout, protocol_col)
@@ -934,8 +1093,15 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             rows.append(row)
         rows.sort(key=lambda r: (-r["hits"], r["path"]))
         out = _envelope("files", rows, file_cap, None, identifier=identifier.strip(), kind=resolved_kind,
-                        display_filter=flt, files_scanned=scanned, files_found=len(candidates),
+                        display_filter=flt, files_scanned=scanned, files_found=files_found,
                         files_with_hits=len(rows), total_hits=sum(r["hits"] for r in rows), errors=errors)
+        out.pop(_ROWS_KEY)  # paging here is over files, not rows; the output cap only trims rows
+        out["offset"] = start
+        if stopped_early:
+            out["next_offset"] = start + scanned
+            out["files_not_scanned"] = files_found - start - scanned
+        if start and start >= files_found and files_found:
+            truncated_reason = f"offset {start} is past the last file ({files_found} found)"
         if partial:
             out["partially_scanned"] = partial
             note = (f"{len(partial)} file(s) without hits were only read up to the frame cap of "
@@ -945,11 +1111,11 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             out["truncated"] = True
             out["truncated_reason"] = truncated_reason
         return out
-    return _guarded("find_identifier", {"path": path, "identifier": identifier, "kind": kind, "max_files": max_files}, run)
+    return _guarded("find_identifier", {"path": path, "identifier": identifier, "kind": kind, "max_files": max_files, "offset": offset}, run)
 
 
 @app.tool(title="SCTP associations", annotations=READ_ONLY)
-def sctp_associations(path: str, limit: int = 200) -> models.SctpAssociationsResult:
+def sctp_associations(path: str, limit: int = 200, offset: int = 0) -> models.SctpAssociationsResult:
     """Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK
     frames and initiate tags), DATA chunk count, heartbeats sent versus acknowledged,
     retransmissions, and whether ABORT or SHUTDOWN was seen. Useful for Diameter and
@@ -960,12 +1126,12 @@ def sctp_associations(path: str, limit: int = 200) -> models.SctpAssociationsRes
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         stdout, scan = _fields_run(capture, sigtran.SCTP_FILTER, sigtran.SCTP_FIELDS, st.limits.max_scan_packets)
         rows = sigtran.summarise_sctp(stdout)
-        return _envelope("associations", rows, cap, scan)
-    return _guarded("sctp_associations", {"path": path, "limit": limit}, run)
+        return _envelope("associations", rows, cap, scan, offset=offset)
+    return _guarded("sctp_associations", {"path": path, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="SIGTRAN / MAP messages", annotations=READ_ONLY)
-def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> models.SigtranMessagesResult:
+def sigtran_messages(path: str, filter: str | None = None, limit: int = 200, offset: int = 0) -> models.SigtranMessagesResult:
     """List M3UA/SCCP/TCAP/MAP messages: SCCP type (UDT, XUDT with segmentation info),
     calling and called global titles and SSNs, point codes, TCAP primitive and
     transaction ids, components (invoke, returnResultLast, returnError) with MAP opcode and
@@ -987,12 +1153,12 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> 
                 ops[name] = ops.get(name, 0) + 1
         summary = {"by_operation": ops, "unanswered_begins": sum(1 for r in rows if r.get("unanswered")),
                    "segmented": sum(1 for r in rows if r.get("segmentation"))}
-        return _envelope("messages", rows, cap, scan, summary=summary)
-    return _guarded("sigtran_messages", {"path": path, "filter": filter, "limit": limit}, run)
+        return _envelope("messages", rows, cap, scan, offset=offset, summary=summary)
+    return _guarded("sigtran_messages", {"path": path, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="Subscriber trace", annotations=READ_ONLY)
-def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300) -> models.TraceSubscriberResult:
+def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300, offset: int = 0) -> models.TraceSubscriberResult:
     """Build one time-ordered timeline for a subscriber across Diameter (User-Name),
     GTPv2-C and GTPv1-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), MAP (IMSI/MSISDN)
     and SIP (From/To/P-Asserted-Identity containing the MSISDN). Each row carries the
@@ -1015,14 +1181,14 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
         for r in timeline:
             by_protocol[r["protocol"]] = by_protocol.get(r["protocol"], 0) + 1
         failures = [r for r in timeline if r.get("unanswered") or r.get("failed")]
-        out = _envelope("timeline", timeline, cap, None, identity={"imsi": imsi_d, "msisdn": msisdn_d},
+        out = _envelope("timeline", timeline, cap, None, offset=offset, identity={"imsi": imsi_d, "msisdn": msisdn_d},
                         by_protocol=by_protocol, failures=len(failures), passes=notes)
         reasons = _trace_reasons(notes, stopped, st.limits.timeout_seconds)
         if reasons:
             out["truncated"] = True
             out["truncated_reason"] = "; ".join(reasons)
         return out
-    return _guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit}, run)
+    return _guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit, "offset": offset}, run)
 
 
 def _trace_reasons(notes: dict[str, Any], stopped: str | None, budget: float) -> list[str]:
@@ -1166,7 +1332,7 @@ def _capture_steps(capture: Path, deadline: float) -> tuple[list[dict[str, Any]]
 @app.tool(title="Compare two captures", annotations=READ_ONLY)
 def compare_captures(path_a: str, path_b: str, imsi: str | None = None, msisdn: str | None = None,
                      imsi_b: str | None = None, msisdn_b: str | None = None, collapse_repeats: bool = True,
-                     limit: int = 100) -> models.CompareCapturesResult:
+                     limit: int = 100, offset: int = 0) -> models.CompareCapturesResult:
     """Compare a working and a failing capture of the same procedure. Builds the message
     ladder of each (the trace_subscriber timeline for `imsi`/`msisdn`; give `imsi_b`/
     `msisdn_b` when capture B is a different subscriber; without any identity, every
@@ -1207,7 +1373,7 @@ def compare_captures(path_a: str, path_b: str, imsi: str | None = None, msisdn: 
         a = compare.prepare(sides["a"][0], collapse_repeats)
         b = compare.prepare(sides["b"][0], collapse_repeats)
         ladder = compare.align(a, b)
-        out = _envelope("ladder", ladder, cap, None)
+        out = _envelope("ladder", ladder, cap, None, offset=offset)
         out.update({
             "a": dict(compare.side_summary(a), path=str(capture_a), identity=_identity(sides["a"][2]), passes=sides["a"][1]),
             "b": dict(compare.side_summary(b), path=str(capture_b), identity=_identity(sides["b"][2]), passes=sides["b"][1]),
@@ -1233,7 +1399,7 @@ def compare_captures(path_a: str, path_b: str, imsi: str | None = None, msisdn: 
         return out
     return _guarded("compare_captures", {"path_a": path_a, "path_b": path_b, "imsi": imsi, "msisdn": msisdn,
                                          "imsi_b": imsi_b, "msisdn_b": msisdn_b, "collapse_repeats": collapse_repeats,
-                                         "limit": limit}, run)
+                                         "limit": limit, "offset": offset}, run)
 
 
 def _identity(ident: tuple[str | None, str | None]) -> dict[str, str] | None:
@@ -1500,7 +1666,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-packets", type=int, default=None, help="matching packets dissected in full per call (default 500)")
     p.add_argument("--max-scan-packets", type=int, default=None,
                    help="frames read from a capture per tshark run, and matching packets kept by the aggregating tools (default 200000)")
-    p.add_argument("--max-output-kb", type=float, default=None, help="JSON bytes returned per call (default 200)")
+    p.add_argument("--max-output-kb", type=float, default=None, help="JSON bytes returned per call (default 30); rows beyond it go to the next page")
     p.add_argument("--timeout", type=float, default=None, help="seconds per tshark run (default 60)")
     p.add_argument("--max-files", type=int, default=None, help="capture files one find_identifier call may open (default 50)")
     p.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
