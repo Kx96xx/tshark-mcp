@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twenty-seven narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent twenty-eight narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -309,7 +309,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 470 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 483 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP and RFC 4733 events (loss,

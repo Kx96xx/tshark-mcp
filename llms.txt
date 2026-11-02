@@ -1,6 +1,6 @@
 # tshark-mcp
 
-> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Twenty-seven tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP, RTP/RTCP, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes and TCP response times, pair requests with answers, name result codes and flag what never got a reply, and say whether the capture itself can be trusted for loss conclusions. It cannot capture, write, export, resolve names or load code.
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Twenty-eight tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes and TCP response times, pair requests with answers, name result codes and flag what never got a reply, and say whether the capture itself can be trusted for loss conclusions. It cannot capture, write, export, resolve names or load code.
 
 ## What it can and cannot do
 
