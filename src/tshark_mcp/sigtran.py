@@ -266,12 +266,28 @@ def _link_transactions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             begin.pop("unanswered", None)
             begin["answered_in_frame"] = row["frame"]
             row["in_response_to_frame"] = begin["frame"]
+            _name_results(row, begin)
             if row.get("tcap") == "end":
                 t0, t1 = parse_time(begin["time"].replace("Z", "+00:00")) if begin.get("time") else None, None
                 t1 = parse_time(row["time"].replace("Z", "+00:00")) if row.get("time") else None
                 if t0 is not None and t1 is not None:
                     row["rtt_ms"] = round((t1 - t0) * 1000.0, 3)
     return rows
+
+
+def _name_results(reply: dict[str, Any], begin: dict[str, Any]) -> None:
+    """A returnResult or returnError need not repeat the operation code (a
+    mo-forwardSM result usually does not); take it from the invoke with the same
+    invoke id in the Begin it answers."""
+    invokes = {c.get("invoke_id"): c for c in begin.get("components", []) if c.get("type") == "invoke"}
+    for comp in reply.get("components", []):
+        if comp.get("type") == "invoke" or comp.get("operation") or comp.get("invoke_id") is None:
+            continue
+        invoke = invokes.get(comp["invoke_id"])
+        if invoke and invoke.get("operation"):
+            comp["operation"] = invoke["operation"]
+            if invoke.get("opcode") is not None:
+                comp.setdefault("opcode", invoke["opcode"])
 
 
 def transaction_ids(rows: list[dict[str, Any]]) -> set[str]:
