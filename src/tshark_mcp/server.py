@@ -198,7 +198,7 @@ class Scan:
 
 
 def _fields_core(capture: Path, display_filter: str | None, fields: list[str], max_matched: int,
-                 aggregator: str) -> tuple[list[tuple[int | None, str]], Scan]:
+                 aggregator: str, timeout: float | None = None) -> tuple[list[tuple[int | None, str]], Scan]:
     """Run ``-T fields`` under the frame-read cap; return (frame, line) pairs for the kept matches."""
     st = state()
     read_cap = st.limits.max_scan_packets
@@ -211,7 +211,7 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
     args = ["-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", "-E", f"aggregator={aggregator}"]
     for f in columns:
         args += ["-e", f]
-    result = check_result(st.runner.read_capture(capture, args, max_packets=sentinel, display_filter=flt))
+    result = check_result(st.runner.read_capture(capture, args, max_packets=sentinel, display_filter=flt, timeout=timeout))
     scan = Scan(match_cap=max_matched, read_cap=read_cap)
     kept: list[tuple[int | None, str]] = []
     for line in result.stdout.splitlines():
@@ -233,9 +233,9 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
 
 
 def _fields_run(capture: Path, display_filter: str | None, fields: list[str], max_matched: int,
-                aggregator: str = ",") -> tuple[str, Scan]:
+                aggregator: str = ",", timeout: float | None = None) -> tuple[str, Scan]:
     """``-T fields`` output (one line per kept packet, ``fields`` columns) and the scan summary."""
-    kept, scan = _fields_core(capture, display_filter, fields, max_matched, aggregator)
+    kept, scan = _fields_core(capture, display_filter, fields, max_matched, aggregator, timeout)
     stdout = "".join(body + "\n" for _, body in kept)
     return stdout, scan
 
@@ -626,9 +626,14 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             scanned += 1
             try:
                 capture = st.allowlist.resolve(str(candidate), st.limits)
-                stdout, scan = _fields_run(capture, flt, fields, st.limits.max_scan_packets)
+                # Each run gets only what is left of the shared budget.
+                stdout, scan = _fields_run(capture, flt, fields, st.limits.max_scan_packets,
+                                           timeout=deadline - _now())
             except ToolError as exc:
                 errors.append({"path": str(candidate), "error": exc.type, "message": exc.message})
+                if exc.type == "timeout":
+                    truncated_reason = f"time budget of {st.limits.timeout_seconds}s used up while reading this file"
+                    break
                 continue
             summary = search.summarise_hits(stdout, protocol_col)
             if summary["hits"] == 0:

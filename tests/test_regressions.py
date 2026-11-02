@@ -353,3 +353,38 @@ class TestFindIdentifierFrameCap:
         srv = configure(allow=[str(tmp_path)])
         result = srv.find_identifier(str(padded), "001019999999999")
         assert "partially_scanned" not in result and "truncated" not in result
+
+
+# ------------------------------------------- find_identifier keeps to its shared time budget
+def test_find_identifier_does_not_overrun_the_shared_time_budget(tmp_path: Path):
+    import sys
+    import textwrap
+    import time
+
+    from tshark_mcp import server as server_module
+
+    caps = tmp_path / "caps"
+    caps.mkdir()
+    for name in ("a.pcap", "b.pcap"):
+        (caps / name).write_bytes(b"\x00" * 64)
+    fake = tmp_path / "fake-tshark"
+    # The filter dry run and the field list return at once; a.pcap takes 1.5 s, b.pcap hangs.
+    fake.write_text(f"#!{sys.executable}\nimport sys, time\n" + textwrap.dedent("""
+        argv = sys.argv[1:]
+        if "-G" in argv or "-" in argv:
+            sys.exit(0)
+        time.sleep(1.5 if any(a.endswith("a.pcap") for a in argv) else 30)
+    """))
+    fake.chmod(0o755)
+    server_module.configure([str(caps)], limits=Limits(timeout_seconds=3.0), tshark=str(fake))
+    try:
+        started = time.monotonic()
+        result = server_module.find_identifier(str(caps), "001010123456789")
+        elapsed = time.monotonic() - started
+    finally:
+        server_module._STATE = None
+    # Before the fix b.pcap got a fresh 3 s and the call took about 4.5 s.
+    assert elapsed < 3.8, elapsed
+    assert result["files_scanned"] == 2
+    assert [e["error"] for e in result["errors"]] == ["timeout"]
+    assert result["truncated"] is True and "time budget" in result["truncated_reason"]
