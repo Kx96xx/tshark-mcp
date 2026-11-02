@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 279 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 286 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -82,7 +82,7 @@ Tests: 279 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `gtpv1_sessions(path, imsi, apn, teid, filter, limit)` | GTPv1-C (Gn/Gp) requests paired with responses by sequence and peer (across a proxy too, with `response_path`): Create/Update/Delete PDP Context and the rest, IMSI, MSISDN, APN, NSAPI, RAT type, IMEISV, TEID-C/TEID-U and GSN address on each side, end-user address, cause code and name, RTT, `unanswered`, and the same proxy-chain fields as gtp_sessions |
 | `gtp_user_plane(path, teid, limit)` | GTP-U per TEID: packets, bytes, first/last time, outer endpoints, inner IP addresses |
 | `gtp_tunnel_health(path, teid, mtu, limit)` | User-plane health per GTP-U tunnel from the packets inside it: inner TCP flows, SYN/SYN-ACK MSS, retransmissions and their share of data segments, out-of-order segments, keep-alives, duplicate ACKs, zero windows, resets; inner ICMP by type with the fragmentation-needed MTU; largest outer and inner packets, tunnel overhead and DF packets above `mtu`; whether the reverse direction carries traffic; `issues` in plain words; ICMP errors sent about the tunnel packets themselves (`outer_icmp`). Copies of the same packet (a capture on several interfaces) are counted once |
-| `message_rates(path, protocol, interval, imsi, filter, burst_min, storm_min, limit)` | Diameter, GTPv2-C, SIP and MAP messages counted by name per interval: total and distinct (a message seen on both legs of a relay or retransmitted counts once), peak and when, mean rate; `bursts` (three times the usual rate or more), `subscriber_loops` (one subscriber repeating a request, with the gap between repeats and whether it is regular), a per-interval `timeline` and one-line `storms` |
+| `message_rates(path, protocol, interval, imsi, filter, burst_min, storm_min, limit)` | Diameter, GTPv2-C, GTPv1-C, SIP and MAP messages counted by name per interval: total and distinct (a message seen on both legs of a relay or retransmitted counts once), peak and when, mean rate; `bursts` (three times the usual rate or more), `subscriber_loops` (one subscriber repeating a request, with the gap between repeats and whether it is regular), a per-interval `timeline` and one-line `storms`. MAP messages are tied to the IMSI named anywhere in their TCAP dialogue, GTP responses to the IMSI of their request |
 | `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -175,7 +175,7 @@ message_rates(path="/pcaps/dra.pcap", interval=10)
 -> {"messages": 577, "distinct_messages": 317, "copies": 260,
     "by_message": [{"message": "AIR", "total": 113, "distinct": 57, "peak": 2, ...}, ...],
     "subscriber_loops": [{"subscriber": "001010123456789", "message": "PUR", "count": 6, "median_gap_s": 10.0, "regular": true}],
-    "storms": ["001010123456789 sent 6 ULR over 50.0 s, about every 10.0 s", ...]}
+    "storms": ["6 ULR for 001010123456789 over 50.0 s, about every 10.0 s", ...]}
 ```
 
 Top talkers on the Diameter port only:
@@ -242,7 +242,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 279 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 286 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
