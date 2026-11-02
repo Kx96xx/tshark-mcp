@@ -354,6 +354,7 @@ def build_streams(rtp: list[dict[str, Any]], rtcp: list[dict[str, Any]], sdps: l
             "clock_rate": rate,
             "payload_types": dict(sorted((str(k), v) for k, v in pt_counts.items())) if len(pt_counts) > 1 else None,
             "first_time": iso(first_time), "last_time": iso(last_time), "duration_s": duration,
+            "first_frame": pkts[0]["frame"], "last_frame": pkts[-1]["frame"],
             "packets": len(pkts), **seq, "lost_pct": lost_pct,
             **timing,
             "telephone_event_packets": sum(1 for p in pkts if p["pt"] in event_pts) or None,

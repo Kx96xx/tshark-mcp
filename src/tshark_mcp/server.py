@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, expert, gtp, gtpv1, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
 from .fields import (
     compact, dicts_with, field_catalogue, iso, parse_packets, parse_time, split_fields_line, to_int, validate_fields,
 )
@@ -52,8 +52,9 @@ gtpv1_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, 
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
-up). For voice quality, rtp_streams gives per-stream loss, jitter, RTCP and a
-labelled MOS estimate linked to the SIP Call-ID.
+up). media_path_check explains one-way audio and 488s. For voice quality,
+rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
+linked to the SIP Call-ID.
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
@@ -70,7 +71,8 @@ arguments for the next page. "truncated": true always says why and how to get
 the rest; total_is_lower_bound means a packet or frame cap stopped the scan, so
 narrow the filter instead of paging. Rows carry frame numbers (frame,
 request_frame, answer_frame, first_frame, ...): cite them, and open one with
-packet_detail to check a claim against the full dissection.
+packet_detail to check a claim against the full dissection. expert_info lists
+tshark's own warnings and malformed packets: check it when a decode looks wrong.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -725,6 +727,41 @@ def _bounded_layers(tree: dict[str, Any], cap: int) -> tuple[dict[str, Any], int
     return out, counter["kept"], counter["dropped"], counter["shortened"]
 
 
+@app.tool(title="Expert info (warnings, malformed packets)", annotations=READ_ONLY)
+def expert_info(path: str, severity: str = "warn", filter: str | None = None, limit: int = 100,
+                offset: int = 0) -> models.ExpertInfoResult:
+    """tshark's own expert information (`-z expert`): the warnings, errors and
+    malformed-packet flags its dissectors raised while decoding, grouped by severity,
+    group (Malformed, Undecoded, Sequence, Protocol, Checksum, ...), protocol and summary,
+    with the count, the first frame and up to five sample frames of each (an item tshark
+    reports only to its statistics, such as TCP "exceeds MSS", has no frames). `severity` is
+    the lowest level kept: error, warn (default), note or chat. `filter` is a display
+    filter that restricts which packets are examined, e.g. `diameter` or
+    `sctp.port == 3868`. `summary` gives counts by severity and protocol and the number
+    of malformed frames. Use it to catch decode problems (a malformed Diameter AVP, an
+    unknown vendor, a GTP IE tshark could not parse) before trusting the protocol
+    tools, and for the TCP sequence problems tshark already flags."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if severity not in expert.SEVERITIES:
+            raise ToolError("invalid_argument", f"severity must be one of {', '.join(expert.SEVERITIES)}")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        flt = _filter(filter)
+        stat = check_result(st.runner.read_capture(capture, ["-q", "-z", expert.stat_arg(severity, flt)],
+                                                   max_packets=st.limits.max_scan_packets))
+        rows = expert.parse_stat(stat.stdout)
+        found_flt = f"_ws.expert && ({flt})" if flt else "_ws.expert"
+        stdout, scan = _fields_run(capture, found_flt, expert.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=expert.AGGREGATOR)
+        frames = expert.parse_frames(stdout)
+        rows = expert.merge(rows, frames)
+        return _envelope("items", rows, cap, scan, offset=offset, severity=severity, display_filter=flt,
+                         summary=expert.summarise(rows, frames))
+    return _guarded("expert_info", {"path": path, "severity": severity, "filter": filter, "limit": limit,
+                                    "offset": offset}, run)
+
+
 DEFAULT_FIELDS = ["frame.number", "frame.time_epoch", "ip.src", "ip.dst", "_ws.col.protocol", "_ws.col.info"]
 
 
@@ -1359,8 +1396,8 @@ def _media_addresses(sdps: list[dict[str, Any]]) -> set[str]:
 
     out = set()
     for entry in sdps:
-        for media in entry["sdp"]["media"]:
-            addr = media.get("address")
+        for section in entry["sdp"]["media"]:
+            addr = section.get("address")
             try:
                 out.add(str(ipaddress.ip_address(addr)))
             except (TypeError, ValueError):
@@ -1385,6 +1422,41 @@ def _rtp_pass(capture: Path, sdps: list[dict[str, Any]], cid: str | None, heuris
                                extra_args=rtp.HEURISTIC_ARGS if heuristic else ())
     packets, reports = rtp.parse(stdout)
     return packets, reports, scan, flt
+
+
+@app.tool(title="Media path check (one-way audio, 488)", annotations=READ_ONLY)
+def media_path_check(path: str, call_id: str, heuristic: bool = False) -> models.MediaPathCheckResult:
+    """Check one call's media path: the SDP offer and answer (the last completed
+    exchange, so a re-INVITE wins) against the RTP actually captured in each direction.
+    `directions` gives, for offerer to answerer and back, the expected source and
+    destination from the SDP, the streams seen and a status: as negotiated, arrives from
+    another source (NAT or relay), sent elsewhere, or missing. `issues` explain one-way
+    or no audio and failed calls: no_rtp, one_way_media, source_differs_from_sdp,
+    nat_not_latched (a private SDP address whose far end keeps sending to it),
+    rtp_to_wrong_address, private_sdp_address, media_direction (sendonly, recvonly,
+    inactive), media_rejected (port 0), payload_type_not_negotiated, codec_mismatch
+    (no codec in common between the offer and the answer, or the SDP of a 488) and
+    no_answer. `verdict` is the most telling issue in one sentence. RTP to or from the
+    call's SDP addresses is read; `heuristic: true` also decodes RTP that no SDP in the
+    capture set up."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        cid = lint_quoted_value(call_id, "call_id")
+        _, sdps, sip_scan = _sip_media(capture, cid)
+        packets, reports, scan, flt = _rtp_pass(capture, sdps, cid, bool(heuristic), None)
+        streams = [s for s in rtp.build_streams(packets, reports, sdps, sip.media_endpoints(sdps))
+                   if s.get("call_id") == cid]
+        out = media.check(cid, sdps, streams)
+        out["found"] = bool(sdps) or bool(streams)
+        merged = _merge_scans(sip_scan, scan) if scan else sip_scan
+        out["packets_scanned"] = merged.matched
+        if merged.truncated:
+            out["truncated"] = True
+            out["truncated_reason"] = merged.reason()
+        if flt:
+            out["display_filter"] = flt
+        return out
+    return _guarded("media_path_check", {"path": path, "call_id": call_id, "heuristic": heuristic}, run)
 
 
 def _calls_media(sdps: list[dict[str, Any]]) -> list[dict[str, Any]]:

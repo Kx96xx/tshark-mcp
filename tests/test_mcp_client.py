@@ -23,7 +23,7 @@ EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check",
 }
 
 
@@ -60,6 +60,8 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("tcp_health", {"path": f"{d}/sip.pcap"}),
         ("sip_call_detail", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
         ("packet_detail", {"path": f"{d}/diameter.pcap", "frame": 1, "layers": ["diameter"]}),
+        ("expert_info", {"path": f"{d}/all.pcap", "severity": "note"}),
+        ("media_path_check", {"path": f"{d}/voice/voice_problems.pcap", "call_id": pcapgen.CALL_ID_NAT}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),

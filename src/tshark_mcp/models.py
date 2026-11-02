@@ -300,6 +300,33 @@ class PacketDetailResult(ToolResult, total=False):
     malformed: bool
 
 
+class ExpertItem(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    severity: str
+    group: str
+    protocol: str
+    summary: str
+    count: int
+    first_frame: int
+    frames: list[int]
+    frame_count: int
+
+
+class ExpertSummary(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    by_severity: dict[str, int]
+    by_protocol: dict[str, int]
+    malformed_frames: int
+    malformed_first_frames: list[int]
+
+
+class ExpertInfoResult(RowsResult, total=False):
+    items: list[ExpertItem]
+    severity: str
+    display_filter: str | None
+    summary: ExpertSummary
+
+
 class FilterPacketsResult(RowsResult, total=False):
     packets: list[dict[str, str]]
     fields: list[str]
@@ -760,6 +787,8 @@ class RtpStreamRow(TypedDict, total=False):
     first_time: str
     last_time: str
     duration_s: float
+    first_frame: int
+    last_frame: int
     packets: int
     expected: int
     lost: int
@@ -799,6 +828,35 @@ class RtpStreamsResult(RowsResult, total=False):
     mos_method: str
     display_filter: str | None
     notes: list[str]
+
+
+class MediaIssue(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    kind: str
+    detail: str
+
+
+class MediaDirection(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    direction: str
+    expected: str
+    status: str
+    streams: list[dict[str, Any]]
+
+
+class MediaPathCheckResult(ToolResult, total=False):
+    call_id: str
+    found: bool
+    offer: dict[str, Any]
+    answer: dict[str, Any]
+    failure_sdp: dict[str, Any]
+    common_codecs: list[str]
+    directions: list[MediaDirection]
+    issues: list[MediaIssue]
+    verdict: str
+    rtp_streams: int
+    packets_scanned: int
+    display_filter: str
 
 
 # ----------------------------------------------------------------- SCTP / SIGTRAN
