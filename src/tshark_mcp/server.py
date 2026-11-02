@@ -438,7 +438,9 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         flt = base
         if select:
             stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["diameter.Session-Id"], st.limits.max_scan_packets)
-            sessions = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
+            # A packet can bundle several messages; keep every Session-Id it carries and
+            # drop the sessions that turn out not to match once each message is dissected.
+            sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
             corr = diameter.correlation_filter(sessions)
             if corr is None:
                 return _envelope("sessions", [], cap, pre, summary={"sessions": 0, "unanswered": 0, "failed": 0,
@@ -446,8 +448,14 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
             flt = f"({base}) && ({corr})"
         packets, scan = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
         scan = _merge_scans(pre, scan)
-        txs = diameter.pair(diameter.extract_messages(packets))
+        messages = diameter.extract_messages(packets)
+        txs = diameter.pair(messages)
         rows, without = diameter.session_rows(txs)
+        if sid:
+            rows = [r for r in rows if r["session_id"] == sid]
+        if imsi_d:
+            mine = diameter.subscriber_sessions(messages, imsi_d, None, exact_imsi=True)
+            rows = [r for r in rows if r["session_id"] in mine]
         if code is not None:
             rows = [r for r in rows if code in r["request_codes"]]
         summary = {
@@ -710,13 +718,18 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
         flt = diameter.identity_filter(imsi_d, msisdn_d)
         if flt:
             stdout, scan = _fields_run(capture, flt, ["diameter.Session-Id"], st.limits.max_scan_packets)
-            sessions = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
-            notes["diameter"] = {"sessions": len(sessions), "truncated": scan.truncated}
+            sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
+            notes["diameter"] = {"sessions": 0, "truncated": scan.truncated}
         corr = diameter.correlation_filter(sessions)
         if corr:
             packets, scan = _json_run(capture, corr, diameter.JSON_LAYERS, st.limits.max_packets)
-            for tx in diameter.pair(diameter.extract_messages(packets)):
+            messages = diameter.extract_messages(packets)
+            mine = diameter.subscriber_sessions(messages, imsi_d, msisdn_d)
+            notes["diameter"]["sessions"] = len(mine)
+            for tx in diameter.pair(messages):
                 row = diameter.transaction_row(tx)
+                if row.get("session_id") not in mine:
+                    continue
                 timeline.append(_timeline_row("diameter", row, message=f'{row.get("request")}/{row.get("answer") or "-"}',
                                               detail=row.get("command"), result=row.get("result"),
                                               identity=row.get("user_name"), extra={"application": row.get("application"),

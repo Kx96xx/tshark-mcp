@@ -221,6 +221,8 @@ def extract_messages(packets: list[Json]) -> list[Message]:
                 "destination_host": first(msg, "diameter.Destination-Host"),
                 "destination_realm": first(msg, "diameter.Destination-Realm"),
                 "user_name": first(msg, "diameter.User-Name"),
+                "public_identity": first(msg, "diameter.Public-Identity"),
+                "msisdn_raw": first(msg, "diameter.MSISDN"),
                 "result_code": to_int(first(msg, "diameter.Result-Code")),
                 "experimental_result_code": to_int(first(msg, "diameter.Experimental-Result-Code")),
                 "error_flag": first(msg, "diameter.flags.error") == "1",
@@ -298,6 +300,33 @@ def _is_success(rc: int | None, erc: int | None) -> bool:
 
 def _hex(value: int | None) -> str | None:
     return None if value is None else f"0x{value:08x}"
+
+
+def subscriber_sessions(messages: list[Message], imsi: str | None, msisdn: str | None,
+                        exact_imsi: bool = False) -> set[str]:
+    """Session-Ids of the messages that themselves name the subscriber.
+
+    Several Diameter messages can share one SCTP packet, so a packet that matched an
+    identity filter may also carry other subscribers' sessions; only the sessions
+    whose own messages carry the IMSI (User-Name) or MSISDN (User-Name,
+    Public-Identity or MSISDN AVP) belong to the subscriber.
+    """
+    tbcd = _tbcd_bytes(msisdn).lower() if msisdn else None
+    found: set[str] = set()
+    for m in messages:
+        sid = m.fields.get("session_id")
+        if not sid:
+            continue
+        user = m.fields.get("user_name") or ""
+        hit = False
+        if imsi:
+            hit = user == imsi if exact_imsi else imsi in user
+        if not hit and msisdn:
+            hit = (msisdn in user or msisdn in (m.fields.get("public_identity") or "")
+                   or (m.fields.get("msisdn_raw") or "").lower() == tbcd)
+        if hit:
+            found.add(sid)
+    return found
 
 
 def session_ids(messages: list[Message]) -> set[str]:
@@ -430,5 +459,5 @@ def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]],
 __all__ = [
     "APPLICATIONS", "COMMANDS", "EXPERIMENTAL_RESULT_CODES", "JSON_LAYERS", "LAYER", "RESULT_CODES",
     "all_values", "Json", "command_name", "correlation_filter", "extract_messages", "identity_filter", "pair",
-    "session_filter", "session_ids", "session_rows", "transaction_row",
+    "session_filter", "session_ids", "session_rows", "subscriber_sessions", "transaction_row",
 ]
