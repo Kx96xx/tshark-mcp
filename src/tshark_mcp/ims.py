@@ -528,6 +528,8 @@ def _registration(u: dict[str, Any], capture_end: float | None) -> dict[str, Any
         "transactions": _steps(own),
         "third_party": third,
     })
+    if "reasons" not in row:  # always present, right after the verdict
+        row = {k: v for pair in row.items() for k, v in ((pair,) if pair[0] != "verdict" else (pair, ("reasons", reasons)))}
     if probe is not None and verdict != "challenge-loop":
         probe["final"] = verdict == "failed"
         row["_esp_probe"] = probe

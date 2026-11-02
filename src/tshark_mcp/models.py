@@ -1077,6 +1077,54 @@ class ImsRegistrationResult(RowsResult, total=False):
     capture_end: str
 
 
+class SmsAck(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    rp_message: str
+    frame: int
+    time: str
+    call_id: str
+    delay_ms: float
+    rp_cause: int
+    rp_cause_name: str
+    tpdu: dict[str, Any]
+    sip_response: int
+    sip_response_frame: int
+    no_sip_response: bool
+    retransmissions: int
+
+
+class SmsOverImsRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    time: str
+    frame: int
+    direction: str
+    rp_message: str
+    rp_mr: int
+    call_id: str
+    request_uri: str
+    smsc_digits: str
+    tpdu: dict[str, Any]
+    status_report_of_frame: int
+    sip_response: int
+    sip_response_frame: int
+    sip_response_ms: float
+    other_leg_statuses: list[int]
+    legs: int
+    retransmissions: int
+    copies: int
+    ack: SmsAck
+    status_report: dict[str, Any]
+    ue_registration: dict[str, Any]
+    verdict: str
+    reasons: list[str]
+
+
+class SmsOverImsResult(RowsResult, total=False):
+    messages: list[SmsOverImsRow]
+    summary: dict[str, Any]
+    capture_end: str
+
+
 # ----------------------------------------------------------------- SCTP / SIGTRAN
 class SctpAssociationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
