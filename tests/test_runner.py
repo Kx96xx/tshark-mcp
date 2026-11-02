@@ -4,7 +4,6 @@ filter dry run uses the real binary when it is installed."""
 
 from __future__ import annotations
 
-import os
 import sys
 import textwrap
 from pathlib import Path

@@ -1,0 +1,40 @@
+# tshark-mcp
+
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Twelve tools return compact JSON for Diameter, GTPv2-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
+
+## What it can and cannot do
+
+- Reads capture files that already exist inside directories the operator allowed with `--allow-dir`. Every path an agent passes must resolve (symlinks followed) inside one of them; anything else is refused before the file is looked at.
+- Every call is bounded: file size (500 MB), packets dissected (500 per call, 20 000 for aggregating tools), JSON returned (200 KB, rows are dropped and `truncated: true` is set), tshark run time (60 s), files opened by one multi-file call (50).
+- tshark is started with an argv list, never a shell, always with `-n` (no name resolution) and `-r` (read a file). Capture, write, export and extension flags are refused before a process starts.
+- Display filters are linted and compiled against an empty capture before touching the real file. Field names must exist in `tshark -G fields`.
+- Failures come back as `{"error": {"type": ..., "message": ...}}`, never as exceptions.
+- Every call is written to a JSON-lines audit log when `--log-file` is set.
+- Supported transport: stdio. `--transport streamable-http` exists for local experiments only and has no authentication.
+
+## Tools
+
+- `find_identifier(path, identifier, kind="auto", max_files=20)`: which files in a directory mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id; hit counts, first/last timestamps, protocol breakdown per file. Call this first when you do not know which capture to open.
+- `pcap_info(path)`: packet count, duration, first/last timestamp, link type, protocol hierarchy, active limits. Call this first on a file.
+- `conversations(path, layer="ip", filter=None, limit=200)`: top talkers at ip, ipv6, tcp, udp, sctp or eth, optionally restricted by a display filter.
+- `filter_packets(path, display_filter, fields=None, limit=200)`: rows of fields for packets matching a display filter; the escape hatch for anything the protocol tools do not cover.
+- `diameter_sessions(path, session_id=None, imsi=None, command_code=None, filter=None, limit=200)`: Diameter grouped by Session-Id with the paired transactions, result codes, unanswered and failed counts.
+- `diameter_transactions(path, filter=None, limit=200)`: every Diameter request paired with its answer by Hop-by-Hop id.
+- `gtp_sessions(path, imsi=None, apn=None, teid=None, filter=None, limit=200)`: GTPv2-C requests paired with responses by sequence number; IMSI, APN, F-TEIDs, cause, PAA.
+- `gtp_user_plane(path, teid=None, limit=200)`: GTP-U packets and bytes per tunnel endpoint id with inner addresses.
+- `sip_dialogs(path, call_id=None, number=None, method=None, filter=None, limit=200)`: SIP grouped by Call-ID with the method chain, From/To, final status, time to final response and duration.
+- `sctp_associations(path, limit=200)`: SCTP handshake state, heartbeats, retransmissions, aborts per endpoint pair.
+- `sigtran_messages(path, filter=None, limit=200)`: M3UA/SCCP/TCAP/MAP messages with global titles, operation names, IMSI and MSISDN.
+- `trace_subscriber(path, imsi=None, msisdn=None, limit=300)`: one time-ordered timeline for a subscriber across Diameter, GTPv2-C, MAP and SIP. Start here for "why did subscriber X fail".
+
+## How to work with it
+
+1. `find_identifier` on the directory, then `pcap_info` on the file it points at.
+2. `trace_subscriber` for the subscriber, then the protocol tool whose row needs more detail, using the structured filters (`imsi`, `session_id`, `call_id`, `teid`, `apn`, `method`) before raw display filters.
+3. `truncated: true` means a cap was reached: narrow the filter or lower `limit` rather than retrying the same call.
+4. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`.
+
+## Links
+
+- Source and README: https://github.com/Kx96xx/tshark-mcp
+- Worked example with real output shapes: https://github.com/Kx96xx/tshark-mcp/blob/main/docs/EXAMPLE.md

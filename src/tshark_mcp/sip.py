@@ -30,6 +30,21 @@ def identity_filter(imsi: str | None, msisdn: str | None) -> str | None:
     return " || ".join(parts) if parts else None
 
 
+def selection_filter(call_id: str | None, number: str | None, method: str | None) -> str | None:
+    """First-pass filter for ``sip_dialogs``: messages of the wanted Call-ID, carrying
+    the number in an identity header, or of the given method. Arguments must already
+    be linted. The caller then fetches the complete dialogs with
+    :func:`correlation_filter` so responses are not lost to the filter."""
+    parts = []
+    if call_id:
+        parts.append(f'sip.Call-ID == "{call_id}"')
+    if number:
+        parts.append("(" + (identity_filter(None, number) or "") + ")")
+    if method:
+        parts.append(f'(sip.Method == "{method}" || sip.CSeq.method == "{method}")')
+    return " && ".join(parts) if parts else None
+
+
 def correlation_filter(call_ids: set[str]) -> str | None:
     if not call_ids:
         return None
@@ -70,6 +85,7 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
                 "src": rec["ip.src"],
                 "dst": rec["ip.dst"],
                 "first_time": ts,
+                "last_time": ts,
                 "initial_method": None,
                 "initial_cseq": None,
                 "final_status": None,
@@ -95,6 +111,8 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
             "reason": rec["sip.Reason"] or None,
         })
         d["messages"].append(entry)
+        if ts is not None and (d["last_time"] is None or ts > d["last_time"]):
+            d["last_time"] = ts
         if (status is not None and status >= 200 and d["final_status"] is None
                 and cseq_method == d["initial_method"] and (d["initial_cseq"] is None or cseq == d["initial_cseq"])):
             d["final_status"] = status
@@ -105,9 +123,13 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
         if d["final_time"] is not None and d["first_time"] is not None:
             ttf = round((d["final_time"] - d["first_time"]) * 1000.0, 3)
         methods = [m["method"] for m in d["messages"] if m.get("method")]
+        duration = None
+        if d["last_time"] is not None and d["first_time"] is not None:
+            duration = round((d["last_time"] - d["first_time"]) * 1000.0, 3)
         rows.append(compact({
             "call_id": d["call_id"],
             "time": iso(d["first_time"]),
+            "duration_ms": duration,
             "src": d["src"],
             "dst": d["dst"],
             "initial_method": d["initial_method"],

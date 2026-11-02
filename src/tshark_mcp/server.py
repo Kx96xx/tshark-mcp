@@ -1,6 +1,6 @@
 """tshark-mcp: read-only packet capture analysis for LLM agents.
 
-The MCP app and the ten tools live here. Every tool goes through
+The MCP app and the twelve tools live here. Every tool goes through
 :func:`_guarded`, which resolves the capture path against the allowlist,
 converts failures into structured errors, trims oversized results and writes a
 JSON-lines audit record.
@@ -18,25 +18,36 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, diameter, gtp, sigtran, sip
+from . import __version__, diameter, gtp, models, search, sigtran, sip
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
-from .limits import Allowlist, Limits, ToolError, clamp_limit, lint_digits, lint_display_filter, lint_field_name
+from .limits import (
+    Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
+    lint_quoted_value, lint_sip_method, lint_teid,
+)
 from .runner import Runner, check_result
+
+from mcp.types import ToolAnnotations
 
 try:  # mcp >= 2.0 renamed FastMCP to MCPServer; the decorator API is the same.
     from mcp.server.mcpserver import MCPServer as _Server
 except ImportError:  # pragma: no cover - mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server  # type: ignore[no-redef]
 
+# Every tool reads an existing file and nothing else: the same call on the same
+# file gives the same answer, and no tool reaches outside the allowed directories.
+READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+
 INSTRUCTIONS = """\
 Read-only analysis of existing packet captures with tshark. Captures must live
 inside the allowed directories (see the error message if a path is refused).
 Every call is bounded: file size, packets dissected, output bytes and run time.
-Start with pcap_info, then use the protocol tools. For "why did subscriber X
-fail" questions call trace_subscriber first, then drill into
-diameter_transactions, gtp_sessions, sigtran_messages or sip_dialogs with a
-display filter. Results are JSON; "truncated": true means a cap was reached and
-you should narrow the filter.
+When you do not know which file holds the subscriber, call find_identifier on
+the directory first. Start on a file with pcap_info, then use the protocol
+tools. For "why did subscriber X fail" questions call trace_subscriber first,
+then drill into diameter_sessions, diameter_transactions, gtp_sessions,
+sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
+call_id, ...) or a display filter. Results are JSON; "truncated": true means a
+cap was reached and you should narrow the filter.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -52,6 +63,7 @@ class ServerState:
 
 
 _STATE: ServerState | None = None
+_now = time.monotonic  # separable so tests can exhaust the multi-file time budget without slowing tshark
 
 
 def configure(allow_dirs: list[str] | tuple[str, ...], limits: Limits | None = None, tshark: str | None = None,
@@ -162,7 +174,7 @@ def _json_run(capture: Path, display_filter: str | None, layers: str, max_packet
 
 def _fields_run(capture: Path, display_filter: str | None, fields: list[str], max_packets: int,
                 aggregator: str = ",") -> tuple[str, int, bool]:
-    args = ["-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", f"-E", f"aggregator={aggregator}"]
+    args = ["-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", "-E", f"aggregator={aggregator}"]
     for f in fields:
         args += ["-e", f]
     result = check_result(state().runner.read_capture(capture, args, max_packets=max_packets, display_filter=display_filter))
@@ -183,8 +195,8 @@ def _envelope(rows_key: str, rows: list[dict[str, Any]], limit: int, scanned: in
 
 
 # ------------------------------------------------------------------ tools
-@app.tool()
-def pcap_info(path: str) -> dict[str, Any]:
+@app.tool(title="Capture summary", annotations=READ_ONLY)
+def pcap_info(path: str) -> models.PcapInfoResult:
     """Summarise a capture file: packet count, duration, first/last timestamp, size,
     link type and the top protocol-hierarchy entries. Call this first to learn what a
     capture contains before choosing a protocol tool. `path` must be inside an allowed
@@ -208,25 +220,34 @@ def pcap_info(path: str) -> dict[str, Any]:
     return _guarded("pcap_info", {"path": path}, run)
 
 
-@app.tool()
-def conversations(path: str, layer: str = "ip", limit: int = 200) -> dict[str, Any]:
-    """List conversations (endpoint pairs) at one layer: `layer` is one of ip, ipv6, tcp,
+CONVERSATION_LAYERS = ("ip", "ipv6", "tcp", "udp", "sctp", "eth")
+
+
+@app.tool(title="Conversations (top talkers)", annotations=READ_ONLY)
+def conversations(path: str, layer: str = "ip", filter: str | None = None, limit: int = 200) -> models.ConversationsResult:
+    """List conversations (top talkers) at one layer: `layer` is one of ip, ipv6, tcp,
     udp, sctp or eth. Each row has both endpoints, frames and bytes in each direction,
-    start time and duration. Sorted by total frames, capped at `limit`."""
+    totals, relative start time and duration. `filter` is an optional display filter
+    that restricts which packets are counted, e.g. `gtp` or `sctp.port == 3868`.
+    Sorted by total frames, capped at `limit`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
-        if layer not in ("ip", "ipv6", "tcp", "udp", "sctp", "eth"):
-            raise ToolError("invalid_argument", "layer must be one of ip, ipv6, tcp, udp, sctp, eth")
+        if layer not in CONVERSATION_LAYERS:
+            raise ToolError("invalid_argument", f"layer must be one of {', '.join(CONVERSATION_LAYERS)}")
         cap = clamp_limit(limit, state().limits.max_packets, 200)
-        result = check_result(state().runner.read_capture(capture, ["-q", "-z", f"conv,{layer}"]))
+        flt = _filter(filter)
+        stat = f"conv,{layer}" + (f",{flt}" if flt else "")
+        result = check_result(state().runner.read_capture(capture, ["-q", "-z", stat]))
         rows = _parse_conversations(result.stdout)
         rows.sort(key=lambda r: -r["frames_total"])
-        return _envelope("conversations", rows, cap, None, False, layer=layer)
-    return _guarded("conversations", {"path": path, "layer": layer, "limit": limit}, run)
+        return _envelope("conversations", rows, cap, None, False, layer=layer, display_filter=flt,
+                         total_frames=sum(r["frames_total"] for r in rows),
+                         total_bytes=sum(r["bytes_total"] for r in rows))
+    return _guarded("conversations", {"path": path, "layer": layer, "filter": filter, "limit": limit}, run)
 
 
-@app.tool()
-def filter_packets(path: str, display_filter: str, fields: list[str] | None = None, limit: int = 200) -> dict[str, Any]:
+@app.tool(title="Filter packets", annotations=READ_ONLY)
+def filter_packets(path: str, display_filter: str, fields: list[str] | None = None, limit: int = 200) -> models.FilterPacketsResult:
     """Return packets matching a Wireshark display filter as rows of fields. Default
     fields: frame.number, frame.time_epoch, ip.src, ip.dst, _ws.col.protocol, _ws.col.info.
     Pass `fields` (tshark field names such as "diameter.cmd.code") to choose your own;
@@ -267,8 +288,17 @@ def _default_fields(runner: Runner) -> list[str]:
     return out
 
 
-@app.tool()
-def diameter_transactions(path: str, filter: str | None = None, limit: int = 200) -> dict[str, Any]:
+def _protocol_column(runner: Runner) -> str | None:
+    """The protocol column field under whichever name this tshark knows, or None."""
+    catalogue = field_catalogue(runner)
+    for name in ("_ws.col.protocol", "_ws.col.Protocol"):
+        if name in catalogue:
+            return name
+    return None
+
+
+@app.tool(title="Diameter transactions", annotations=READ_ONLY)
+def diameter_transactions(path: str, filter: str | None = None, limit: int = 200) -> models.DiameterTransactionsResult:
     """Pair Diameter requests with their answers (Hop-by-Hop + End-to-End id, checked
     against Session-Id). Each transaction gives command code and name (ULR/ULA, AIR/AIA,
     CCR/CCA, ...), application, origin/destination host and realm, User-Name (IMSI),
@@ -288,28 +318,101 @@ def diameter_transactions(path: str, filter: str | None = None, limit: int = 200
     return _guarded("diameter_transactions", {"path": path, "filter": filter, "limit": limit}, run)
 
 
-@app.tool()
-def gtp_sessions(path: str, filter: str | None = None, limit: int = 200) -> dict[str, Any]:
-    """Pair GTPv2-C requests with responses by sequence number and peer pair. Reports
-    message names (Create Session, Modify Bearer, Delete Session, Echo, ...), IMSI, MSISDN,
-    APN, F-TEIDs with interface names, cause code and name, allocated UE address (PAA),
-    round-trip ms and `unanswered: true`. `filter` is ANDed with `gtpv2`, e.g.
-    `e212.imsi == "001010123456789"` or `gtpv2.message_type == 32`."""
+@app.tool(title="Diameter sessions", annotations=READ_ONLY)
+def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None = None,
+                      command_code: int | None = None, filter: str | None = None, limit: int = 200) -> models.DiameterSessionsResult:
+    """Group Diameter traffic by Session-Id. Each session gives the application, origin
+    and destination hosts and realms, User-Name (IMSI), first/last timestamp and duration,
+    the request and answer command codes seen, every Result-Code or Experimental-Result-Code,
+    counts of unanswered and failed transactions, the worst round-trip, and the list of
+    transactions (request paired with its answer by Hop-by-Hop id, with RTT). Narrow with
+    `session_id` (exact), `imsi` (User-Name digits) or `command_code` (e.g. 316 for ULR):
+    matching messages select the sessions, then every message of those sessions is
+    fetched so answers are not lost. `filter` is an extra display filter ANDed with
+    `diameter`. Messages without a Session-Id (DWR, CER) are counted, not listed."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
-        flt = _filter(filter, base="gtpv2")
+        sid = lint_quoted_value(session_id, "session_id") if session_id else None
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        code = None
+        if command_code is not None:
+            code = to_int(str(command_code))
+            if code is None or code < 0 or code > 0xFFFFFF:
+                raise ToolError("invalid_argument", f"command_code must be a 24-bit integer, got {command_code!r}")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        packets, hit = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
+        base = _filter(filter, base="diameter")
+        select = diameter.session_filter(sid, imsi_d, code)
+        hit = False
+        flt = base
+        if select:
+            stdout, _, hit = _fields_run(capture, f"({base}) && ({select})", ["diameter.Session-Id"], st.limits.max_packets)
+            sessions = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
+            corr = diameter.correlation_filter(sessions)
+            if corr is None:
+                return _envelope("sessions", [], cap, 0, hit, summary={"sessions": 0, "unanswered": 0, "failed": 0,
+                                                                        "without_session_id": 0}, selection=select)
+            flt = f"({base}) && ({corr})"
+        packets, hit2 = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
+        txs = diameter.pair(diameter.extract_messages(packets))
+        rows, without = diameter.session_rows(txs)
+        if code is not None:
+            rows = [r for r in rows if code in r["request_codes"]]
+        summary = {
+            "sessions": len(rows),
+            "unanswered": sum(r["unanswered"] for r in rows),
+            "failed": sum(r["failed"] for r in rows),
+            "without_session_id": without,
+            "by_application": _count(rows, "application"),
+        }
+        return _envelope("sessions", rows, cap, len(packets), hit or hit2, summary=summary, selection=select)
+    return _guarded("diameter_sessions", {"path": path, "session_id": session_id, "imsi": imsi,
+                                          "command_code": command_code, "filter": filter, "limit": limit}, run)
+
+
+@app.tool(title="GTPv2-C sessions", annotations=READ_ONLY)
+def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, teid: str | int | None = None,
+                 filter: str | None = None, limit: int = 200) -> models.GtpSessionsResult:
+    """Pair GTPv2-C requests with responses by sequence number and peer pair. Reports
+    message names (Create Session, Modify Bearer, Delete Session, Echo, ...), IMSI, MSISDN,
+    APN, F-TEIDs with interface names, cause code and name, allocated UE address (PAA),
+    round-trip ms and `unanswered: true`. Narrow with `imsi` (digits), `apn` (exact,
+    case-insensitive) or `teid` (decimal or 0x hex; matches the header TEID or any F-TEID):
+    the matching requests select sequence numbers, then both halves of each transaction
+    are fetched so responses are kept. `filter` is a raw display filter ANDed with `gtpv2`,
+    e.g. `gtpv2.message_type == 32`; it applies literally to each packet."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        apn_s = lint_apn(apn) if apn else None
+        teid_i = lint_teid(teid) if teid is not None and str(teid).strip() != "" else None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        base = _filter(filter, base="gtpv2")
+        select = gtp.selection_filter(imsi_d, apn_s, teid_i)
+        hit = False
+        flt = base
+        if select:
+            stdout, scanned, hit = _fields_run(capture, f"({base}) && ({select})", ["gtpv2.seq"], st.limits.max_packets)
+            seqs = {s for ln in stdout.splitlines() for s in (to_int(v) for v in ln.strip().split(",")) if s is not None}
+            corr = gtp.correlation_filter(seqs, set())
+            if corr is None:
+                return _envelope("transactions", [], cap, scanned, hit,
+                                 summary={"by_message": {}, "unanswered": 0, "failed": 0}, selection=select)
+            flt = f"({base}) && ({corr})"
+        packets, hit2 = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
         txs = gtp.pair(gtp.extract_messages(packets))
         rows = [gtp.transaction_row(t) for t in txs]
+        if select:
+            rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
-        return _envelope("transactions", rows, cap, len(packets), hit, summary=summary)
-    return _guarded("gtp_sessions", {"path": path, "filter": filter, "limit": limit}, run)
+        return _envelope("transactions", rows, cap, len(packets), hit or hit2, summary=summary, selection=select)
+    return _guarded("gtp_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
+                                     "limit": limit}, run)
 
 
-@app.tool()
-def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -> dict[str, Any]:
+@app.tool(title="GTP-U tunnels", annotations=READ_ONLY)
+def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -> models.GtpUserPlaneResult:
     """Summarise GTP-U (G-PDU) traffic per tunnel endpoint id: packets, bytes, first and
     last time, outer endpoints and the inner IP sources/destinations. A TEID is one
     direction of a bearer; look up the matching F-TEIDs with gtp_sessions. `teid` may be
@@ -332,28 +435,119 @@ def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -
     return _guarded("gtp_user_plane", {"path": path, "teid": teid, "limit": limit}, run)
 
 
-@app.tool()
-def sip_dialogs(path: str, filter: str | None = None, limit: int = 200) -> dict[str, Any]:
+@app.tool(title="SIP dialogs", annotations=READ_ONLY)
+def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None, method: str | None = None,
+                filter: str | None = None, limit: int = 200) -> models.SipDialogsResult:
     """Group SIP messages by Call-ID. Each dialog lists the method/response sequence with
-    timestamps, From, To, Request-URI, P-Asserted-Identity, the final status of the
-    initial request and time to that final response; `no_final_response: true` marks
-    requests that never completed. `filter` is ANDed with `sip`, e.g.
-    `sip.Method == "INVITE" || sip.Status-Code >= 400`."""
+    timestamps, From, To, Request-URI, P-Asserted-Identity, the method chain, the final
+    status of the initial request, time to that final response and the dialog duration;
+    `no_final_response: true` marks requests that never completed. Narrow with `call_id`
+    (exact), `number` (digits found in From, To, Request-URI or P-Asserted-Identity) or
+    `method` (INVITE, REGISTER, MESSAGE, ...): matching messages select the dialogs, then
+    every message of those dialogs is fetched so responses are kept. `filter` is a raw
+    display filter ANDed with `sip`; it applies literally to each packet."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
-        flt = _filter(filter, base="sip")
+        cid = lint_quoted_value(call_id, "call_id") if call_id else None
+        num = lint_digits(number, "number") if number else None
+        meth = lint_sip_method(method) if method else None
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        stdout, scanned, hit = _fields_run(capture, flt, sip.FIELDS, st.limits.max_packets, aggregator=sip.AGGREGATOR)
+        base = _filter(filter, base="sip")
+        select = sip.selection_filter(cid, num, meth)
+        hit = False
+        flt = base
+        if select:
+            stdout, _, hit = _fields_run(capture, f"({base}) && ({select})", ["sip.Call-ID"], st.limits.max_packets)
+            call_ids = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
+            corr = sip.correlation_filter(call_ids)
+            if corr is None:
+                return _envelope("dialogs", [], cap, 0, hit, summary={"by_message": {}, "unanswered": 0, "failed": 0},
+                                 selection=select)
+            flt = f"({base}) && ({corr})"
+        stdout, scanned, hit2 = _fields_run(capture, flt, sip.FIELDS, st.limits.max_packets, aggregator=sip.AGGREGATOR)
         rows = sip.group_dialogs(stdout)
         summary = _summarise(rows, "initial_method", "no_final_response",
                              lambda r: (r.get("final_status") or 0) >= 400)
-        return _envelope("dialogs", rows, cap, scanned, hit, summary=summary)
-    return _guarded("sip_dialogs", {"path": path, "filter": filter, "limit": limit}, run)
+        return _envelope("dialogs", rows, cap, scanned, hit or hit2, summary=summary, selection=select)
+    return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
+                                    "filter": filter, "limit": limit}, run)
 
 
-@app.tool()
-def sctp_associations(path: str, limit: int = 200) -> dict[str, Any]:
+@app.tool(title="Find identifier across captures", annotations=READ_ONLY)
+def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: int = 20) -> models.FindIdentifierResult:
+    """Find which capture files mention an identifier. `path` is one capture or a
+    directory inside the allowed roots (its .pcap/.pcapng/.cap files are scanned, not
+    subdirectories). `identifier` is an IMSI, MSISDN, IPv4/IPv6 address, SIP Call-ID or
+    Diameter Session-Id; `kind` is auto, imsi, msisdn, ip, call_id or session_id (auto
+    searches digits as both IMSI and MSISDN). Returns one row per file with hits: hit
+    count, first and last timestamp and a per-protocol breakdown, sorted by hits. At most
+    `max_files` files are opened (capped by the server), each under the usual packet,
+    size and time limits, and the whole call shares one time budget; files that could
+    not be read are listed under `errors`. Use it to pick the file before pcap_info."""
+    def run() -> dict[str, Any]:
+        st = state()
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise ToolError("invalid_argument", "identifier must be a non-empty string")
+        resolved_kind, flt = search.build_filter(identifier, kind)
+        flt = lint_display_filter(flt)
+        st.runner.validate_display_filter(flt)
+        file_cap = clamp_limit(max_files, st.limits.max_files, min(20, st.limits.max_files))
+
+        target = st.allowlist.resolve_inside(path)
+        if target.is_dir():
+            candidates = search.list_captures(target)
+        else:
+            candidates = [target]
+        fields = ["frame.time_epoch", "frame.number"]
+        protocol_field = _protocol_column(st.runner)
+        protocol_col = protocol_field is not None
+        if protocol_field is not None:
+            fields.append(protocol_field)
+
+        deadline = _now() + st.limits.timeout_seconds
+        rows: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        scanned = 0
+        truncated_reason = None
+        for candidate in candidates:
+            if scanned >= file_cap:
+                truncated_reason = f"more than {file_cap} files; raise max_files (server cap {st.limits.max_files}) or narrow the directory"
+                break
+            if _now() >= deadline:
+                truncated_reason = f"time budget of {st.limits.timeout_seconds}s used up after {scanned} files"
+                break
+            scanned += 1
+            try:
+                capture = st.allowlist.resolve(str(candidate), st.limits)
+                stdout, lines, hit = _fields_run(capture, flt, fields, st.limits.max_scan_packets)
+            except ToolError as exc:
+                errors.append({"path": str(candidate), "error": exc.type, "message": exc.message})
+                continue
+            summary = search.summarise_hits(stdout, protocol_col)
+            if summary["hits"] == 0:
+                continue
+            row: dict[str, Any] = {
+                "path": str(capture), "hits": summary["hits"], "first": iso(summary["first"]),
+                "last": iso(summary["last"]), "protocols": summary["protocols"],
+            }
+            if hit:
+                row["truncated"] = True
+                row["truncated_reason"] = "packet cap reached in this file; the count is a lower bound"
+            rows.append(row)
+        rows.sort(key=lambda r: (-r["hits"], r["path"]))
+        out = _envelope("files", rows, file_cap, None, False, identifier=identifier.strip(), kind=resolved_kind,
+                        display_filter=flt, files_scanned=scanned, files_found=len(candidates),
+                        files_with_hits=len(rows), total_hits=sum(r["hits"] for r in rows), errors=errors)
+        if truncated_reason:
+            out["truncated"] = True
+            out["truncated_reason"] = truncated_reason
+        return out
+    return _guarded("find_identifier", {"path": path, "identifier": identifier, "kind": kind, "max_files": max_files}, run)
+
+
+@app.tool(title="SCTP associations", annotations=READ_ONLY)
+def sctp_associations(path: str, limit: int = 200) -> models.SctpAssociationsResult:
     """Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK
     frames and initiate tags), DATA chunk count, heartbeats sent versus acknowledged,
     retransmissions, and whether ABORT or SHUTDOWN was seen. Useful for Diameter and
@@ -368,8 +562,8 @@ def sctp_associations(path: str, limit: int = 200) -> dict[str, Any]:
     return _guarded("sctp_associations", {"path": path, "limit": limit}, run)
 
 
-@app.tool()
-def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> dict[str, Any]:
+@app.tool(title="SIGTRAN / MAP messages", annotations=READ_ONLY)
+def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> models.SigtranMessagesResult:
     """List M3UA/SCCP/TCAP/MAP messages: SCCP type (UDT, XUDT with segmentation info),
     calling and called global titles and SSNs, point codes, TCAP primitive and
     transaction ids, components (invoke, returnResultLast, returnError) with MAP opcode and
@@ -394,8 +588,8 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> 
     return _guarded("sigtran_messages", {"path": path, "filter": filter, "limit": limit}, run)
 
 
-@app.tool()
-def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300) -> dict[str, Any]:
+@app.tool(title="Subscriber trace", annotations=READ_ONLY)
+def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300) -> models.TraceSubscriberResult:
     """Build one time-ordered timeline for a subscriber across Diameter (User-Name),
     GTPv2-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), MAP (IMSI/MSISDN)
     and SIP (From/To/P-Asserted-Identity containing the MSISDN). Each row carries the
@@ -558,6 +752,14 @@ def _colonise(hex_tid: str) -> str:
     return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
 
 
+def _count(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        name = str(r.get(key))
+        out[name] = out.get(name, 0) + 1
+    return out
+
+
 def _summarise(rows: list[dict[str, Any]], name_key: str, unanswered_key: str,
                failed: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
     by_name: dict[str, int] = {}
@@ -674,8 +876,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tshark", default=None, help="path to the tshark binary (or TSHARK_MCP_TSHARK)")
     p.add_argument("--max-file-mb", type=float, default=None, help="refuse captures larger than this (default 500)")
     p.add_argument("--max-packets", type=int, default=None, help="packets dissected per call (default 500)")
+    p.add_argument("--max-scan-packets", type=int, default=None,
+                   help="packets scanned per call by the aggregating tools (default 20000)")
     p.add_argument("--max-output-kb", type=float, default=None, help="JSON bytes returned per call (default 200)")
     p.add_argument("--timeout", type=float, default=None, help="seconds per tshark run (default 60)")
+    p.add_argument("--max-files", type=int, default=None, help="capture files one find_identifier call may open (default 50)")
     p.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
     p.add_argument("--version", action="version", version=f"tshark-mcp {__version__}")
     return p
@@ -690,10 +895,14 @@ def main(argv: list[str] | None = None) -> int:
             overrides["max_file_bytes"] = int(args.max_file_mb * 1024 * 1024)
         if args.max_packets is not None:
             overrides["max_packets"] = args.max_packets
+        if args.max_scan_packets is not None:
+            overrides["max_scan_packets"] = args.max_scan_packets
         if args.max_output_kb is not None:
             overrides["max_output_bytes"] = int(args.max_output_kb * 1024)
         if args.timeout is not None:
             overrides["timeout_seconds"] = args.timeout
+        if args.max_files is not None:
+            overrides["max_files"] = args.max_files
         if overrides:
             from dataclasses import replace
             limits = replace(limits, **overrides)

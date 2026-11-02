@@ -134,6 +134,38 @@ def identity_filter(imsi: str | None, msisdn: str | None) -> str | None:
     return " || ".join(parts) if parts else None
 
 
+def selection_filter(imsi: str | None, apn: str | None, teid: int | None) -> str | None:
+    """First-pass filter for ``gtp_sessions``: messages that name the subscriber, APN
+    or tunnel. Arguments must already be linted. Responses repeat none of these, so
+    the caller widens to the matching sequence numbers with :func:`correlation_filter`
+    and keeps only the transactions :func:`row_matches` accepts."""
+    parts = []
+    if imsi:
+        parts.append(f'e212.imsi == "{imsi}"')
+    if apn:
+        # APNs are case-insensitive (TS 23.003); lower() has been a display filter function since Wireshark 1.x.
+        parts.append(f'lower(gtpv2.apn) == "{apn.lower()}"')
+    if teid is not None:
+        parts.append(f"(gtpv2.teid == 0x{teid:08x} || gtpv2.f_teid_gre_key == 0x{teid:08x})")
+    return " && ".join(parts) if parts else None
+
+
+def row_matches(row: dict[str, Any], imsi: str | None, apn: str | None, teid: int | None) -> bool:
+    """Whether a transaction row satisfies every structured filter that was given."""
+    if imsi and row.get("imsi") != imsi:
+        return False
+    if apn and (row.get("apn") or "").lower() != apn.lower():
+        return False
+    if teid is not None:
+        wanted = f"0x{teid:08x}"
+        carried = {row.get("teid")}
+        for ft in list(row.get("request_fteids") or []) + list(row.get("response_fteids") or []):
+            carried.add(ft.get("teid"))
+        if wanted not in carried:
+            return False
+    return True
+
+
 def correlation_filter(seqs: set[int], teids: set[int]) -> str | None:
     parts = []
     if seqs:
