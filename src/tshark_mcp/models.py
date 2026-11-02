@@ -699,3 +699,67 @@ class MessageRatesResult(ToolResult, total=False):
     timeline: list[dict[str, Any]]
     timeline_interval_s: float
     storms: list[str]
+
+
+# ----------------------------------------------------------------- DNS
+class DnsTransactionRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    time: str
+    client: str
+    server: str
+    transport: str
+    id: str
+    name: str
+    type: str
+    response_frame: int
+    rcode: int
+    rcode_name: str
+    answers: int
+    addresses: list[str]
+    cnames: list[str]
+    rtt_ms: float
+    unanswered: bool
+    near_capture_end: bool
+    retransmissions: int
+    retry_of: int
+    truncated_tc: bool
+    tcp_fallback_frame: int
+    fallback_from_udp: bool
+    duplicate_responses: int
+
+
+class DnsServerRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    server: str
+    queries: int
+    answered: int
+    unanswered: int
+    unanswered_share: float
+    rcodes: dict[str, int]
+    retransmissions: int
+    transports: dict[str, int]
+    clients: int
+    icmp_errors: int
+    rtt_ms: dict[str, float]
+
+
+class DnsNameRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    name: str
+    queries: int
+    unanswered: int
+    failed: int
+    rcodes: dict[str, int]
+    retries: int
+    slow: int
+    types: list[str]
+    servers: list[str]
+
+
+class DnsTransactionsResult(RowsResult, total=False):
+    transactions: list[DnsTransactionRow]
+    servers: list[DnsServerRow]
+    names: list[DnsNameRow]
+    summary: dict[str, Any]
+    issues: list[str]

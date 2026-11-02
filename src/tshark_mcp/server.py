@@ -18,11 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, gtp, gtpv1, models, pairing, rates, search, sigtran, sip, tunnels
+from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, pairing, rates, search, sigtran, sip, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
-    lint_quoted_value, lint_sip_method, lint_teid,
+    lint_hostname, lint_quoted_value, lint_sip_method, lint_teid,
 )
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 
@@ -49,7 +49,8 @@ gtpv1_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, 
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 With a working and a failing capture of the same procedure, compare_captures
-reports where they first diverge. Results are JSON; "truncated": true means a
+reports where they first diverge. dns_transactions pairs DNS queries with
+their answers and shows unanswered queries, rcodes and slow resolvers. Results are JSON; "truncated": true means a
 cap was reached and you should narrow the filter.
 """
 
@@ -799,6 +800,39 @@ def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi
         return out
     return _guarded("message_rates", {"path": path, "protocol": protocol, "interval": interval, "imsi": imsi,
                                       "filter": filter, "burst_min": burst_min, "storm_min": storm_min, "limit": limit}, run)
+
+
+@app.tool(title="DNS transactions", annotations=READ_ONLY)
+def dns_transactions(path: str, name: str | None = None, filter: str | None = None,
+                     limit: int = 200) -> models.DnsTransactionsResult:
+    """DNS queries paired with their responses (by transport, client and server address
+    and port, DNS id and question name), including the queries that never got one,
+    which tshark's own dns.time cannot show. Each transaction gives name, type (A,
+    AAAA, NAPTR, SRV, HTTPS, ...), client, server, rcode and its name (NOERROR,
+    NXDOMAIN, SERVFAIL, REFUSED, ...), answers and addresses, round-trip ms,
+    `unanswered` (with `near_capture_end` when the capture may simply have stopped),
+    `retransmissions` (the same query resent with the same id and port), `retry_of`
+    (a new query for a name whose last query was unanswered or failed),
+    `truncated_tc` and `tcp_fallback_frame` (a TC answer followed by the same query
+    over TCP). `servers` gives per resolver queries, answered, unanswered share,
+    rcodes and latency min/p50/p90/p99/max; `names` lists the names that failed, were
+    retried or were slow (over 1 s); `issues` says it in plain words. Copies of one
+    packet (a capture on several interfaces or GTP legs) are counted once. DNS inside
+    GTP-U tunnels is read from the inner packet. `name` keeps that name and the names
+    under it (case-insensitive); `filter` is ANDed with `dns`. Transactions with a
+    problem come first, then the rest in capture order."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        wanted = lint_hostname(name, "name") if name is not None and str(name).strip() != "" else None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        flt = _filter(filter, base=dns.display_filter())
+        stdout, scan = _fields_run(capture, flt, dns.FIELDS, st.limits.max_scan_packets, aggregator=dns.AGGREGATOR)
+        messages, icmp = dns.parse(stdout)
+        out = dns.summarise(messages, icmp, wanted)
+        rows = sorted(out.pop("transactions"), key=lambda r: (0 if dns.is_problem(r) else 1, r.get("frame") or 0))
+        return _envelope("transactions", rows, cap, scan, display_filter=flt, **out)
+    return _guarded("dns_transactions", {"path": path, "name": name, "filter": filter, "limit": limit}, run)
 
 
 @app.tool(title="SIP dialogs", annotations=READ_ONLY)

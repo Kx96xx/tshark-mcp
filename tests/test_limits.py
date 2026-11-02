@@ -176,3 +176,12 @@ class TestSmallLints:
         assert clamp_limit(0, 500, 200) == 1
         with pytest.raises(ToolError):
             clamp_limit("ten", 500, 200)
+
+
+def test_lint_hostname():
+    from tshark_mcp.limits import lint_hostname
+    assert lint_hostname("WWW.Example.COM.") == "www.example.com"
+    assert lint_hostname("_sip._udp.ims.example.org") == "_sip._udp.ims.example.org"
+    for bad in ("", "a b", 'x"y', "a..b", "-x.com", "x\\y", "a" * 64 + ".com", None, 5):
+        with pytest.raises(ToolError):
+            lint_hostname(bad)

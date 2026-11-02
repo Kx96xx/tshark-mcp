@@ -4,7 +4,7 @@
 
 A read-only [MCP](https://modelcontextprotocol.io) server that lets an LLM agent analyse
 existing packet captures through `tshark`, with first-class support for the mobile-core
-protocols: Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP.
+protocols: Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, and DNS.
 
 The server can only ever run `tshark -r <file>` on files inside directories you allow,
 under hard limits on file size, packets, output size and run time. It cannot capture,
@@ -15,7 +15,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent seventeen narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent eighteen narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply.
 
@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 292 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 299 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -83,6 +83,7 @@ Tests: 292 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `gtp_user_plane(path, teid, limit)` | GTP-U per TEID: packets, bytes, first/last time, outer endpoints, inner IP addresses |
 | `gtp_tunnel_health(path, teid, mtu, limit)` | User-plane health per GTP-U tunnel from the packets inside it: inner TCP flows, SYN/SYN-ACK MSS, retransmissions and their share of data segments, out-of-order segments, keep-alives, duplicate ACKs, zero windows, resets; inner ICMP by type with the fragmentation-needed MTU; largest outer and inner packets, tunnel overhead and DF packets above `mtu`; whether the reverse direction carries traffic; `issues` in plain words; ICMP errors sent about the tunnel packets themselves (`outer_icmp`). Copies of the same packet (a capture on several interfaces) are counted once |
 | `message_rates(path, protocol, interval, imsi, filter, burst_min, storm_min, limit)` | Diameter, GTPv2-C, GTPv1-C, SIP and MAP messages counted by name per interval: total and distinct (a message seen on both legs of a relay or retransmitted counts once), peak and when, mean rate; `bursts` (three times the usual rate or more), `subscriber_loops` (one subscriber repeating a request, with the gap between repeats and whether it is regular), a per-interval `timeline` and one-line `storms`. MAP messages are tied to the IMSI named anywhere in their TCAP dialogue, GTP responses to the IMSI of their request |
+| `dns_transactions(path, name, filter, limit)` | DNS queries paired with responses by transport, addresses, ports, DNS id and name, unanswered ones included: type, rcode name, answers and addresses, RTT, `unanswered` (`near_capture_end` when the capture may have stopped first), resends with the same id and port, `retry_of` for a new query after an unanswered or failed one, TC answers and the TCP fallback that followed; per-server answered share, rcodes and latency min/p50/p90/p99/max; the names that failed, were retried or were slow; `issues`. Copies of one packet (several interfaces, GTP legs) count once, DNS inside GTP-U is read from the inner packet, and problem transactions come first |
 | `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -242,7 +243,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 292 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 299 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
