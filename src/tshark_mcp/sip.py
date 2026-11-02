@@ -10,7 +10,7 @@ from .fields import compact, iso, parse_time, split_fields_line, to_int
 FIELDS = [
     "frame.number", "frame.time_epoch", "ip.src", "ip.dst", "sip.Call-ID", "sip.Method", "sip.Status-Code",
     "sip.CSeq.method", "sip.CSeq.seq", "sip.from.addr", "sip.to.addr", "sip.r-uri", "sip.P-Asserted-Identity",
-    "sip.Reason", "sip.Contact",
+    "sip.Reason", "sip.Contact", "sip.resend",
 ]
 AGGREGATOR = "|"
 
@@ -90,12 +90,18 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
                 "initial_cseq": None,
                 "final_status": None,
                 "final_time": None,
+                "finals": {},
+                "attempts": set(),
+                "resent": 0,
                 "messages": [],
             }
         method = rec["sip.Method"]
         status = to_int(rec["sip.Status-Code"])
         cseq_method = rec["sip.CSeq.method"]
         cseq = to_int(rec["sip.CSeq.seq"])
+        resend = rec["sip.resend"] in ("1", "True")
+        if resend:
+            d["resent"] += 1
         if d["initial_method"] is None and method:
             d["initial_method"] = method
             d["initial_cseq"] = cseq
@@ -109,23 +115,31 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
             "status": status,
             "cseq": f"{cseq} {cseq_method}" if cseq is not None else None,
             "reason": rec["sip.Reason"] or None,
+            "resend": resend or None,
         })
         d["messages"].append(entry)
         if ts is not None and (d["last_time"] is None or ts > d["last_time"]):
             d["last_time"] = ts
+        if method and method == d["initial_method"] and cseq is not None:
+            d["attempts"].add(cseq)
         if (status is not None and status >= 200 and d["final_status"] is None
                 and cseq_method == d["initial_method"] and (d["initial_cseq"] is None or cseq == d["initial_cseq"])):
             d["final_status"] = status
             d["final_time"] = ts
+        # A dialog may carry several transactions of the initial method (REGISTER 401, then
+        # REGISTER with credentials 200, then refreshes); see _outcome.
+        if status is not None and status >= 200 and cseq_method == d["initial_method"] and cseq is not None:
+            d["finals"].setdefault(cseq, status)
     rows = []
     for d in dialogs.values():
         ttf = None
         if d["final_time"] is not None and d["first_time"] is not None:
             ttf = round((d["final_time"] - d["first_time"]) * 1000.0, 3)
-        methods = [m["method"] for m in d["messages"] if m.get("method")]
+        methods = [m["method"] for m in d["messages"] if m.get("method") and not m.get("resend")]
         duration = None
         if d["last_time"] is not None and d["first_time"] is not None:
             duration = round((d["last_time"] - d["first_time"]) * 1000.0, 3)
+        outcome = _outcome(d["finals"])
         rows.append(compact({
             "call_id": d["call_id"],
             "time": iso(d["first_time"]),
@@ -139,6 +153,9 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
             "p_asserted_identity": d["p_asserted_identity"],
             "final_status": d["final_status"],
             "time_to_final_ms": ttf,
+            "outcome_status": outcome,
+            "attempts": len(d["attempts"]) if len(d["attempts"]) > 1 else None,
+            "resent_messages": d["resent"] or None,
             "no_final_response": d["initial_method"] is not None and d["final_status"] is None,
             "message_count": len(d["messages"]),
             "methods": methods,
@@ -146,6 +163,28 @@ def group_dialogs(stdout: str) -> list[dict[str, Any]]:
         }))
     rows.sort(key=lambda r: r.get("time") or "")
     return rows
+
+
+CHALLENGES = (401, 407)
+
+
+def _outcome(finals: dict[int, int]) -> int | None:
+    """The final status that settles the initial request: the first one, in CSeq order,
+    that is not an authentication challenge (401/407) answered by a retry. Later
+    transactions of the same method (re-INVITEs, REGISTER refreshes) do not change it;
+    when every attempt was challenged, the last challenge is the outcome."""
+    statuses = [finals[c] for c in sorted(finals)]
+    for status in statuses:
+        if status not in CHALLENGES:
+            return status
+    return statuses[-1] if statuses else None
+
+
+def dialog_failed(row: dict[str, Any]) -> bool:
+    """A dialog failed when its outcome (see _outcome) is a 4xx/5xx/6xx. A REGISTER
+    answered 401 and then 200 after the challenge is a success."""
+    status = row.get("outcome_status") or row.get("final_status") or 0
+    return status >= 400
 
 
 def call_ids(rows: list[dict[str, Any]]) -> set[str]:

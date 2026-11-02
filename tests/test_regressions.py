@@ -207,3 +207,81 @@ class TestMapReplies:
         assert comps[4][0]["operation"] == "mo-forwardSM" and comps[4][0]["opcode"] == 46
         # Errors are counted by error, results by the operation they answer.
         assert result["summary"]["by_operation"] == {"sendAuthenticationInfo": 1, "unknownSubscriber": 1, "mo-forwardSM": 2}
+
+
+# ------------------------------------------- SIP dialogs with challenges and retransmissions
+def _sip_challenge(tmp_path: Path) -> Path:
+    """REGISTER challenged with 401, retried with credentials (sent twice, a UDP
+    retransmission) and accepted with 200, then refreshed; and an INVITE answered
+    200 whose later re-INVITE is refused with 491."""
+    g = pcapgen
+    ue, pcscf = g.UE_SIP_IP, g.PCSCF_IP
+    dom = "ims.mnc001.mcc001.3gppnetwork.org"
+    aor = f"<sip:+{g.MSISDN}@{dom}>"
+    via = "Via: SIP/2.0/UDP 198.51.100.9:5060;branch=z9hG4bK"
+    frames: list[tuple[float, bytes]] = []
+    t0 = 1_700_001_000.0
+
+    def up(ts: float, lines: list[str]) -> None:
+        frames.append((ts, g._udp_frame(ue, pcscf, 5060, 5060, g._sip(lines))))
+
+    def down(ts: float, lines: list[str]) -> None:
+        frames.append((ts, g._udp_frame(pcscf, ue, 5060, 5060, g._sip(lines))))
+
+    def register(cseq: int, branch: str) -> list[str]:
+        return [f"REGISTER sip:{dom} SIP/2.0", via + branch, f"From: {aor};tag=r1", f"To: {aor}",
+                "Call-ID: reg-1@ue.example", f"CSeq: {cseq} REGISTER", "Contact: <sip:198.51.100.9:5060>"]
+
+    def reply(code: int, reason: str, cseq: int, method: str, branch: str, call_id: str) -> list[str]:
+        return [f"SIP/2.0 {code} {reason}", via + branch, f"From: {aor};tag=r1", f"To: {aor};tag=n1",
+                f"Call-ID: {call_id}", f"CSeq: {cseq} {method}"]
+
+    up(t0, register(1, "a1"))
+    down(t0 + 0.02, reply(401, "Unauthorized", 1, "REGISTER", "a1", "reg-1@ue.example"))
+    up(t0 + 0.10, register(2, "a2"))
+    up(t0 + 0.60, register(2, "a2"))  # retransmission
+    down(t0 + 0.70, reply(200, "OK", 2, "REGISTER", "a2", "reg-1@ue.example"))
+    up(t0 + 60.0, register(3, "a3"))
+    down(t0 + 60.02, reply(200, "OK", 3, "REGISTER", "a3", "reg-1@ue.example"))
+
+    def invite(cseq: int, branch: str) -> list[str]:
+        return [f"INVITE sip:+15550100555@{dom} SIP/2.0", via + branch, f"From: {aor};tag=r1",
+                f"To: <sip:+15550100555@{dom}>", "Call-ID: call-1@ue.example", f"CSeq: {cseq} INVITE"]
+
+    up(t0 + 100.0, invite(1, "i1"))
+    down(t0 + 101.0, reply(200, "OK", 1, "INVITE", "i1", "call-1@ue.example"))
+    up(t0 + 130.0, invite(2, "i2"))
+    down(t0 + 130.1, reply(491, "Request Pending", 2, "INVITE", "i2", "call-1@ue.example"))
+    return g._frames_to_pcap(tmp_path / "sip_challenge.pcap", frames)
+
+
+class TestSipOutcome:
+    def test_register_challenged_then_accepted_is_not_a_failure(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_challenge(tmp_path)))
+        reg = next(d for d in result["dialogs"] if d["initial_method"] == "REGISTER")
+        assert reg["final_status"] == 401  # the first transaction's answer is still reported
+        assert reg["outcome_status"] == 200
+        assert reg["attempts"] == 3
+        assert result["summary"]["failed"] == 0
+
+    def test_a_refused_reinvite_does_not_fail_an_established_call(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_challenge(tmp_path)))
+        call = next(d for d in result["dialogs"] if d["initial_method"] == "INVITE")
+        assert call["outcome_status"] == 200
+
+    def test_retransmissions_are_counted_not_listed_as_methods(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_challenge(tmp_path)))
+        reg = next(d for d in result["dialogs"] if d["initial_method"] == "REGISTER")
+        assert reg["resent_messages"] == 1
+        assert reg["methods"] == ["REGISTER", "REGISTER", "REGISTER"]
+        assert reg["message_count"] == 7
+
+    def test_trace_uses_the_outcome(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.trace_subscriber(str(_sip_challenge(tmp_path)), msisdn=pcapgen.MSISDN)
+        rows = [r for r in result["timeline"] if r["protocol"] == "sip"]
+        assert {r["message"] for r in rows} == {"REGISTER -> 200", "INVITE -> 200"}
+        assert result["failures"] == 0
