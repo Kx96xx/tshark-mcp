@@ -209,6 +209,10 @@ def _outside_quotes(text: str) -> str:
     return _QUOTED_STRING.sub('""', text)
 
 
+outside_quotes = _outside_quotes
+"""``text`` with every quoted string literal emptied, so tokens inside quotes are not read as fields."""
+
+
 def lint_display_filter(text: str) -> str:
     """Reject obviously unsafe or malformed display filters before the dry run."""
     if not isinstance(text, str):

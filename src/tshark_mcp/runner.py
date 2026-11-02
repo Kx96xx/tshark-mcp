@@ -151,6 +151,7 @@ class Runner:
         self.limits = limits
         self.tshark = find_tshark(tshark)
         self.capinfos = capinfos or self._sibling("capinfos")
+        self.dftest = self._sibling("dftest")
 
     def _sibling(self, name: str) -> str | None:
         beside = Path(self.tshark).with_name(name)
@@ -177,9 +178,21 @@ class Runner:
     def list_fields(self) -> RunResult:
         return self._execute(self.tshark, ["-G", "fields"])
 
+    def compile_filter(self, display_filter: str) -> RunResult:
+        """Compile the filter by running tshark on an empty capture fed on stdin; no file is read."""
+        return self._execute(self.tshark, ["-n", "-r", "-", "-Y", display_filter], stdin=EMPTY_PCAP)
+
+    def dftest_filter(self, display_filter: str) -> RunResult | None:
+        """``dftest -- <filter>``: compiles the filter and prints tshark's filter warnings
+        (deprecated names and the like), which tshark itself does not show. None when
+        dftest is not installed beside tshark."""
+        if not self.dftest:
+            return None
+        return self._execute(self.dftest, ["--", display_filter], read_only_check=False)
+
     def validate_display_filter(self, display_filter: str) -> None:
         """Compile the filter against an empty capture; raise ToolError if tshark rejects it."""
-        result = self._execute(self.tshark, ["-n", "-r", "-", "-Y", display_filter], stdin=EMPTY_PCAP)
+        result = self.compile_filter(display_filter)
         if result.returncode != 0:
             message = result.stderr.strip() or "tshark rejected the display filter"
             raise ToolError("invalid_filter", message, display_filter=display_filter)

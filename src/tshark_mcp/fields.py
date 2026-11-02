@@ -9,6 +9,7 @@ inside this message" without caring where the dissector put it.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator
 
@@ -19,7 +20,19 @@ Json = dict[str, Any]
 
 
 # ----------------------------------------------------------------- field catalogue
+_GLOSSARY_CACHE: dict[str, str] = {}
 _CATALOGUE_CACHE: dict[str, frozenset[str]] = {}
+
+
+def glossary(runner: Runner) -> str:
+    """The raw ``tshark -G fields`` text (about 20 MB), read once per binary.
+
+    Kept as one string rather than parsed rows: a search scans it with a regular
+    expression and parses only the lines that match."""
+    cached = _GLOSSARY_CACHE.get(runner.tshark)
+    if cached is None:
+        cached = _GLOSSARY_CACHE[runner.tshark] = check_result(runner.list_fields()).stdout
+    return cached
 
 
 def field_catalogue(runner: Runner) -> frozenset[str]:
@@ -27,15 +40,80 @@ def field_catalogue(runner: Runner) -> frozenset[str]:
     cached = _CATALOGUE_CACHE.get(runner.tshark)
     if cached is not None:
         return cached
-    result = check_result(runner.list_fields())
     names: set[str] = set()
-    for line in result.stdout.splitlines():
+    for line in glossary(runner).splitlines():
         parts = line.split("\t")
         if len(parts) >= 3 and parts[0] in ("F", "P"):
             names.add(parts[2])
     catalogue = frozenset(names)
     _CATALOGUE_CACHE[runner.tshark] = catalogue
     return catalogue
+
+
+def glossary_row(line: str) -> dict[str, str] | None:
+    """One ``-G fields`` line as {field, name, type, protocol, display, description}.
+    Field lines are: F, name, abbreviation, type, parent protocol, display base, bitmask,
+    description."""
+    parts = line.split("\t")
+    if parts[0] == "F" and len(parts) >= 5:
+        return compact({"field": parts[2], "name": parts[1], "type": parts[3], "protocol": parts[4],
+                        "display": parts[5] if len(parts) > 5 else "",
+                        "description": parts[7] if len(parts) > 7 else ""})
+    if parts[0] == "P" and len(parts) >= 3:
+        return {"field": parts[2], "name": parts[1], "type": "protocol", "protocol": parts[2]}
+    return None
+
+
+def _matching_lines(text: str, word: str) -> Iterator[str]:
+    """Each glossary line that contains ``word`` (case-insensitive), once."""
+    last = -1
+    for m in re.finditer(re.escape(word), text, re.IGNORECASE):
+        start = text.rfind("\n", 0, m.start()) + 1
+        if start == last:
+            continue
+        last = start
+        end = text.find("\n", m.end())
+        yield text[start:end if end != -1 else len(text)]
+
+
+def search_fields(runner: Runner, words: list[str], protocol: str | None = None) -> list[dict[str, str]]:
+    """Fields and protocols whose name, abbreviation or description contain every word,
+    best match first: the abbreviation itself, then abbreviations starting with or
+    containing the query, then names, then descriptions."""
+    text = glossary(runner)
+    query = " ".join(words).lower()
+    proto = protocol.lower() if protocol else None
+    scored: list[tuple[int, str, dict[str, str]]] = []
+    for line in _matching_lines(text, max(words, key=len)):
+        row = glossary_row(line)
+        if row is None:
+            continue
+        if proto and row.get("protocol", "").lower() != proto:
+            continue
+        abbrev = row["field"].lower()
+        name = row.get("name", "").lower()
+        haystack = f'{abbrev} {name} {row.get("description", "").lower()}'
+        if not all(w.lower() in haystack for w in words):
+            continue
+        if abbrev == query:
+            score = 0
+        elif abbrev.startswith(query) or abbrev.endswith("." + query):
+            score = 1
+        elif all(w.lower() in abbrev for w in words):
+            score = 2
+        elif all(w.lower() in name for w in words):
+            score = 3
+        else:
+            score = 4
+        scored.append((score, abbrev, row))
+    scored.sort(key=lambda s: (s[0], len(s[1]), s[1]))
+    return [row for _, _, row in scored]
+
+
+def lookup_field(runner: Runner, name: str) -> dict[str, str] | None:
+    """The glossary row of one exact field or protocol abbreviation."""
+    m = re.search(r"^[FP]\t[^\t]*\t" + re.escape(name) + r"(\t[^\n]*)?$", glossary(runner), re.MULTILINE)
+    return glossary_row(m.group(0)) if m else None
 
 
 def validate_fields(runner: Runner, names: Iterable[str]) -> list[str]:

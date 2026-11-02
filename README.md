@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twenty-nine narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent thirty-one narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -81,6 +81,8 @@ Claude Desktop (`claude_desktop_config.json`):
 | `filter_packets(path, display_filter, fields, limit, offset)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |
 | `packet_detail(path, frame, layers, max_fields)` | One frame's full dissection as tshark decodes it, every layer and field nested as in Wireshark's details pane; `layers` keeps only the protocols named; at most `max_fields` leaf fields (default 300, server cap 2000), the innermost layers first, with `fields_dropped` for the rest; `malformed` when tshark flagged the packet. Use it to verify any row: rows carry `frame`, `request_frame`/`answer_frame` or `first_frame`/`last_frame` |
 | `expert_info(path, severity, filter, limit, offset)` | tshark's own expert information (`-z expert`): warnings, errors and malformed-packet flags grouped by severity, group (Malformed, Undecoded, Sequence, Protocol, ...), protocol and summary, with the count, first frame and up to five sample frames of each; `summary` counts by severity and protocol and the malformed frames. Check it before trusting a decode |
+| `find_fields(query, protocol, limit, offset)` | Search the fields and protocols this tshark knows (`tshark -G fields`): every word of `query` must appear in the abbreviation, name or description; `protocol` keeps one protocol's fields; rows give the abbreviation, name, type, protocol, display base and description, exact matches first. No capture is read |
+| `check_filter(filter)` | Check a display filter without reading a capture: the server lint, then tshark compiles it against an empty capture and its own error comes back with the offset and length it points at; dftest warnings (deprecated names) when dftest is installed beside tshark (`warnings_checked`); the fields the filter names, with their types |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit, offset)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered and failed counts, worst RTT, and the paired transactions |
 | `diameter_transactions(path, filter, limit, offset)` | Requests paired with answers by Hop-by-Hop/End-to-End id and Session-Id: command name, application, hosts, realms, User-Name, Result-Code or Experimental-Result-Code with name, RTT, `unanswered` |
 | `diameter_avps(path, session_id, imsi, command_code, frame, filter, detail, max_avps, limit, offset)` | The AVPs of paired Diameter transactions. `detail="key"`: Result-Code and Experimental-Result, ULR/ULA/CLR/PUR/PUA/IDR/NOR flags with bit names, Cancellation-Type, RAT-Type, Visited-PLMN-Id, AIR vectors, Gx CC-Request-Type, Event-Trigger, rule reports and QoS, and a Subscription-Data digest (MSISDN, status, ODB, access restrictions, AMBR, one line per APN with PDN type, QCI, ARP, AMBR and PGW). `detail="full"`: every AVP as a nested tree, capped at `max_avps` leaves per message (server cap 2000); enumerated values are named |
@@ -271,7 +273,7 @@ configurable, and none can be switched off.
 | Wall-clock per multi-pass call (`find_identifier`, `trace_subscriber`) | the same `--timeout`, shared by every tshark run of the call | `server.find_identifier`, `server.trace_subscriber` |
 | Read-only argv | `-r` is mandatory; `-i`, `-w`, `-D`, `-f`, `-a`, `-b`, `-X`, `-o`, `--export-*` and the other capture, write and extension flags are refused before a process is created. The one exception is `-o` followed by exactly `ip.check_checksum:TRUE`, `tcp.check_checksum:TRUE` or `udp.check_checksum:TRUE`, which `capture_quality` sets itself to validate checksums; no agent argument reaches `-o`. `-z` takes only the read-only statistics `io`, `conv`, `endpoints`, `expert`, `rtp`, `sip`, `diameter`, `dns` and `http` | `runner.assert_read_only`, `runner.ALLOWED_PREFERENCES`, `runner.ALLOWED_STATS` |
 | No shell, no name resolution | argv list only, `-n` on every run | `runner.Runner` |
-| Display filters | linted for control characters and shell metacharacters outside quoted strings, then compiled by tshark against an empty capture before touching the real file | `limits.lint_display_filter`, `runner.validate_display_filter` |
+| Display filters | linted for control characters and shell metacharacters outside quoted strings, then compiled by tshark against an empty capture before touching the real file. `check_filter` also runs `dftest -- <filter>` when dftest sits beside tshark: it compiles the filter and reads no file | `limits.lint_display_filter`, `runner.validate_display_filter`, `runner.dftest_filter` |
 | Field names | must exist in `tshark -G fields` (cached once) | `fields.validate_fields` |
 | Structured arguments (`session_id`, `call_id`, `imsi`, `apn`, `teid`, `method`, `identifier`) | linted to the shape of that identifier before being embedded in a display filter; quotes and backslashes are refused | `limits.lint_*`, `search.build_filter` |
 | Audit log | one JSON line per call: tool, arguments, duration, status, bytes returned (`--log-file`, `TSHARK_MCP_LOG`) | `server._audit` |
@@ -310,7 +312,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 488 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 508 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
