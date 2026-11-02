@@ -281,6 +281,16 @@ def lint_apn(value: str) -> str:
     return value.strip()
 
 
+_HOSTNAME = re.compile(r"^(?=.{1,253}\.?$)[A-Za-z0-9_](?:[A-Za-z0-9_\-]{0,62})(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_\-]{0,62}))*\.?$")
+
+
+def lint_hostname(value: Any, what: str = "name") -> str:
+    """A DNS name or TLS server name: dot-separated labels of letters, digits, hyphens and underscores."""
+    if not isinstance(value, str) or not _HOSTNAME.match(value.strip()):
+        raise ToolError("invalid_argument", f"{what} must be a DNS name such as example.com, got {value!r}")
+    return value.strip().rstrip(".").lower()
+
+
 _SIP_METHOD = re.compile(r"^[A-Za-z]{2,16}$")
 
 
