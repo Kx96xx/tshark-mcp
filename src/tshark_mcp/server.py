@@ -736,17 +736,22 @@ def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500,
 @app.tool(title="Message rates and storms", annotations=READ_ONLY)
 def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi: str | None = None,
                   filter: str | None = None, burst_min: int = 5, storm_min: int = 5, limit: int = 50) -> models.MessageRatesResult:
-    """Message rates over time and storm detection for Diameter, GTPv2-C, SIP and MAP
-    (`protocol` auto, diameter, gtpv2, sip or map). Every message is counted by name
-    (ULR, ULA, PUR, Create Session Request, REGISTER, 4xx REGISTER, updateLocation, ...)
+    """Message rates over time and storm detection for Diameter, GTPv2-C, GTPv1-C, SIP
+    and MAP (`protocol` auto, diameter, gtpv2, gtpv1, sip or map). Every message is
+    counted by name (ULR, ULA, PUR, Create Session Request, Create PDP Context Request,
+    REGISTER, 4xx REGISTER, updateLocation, ...)
     per `interval` seconds. `by_message` gives each type's total, peak per interval and
     when, and mean rate; `bursts` are runs of intervals where a type ran at three times
     its usual rate or more and at least `burst_min` per interval; `subscriber_loops`
-    lists subscribers that sent the same request `storm_min` times or more, with the
+    lists subscribers for whom the same request was sent `storm_min` times or more, with the
     gap between repeats and whether they are regular (a purge or attach loop);
     `timeline` gives the busiest message types per interval (merged into wider bins
-    past 500 rows); `storms` says it in one line each. `imsi` keeps only messages that
-    name the subscriber (mostly requests). `filter` is ANDed with the protocol filter."""
+    past 500 rows); `storms` says it in one line each. `imsi` keeps only messages tied
+    to the subscriber: Diameter requests (User-Name), GTP requests and the responses
+    with their sequence number, and every MAP message of a TCAP dialogue in which the
+    IMSI appears (so MAP loops such as repeated sendAuthenticationInfo show per IMSI).
+    `attributed_messages` counts the distinct messages tied to a subscriber.
+    `filter` is ANDed with the protocol filter."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
