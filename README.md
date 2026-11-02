@@ -367,7 +367,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 618 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 624 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
