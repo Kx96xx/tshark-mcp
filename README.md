@@ -24,7 +24,8 @@ frames, checksum offload and clocks that run backwards.
 
 ## Install
 
-Requires Python 3.10+, the `mcp` package 1.12 or newer (installed automatically) and tshark
+Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically;
+CI also runs the suite on the oldest of each) and tshark
 4.0 or newer (tested with 4.2 and 4.6). tshark comes with Wireshark:
 `brew install --cask wireshark` on macOS, `apt-get install tshark` on Debian or Ubuntu,
 `dnf install wireshark-cli` on Fedora.
