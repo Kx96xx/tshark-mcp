@@ -62,14 +62,16 @@ _PACKET = ("frame.number", "frame.time_epoch", "ip.src", "ip.dst")
 _KIND = re.compile(r"\(([^()]*)\)\s*$")
 
 
-def parse_messages(stdout: str, fields: list[str] | None = None) -> list[dict[str, Any]]:
+def parse_messages(stdout: str, fields: list[str] | None = None, multi: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """One record per SIP message. A TCP segment can carry several messages; tshark
     then lists each field's values for all of them, and the protocol item text
     ("Session Initiation Protocol (INVITE)" or "(200)") says which is a request and
     which a response, so every value goes back to its own message. Optional headers
     (P-Asserted-Identity, Reason, Contact, ...) are kept for a message only when every
     message of the packet has exactly one. ``fields`` is :data:`FIELDS` followed by any
-    extra columns (the message body, more headers); extras follow the same rule."""
+    extra columns (the message body, more headers); extras follow the same rule.
+    Columns named in ``multi`` (headers that may repeat, such as P-Associated-URI)
+    keep every value of a one-message packet, joined by the aggregator."""
     fields = fields or FIELDS
     out = []
     for line in stdout.splitlines():
@@ -80,7 +82,7 @@ def parse_messages(stdout: str, fields: list[str] | None = None) -> list[dict[st
         call_ids = rec["sip.Call-ID"].split(AGGREGATOR) if rec["sip.Call-ID"] else []
         if len(call_ids) <= 1:
             for k, v in rec.items():
-                if AGGREGATOR in v and k not in ("sip.P-Asserted-Identity",):
+                if AGGREGATOR in v and k != "sip.P-Asserted-Identity" and k not in multi:
                     rec[k] = v.split(AGGREGATOR)[0]
             if rec["sip.Call-ID"]:
                 out.append(rec)
