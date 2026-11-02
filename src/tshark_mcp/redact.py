@@ -24,9 +24,10 @@ Values are found in two passes over the result:
 2. *replace*: every string and every dict key is searched for those values, in
    plain digits (with or without ``+``), as ASCII hex and as TBCD hex (with or
    without colons), plus any run of 14 to 20 digits not seen before (an
-   identifier the first pass did not recognise, kind ``id``). In ``ids+ips``
-   mode every IPv4 and IPv6 address is replaced as well; in ``ids`` mode only
-   the addresses found under UE-address keys.
+   identifier the first pass did not recognise, kind ``id``) and, in file
+   names, runs of 11 to 13 digits. In ``ids+ips`` mode every IPv4 and IPv6
+   address is replaced as well; in ``ids`` mode only the addresses found under
+   UE-address keys. The unassigned addresses 0.0.0.0 and :: are kept.
 
 What it cannot do: free text written by people (SIP display names, SMS text)
 is not searched for names; a number shorter than 14 digits is only replaced
@@ -83,6 +84,10 @@ _URI_USERS = re.compile(
 )
 _NAI = re.compile(r"(?<![0-9])([0-9]{6,16})@")
 _DIGITS = re.compile(r"\+?[0-9]{6,20}")
+_PATH_DIGITS = re.compile(r"(?<![0-9])[0-9]{11,13}(?![0-9])")
+PATH_KEYS = frozenset({"path", "path_a", "path_b", "allowed_dirs"})
+"""Keys holding file names, which are often named after the subscriber: there an
+11 to 13 digit run (an MSISDN-sized number) is replaced too."""
 _INNER_DIGITS = re.compile(r"(?<![0-9])[0-9]{6,}(?![0-9])")
 _SPLIT = re.compile(r"[,;\s]+")
 _VISUAL = re.compile(r"[().\-]")
@@ -181,9 +186,6 @@ class Redactor:
                         self._variants[variant] = token
         return token
 
-    def lookup(self, token_hex: str) -> str | None:
-        return self._value.get(token_hex)
-
     # -------------------------------------------------------------- arguments
     def unmask(self, text: str) -> tuple[str, bool]:
         """``text`` with every issued token replaced by its value; (text, whether any was).
@@ -216,7 +218,8 @@ class Redactor:
                 if isinstance(key, str):
                     self._collect_text(key, None, local)
                 # A key with no meaning of its own inherits its container's (inner_src: [{"addr": ...}]).
-                self._collect(value, (kind_for_key(key) if isinstance(key, str) else None) or kind, local)
+                own = ("path" if key in PATH_KEYS else kind_for_key(key)) if isinstance(key, str) else None
+                self._collect(value, own or kind, local)
         elif isinstance(node, list):
             for item in node:
                 self._collect(item, kind, local)
@@ -224,10 +227,13 @@ class Redactor:
             self._collect_text(node, kind, local)
 
     def _collect_text(self, text: str, kind: str | None, local: dict[str, str]) -> None:
-        if kind == "ip":
+        if kind == "path":
+            for m in _PATH_DIGITS.finditer(text):
+                self._learn("id", m.group(0), local)
+        elif kind == "ip":
             for piece in _SPLIT.split(text):
                 ip = _ip(piece.split("/")[0])
-                if ip is not None:
+                if ip is not None and ip not in ("0.0.0.0", "::"):  # "no address yet", not a subscriber
                     self._learn("ip", ip, local)
         elif kind == "sip_user":
             for piece in _SPLIT.split(text):
@@ -254,20 +260,22 @@ class Redactor:
             return self._learn(_digit_kind("subscriber", digits, bare.startswith("+")), digits, local)
         return self._learn("user", user, local)
 
-    def _replace(self, node: Any, mode: str, local: dict[str, str], used: dict[str, set[str]]) -> Any:
+    def _replace(self, node: Any, mode: str, local: dict[str, str], used: dict[str, set[str]],
+                 is_path: bool = False) -> Any:
         if isinstance(node, dict):
-            return {(self._text(k, mode, local, used) if isinstance(k, str) else k): self._replace(v, mode, local, used)
-                    for k, v in node.items()}
+            return {(self._text(k, mode, local, used) if isinstance(k, str) else k):
+                    self._replace(v, mode, local, used, isinstance(k, str) and k in PATH_KEYS) for k, v in node.items()}
         if isinstance(node, list):
-            return [self._replace(item, mode, local, used) for item in node]
+            return [self._replace(item, mode, local, used, is_path) for item in node]
         if isinstance(node, str):
+            if is_path:
+                node = _PATH_DIGITS.sub(lambda m: _count(used, self._learn("id", m.group(0), local)), node)
             return self._text(node, mode, local, used)
         return node
 
     def _text(self, text: str, mode: str, local: dict[str, str], used: dict[str, set[str]]) -> str:
         def note(token: str) -> str:
-            used.setdefault(token.split(":", 1)[0], set()).add(token)
-            return token
+            return _count(used, token)
 
         def known(canonical: str) -> str | None:
             return local.get(canonical) or self._token.get(canonical)
@@ -302,7 +310,7 @@ class Redactor:
                 return hexes(whole)
             if m.group("ip4") is not None or m.group("ip6") is not None:
                 ip = _ip(whole)
-                if ip is None or not any(c.isalnum() for c in whole):
+                if ip is None or ip in ("0.0.0.0", "::"):
                     return whole
                 token = known(ip) or (self._learn("ip", ip, local) if mode == "ids+ips" else None)
                 return note(token) if token else whole
@@ -324,6 +332,11 @@ class Redactor:
             "prefix_kept": "IMSI MCC-MNC, IMEI TAC" if self.keep_prefix else "none",
             "tokens_as_arguments": True,
         }
+
+
+def _count(used: dict[str, set[str]], token: str) -> str:
+    used.setdefault(token.split(":", 1)[0], set()).add(token)
+    return token
 
 
 def _digit_kind(kind: str, digits: str, plus: bool) -> str:

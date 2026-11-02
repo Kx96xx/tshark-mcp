@@ -78,11 +78,13 @@ diameter_sessions(path="/pcaps/dra.pcap", imsi="001010123456789")
   passes a token is redacted even without `redact`.
 * Values are found by key (`imsi`, `msisdn`, `user_name`, tshark fields such as `e212.imsi`,
   `gtpv2.mei`, `sip.from.user`) and in any string: URI users, `<digits>@realm` NAIs, known
-  values as digits, ASCII hex or TBCD hex (raw AVP bytes, for example), and any run of 14
-  to 20 digits (`id:`). Keys of the result and the audit log are redacted too.
+  values as digits, ASCII hex or TBCD hex (raw AVP bytes, for example), any run of 14
+  to 20 digits (`id:`), and 11 to 13 digit runs in file names. Keys of the result and the
+  audit log are redacted too.
 * Limits: names in free text (SIP display names, SMS text) are not touched; a number of 13
-  digits or fewer is replaced only where it appeared under a known key or in a URI in this
-  call or an earlier one; values inside compressed or encrypted payloads, split across
+  digits or fewer, and in `ids` mode a UE address, is replaced only once the server has seen
+  it under a known key or in a URI, in this call or an earlier one (a first `conversations`
+  call shows UE addresses in clear: use `ids+ips` when addresses matter); values inside compressed or encrypted payloads, split across
   fields, or in other encodings are not found; host names, realms, APNs and MAC addresses
   are kept. Redaction rewrites results only: the capture is never changed or written.
 

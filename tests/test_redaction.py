@@ -123,6 +123,17 @@ class TestWhereIdentifiersAreFound:
                                 "short": "5550100"}[key]
         assert replaced == {"id": 2}
 
+    def test_file_names_lose_msisdn_sized_numbers(self):
+        out, _ = Redactor(KEY).apply({"note": f"seen {pcapgen.MSISDN} once", "path": f"/caps/{pcapgen.MSISDN}.pcap",
+                                      "files": [{"path": "/caps/ring_49216.pcap"}]}, "ids")
+        assert re.fullmatch(r"/caps/id:[0-9a-f]{10}\.pcap", out["path"])
+        assert out["files"][0]["path"] == "/caps/ring_49216.pcap"
+        assert pcapgen.MSISDN not in json.dumps(out)  # learnt from the path, so found in the note too
+
+    def test_unassigned_addresses_are_not_identifiers(self):
+        out, _ = Redactor(KEY).apply({"paa": ["0.0.0.0", "::"], "dir": "0.0.0.0 > ::"}, "ids+ips")
+        assert out == {"paa": ["0.0.0.0", "::"], "dir": "0.0.0.0 > ::"}
+
     def test_a_short_number_learnt_once_is_found_later(self):
         r = Redactor(KEY)
         first, _ = r.apply({"msisdn": pcapgen.MSISDN_SHORT}, "ids")
