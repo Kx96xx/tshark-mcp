@@ -732,7 +732,8 @@ def expert_info(path: str, severity: str = "warn", filter: str | None = None, li
     """tshark's own expert information (`-z expert`): the warnings, errors and
     malformed-packet flags its dissectors raised while decoding, grouped by severity,
     group (Malformed, Undecoded, Sequence, Protocol, Checksum, ...), protocol and summary,
-    with the count, the first frame and up to five sample frames of each. `severity` is
+    with the count, the first frame and up to five sample frames of each (an item tshark
+    reports only to its statistics, such as TCP "exceeds MSS", has no frames). `severity` is
     the lowest level kept: error, warn (default), note or chat. `filter` is a display
     filter that restricts which packets are examined, e.g. `diameter` or
     `sctp.port == 3868`. `summary` gives counts by severity and protocol and the number
