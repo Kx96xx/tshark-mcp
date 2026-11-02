@@ -25,13 +25,16 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from .copies import CopyTracker, ZeroedIdTracker, copy_key, nonzero
 from .fields import compact, iso, parse_time, split_fields_line, to_int
+from .packets import record as packet_record, zeroed_tcp_header
 
 FIELDS = [
     "frame.number", "frame.time_epoch", "frame.protocols",
-    "ip.src", "ip.dst", "ipv6.src", "ipv6.dst",
-    "tcp.stream", "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.len", "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset",
-    "udp.stream", "udp.srcport", "udp.dstport",
+    "ip.src", "ip.dst", "ip.id", "ip.len", "ipv6.src", "ipv6.dst", "ipv6.plen",
+    "tcp.stream", "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw", "tcp.len", "tcp.flags", "tcp.checksum",
+    "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset",
+    "udp.stream", "udp.srcport", "udp.dstport", "udp.length", "udp.checksum",
     "tls.record.content_type", "tls.record.opaque_type", "tls.record.length", "tls.handshake.type",
     "tls.handshake.extensions_server_name", "tls.handshake.extensions_alpn_str",
     "tls.handshake.extensions.supported_version", "tls.handshake.version", "tls.handshake.ciphersuite",
@@ -47,7 +50,9 @@ BASE_FILTER = ("tls || quic.cc.error_code || tcp.flags.syn == 1 || tcp.flags.fin
 
 HRR_RANDOM = "cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c"
 ENCRYPTED_ALERT_LEN = 19  # TLS 1.3: alert (2) + inner content type (1) + AEAD tag (16)
-COPY_WINDOW = 0.05
+# Copies with a non-zero IP ID count within this distance, as in tcp_health; with IP ID 0 the shared
+# detector needs the same transport checksum within a few milliseconds (see ``copies``).
+COPY_WINDOW_S = 1.0
 
 VERSIONS = {0x0300: "SSL 3.0", 0x0301: "TLS 1.0", 0x0302: "TLS 1.1", 0x0303: "TLS 1.2", 0x0304: "TLS 1.3"}
 SUITES = {
@@ -259,7 +264,13 @@ def parse(stdout: str) -> list[dict[str, Any]]:
             stream, sport, dport = _last(raw["tcp.stream"]), _last(raw["tcp.srcport"]), _last(raw["tcp.dstport"])
         else:
             stream, sport, dport = _last(raw["udp.stream"]), _last(raw["udp.srcport"]), _last(raw["udp.dstport"])
+        # The shared copy detector (``copies``) on the generic record: same IP ID, length and transport
+        # header. Only the IP ID that is in the key (the innermost one) says whether the window is the
+        # IP-ID one or the short zero-ID one; an outer tunnel ID differs between legs and proves nothing.
+        rec = packet_record(raw)
+        has_id = nonzero(rec.get("id"))
         packets.append({
+            "copy_key": copy_key(rec, has_id), "has_id": has_id, "zeroed": zeroed_tcp_header(rec), "rec": rec,
             "frame": to_int(_nth(raw["frame.number"], 0)), "time": parse_time(_nth(raw["frame.time_epoch"], 0)),
             "transport": transport, "stream": stream, "src": src, "dst": dst, "sport": sport, "dport": dport,
             "len": _last(raw["tcp.len"]), "seq": _last(raw["tcp.seq_raw"]),
@@ -291,7 +302,7 @@ def _new_conn(p: dict[str, Any]) -> dict[str, Any]:
     return {"transport": p["transport"], "stream": p["stream"], "first": p["time"], "frame": p["frame"],
             "client": None, "server": None, "syn": None, "hellos": [], "server_hello": None, "certificate": None,
             "chain_length": 0, "alerts": [], "app": {"client": [], "server": []}, "ccs": set(),
-            "closed": {}, "last": p["time"], "seen": {}}
+            "closed": {}, "last": p["time"]}
 
 
 def _side(conn: dict[str, Any], p: dict[str, Any]) -> str | None:
@@ -300,30 +311,36 @@ def _side(conn: dict[str, Any], p: dict[str, Any]) -> str | None:
     return "client" if (p["src"], p["sport"]) == conn["client"] else "server"
 
 
-def _is_copy(conn: dict[str, Any], p: dict[str, Any]) -> bool:
-    if p["transport"] == "tcp" and not (p["syn"] or p["ack"] or p["rst"]):
-        # Every TCP segment after the SYN carries ACK. One without any flag is the copy a decapsulating
-        # tap made with the TCP header zeroed (sequence 0, no flags); its original is in the capture too.
+def _is_copy(tracker: CopyTracker, zeroed_ids: ZeroedIdTracker, p: dict[str, Any]) -> bool:
+    """A second copy of a packet already seen (``copies``): the same IP ID, length and transport header
+    within ``COPY_WINDOW_S``, or with IP ID 0 the same checksum within a few milliseconds. Two more kinds
+    come from a tap that writes a decapsulated copy of each tunnelled packet: one with the TCP header zeroed
+    (no flags, sequence and acknowledgement 0), and one (QUIC and other UDP) whose IP ID was set to 0
+    while the original keeps its own; the original of both is in the capture too."""
+    if p["zeroed"]:
         return True
-    # tshark does not dissect TLS again in an exact copy (it takes it for a retransmission), so the
-    # TLS records are not part of the key.
-    key = (p["src"], p["sport"], p["seq"], p["len"], p["syn"], p["fin"], p["rst"])
-    prev = conn["seen"].get(key)
-    conn["seen"][key] = p["time"]
-    return prev is not None and p["time"] is not None and p["time"] - prev <= COPY_WINDOW
+    strict = p["copy_key"] is not None and tracker.check(p["copy_key"], p["has_id"], p["time"])[0]
+    loose = zeroed_ids.check(p["rec"], p["time"])  # always called, so every packet is remembered
+    return strict or loose
 
 
-def _repeat(seen: list[dict[str, Any]], p: dict[str, Any]) -> bool:
-    """The same handshake message seen again within COPY_WINDOW, at the same TCP sequence number (or with
-    the zeroed header of a tap's copy), is a capture copy, not a new message."""
-    return any(x["time"] is not None and p["time"] is not None and abs(p["time"] - x["time"]) <= COPY_WINDOW
-               and (x.get("seq") in (None, "", "0") or p["seq"] in ("", "0") or x["seq"] == p["seq"])
-               for x in seen[-2:])
+def _repeat(seen: list[dict[str, Any]], p: dict[str, Any], copy: bool) -> bool:
+    """A handshake message or alert already recorded: a capture copy of it (at the same TCP sequence number,
+    or either one with a tap's zeroed header; QUIC has no sequence number to compare), or a TCP
+    retransmission of the same bytes at the same sequence number. A QUIC packet that is not a copy is a new
+    packet (a resent Initial), so it is a new message."""
+    for x in seen[-2:]:
+        if copy and (x.get("seq") in (None, "", "0") or p["seq"] in ("", "0") or x["seq"] == p["seq"]):
+            return True
+        if not copy and p["transport"] == "tcp" and p["seq"] not in ("", "0") and x.get("seq") == p["seq"]:
+            return True
+    return False
 
 
 def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     conns: dict[tuple[str, str], dict[str, Any]] = {}
     order: list[dict[str, Any]] = []
+    tracker, zeroed_ids = CopyTracker(id_window=COPY_WINDOW_S), ZeroedIdTracker()
     for p in packets:
         key = (p["transport"], p["stream"])
         conn = conns.get(key)
@@ -332,7 +349,7 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
             order.append(conn)
         # A copy still has its handshake read (a tap's copy is sometimes the one tshark could reassemble),
         # but it adds nothing to the record, byte and close accounting below.
-        copy = _is_copy(conn, p)
+        copy = _is_copy(tracker, zeroed_ids, p)
         if copy:
             conn["copies"] = conn.get("copies", 0) + 1
         conn["last"] = p["time"] if p["time"] is not None else conn["last"]
@@ -340,7 +357,7 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
             conn["client"], conn["server"] = (p["src"], p["sport"]), (p["dst"], p["dport"])
             conn["syn"] = p["time"]
         hs = p["hs_types"]
-        if 1 in hs and not _repeat(conn["hellos"], p):  # ClientHello
+        if 1 in hs and not _repeat(conn["hellos"], p, copy):  # ClientHello
             if conn["client"] is None:
                 conn["client"], conn["server"] = (p["src"], p["sport"]), (p["dst"], p["dport"])
             offered = [v for v in p["supported_versions"] if v is not None and not _grease(v)]
@@ -378,7 +395,7 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
             except ValueError:
                 conn["certificate"] = None
         for level, desc in zip(p["alert_levels"], p["alert_descs"]):
-            if _repeat([a for a in conn["alerts"] if a["description"] == alert_name(desc)], p):
+            if _repeat([a for a in conn["alerts"] if a["description"] == alert_name(desc)], p, copy):
                 continue
             conn["alerts"].append({"frame": p["frame"], "time": p["time"], "seq": p["seq"], "from": side or "?",
                                    "level": "fatal" if level == 2 else "warning", "description": alert_name(desc)})

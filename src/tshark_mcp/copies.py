@@ -72,3 +72,29 @@ def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
     else:
         transport = (rec.get("proto"), (rec.get("icmp_error") or rec.get("icmp") or {}).get("type"))
     return (rec["src"], rec["dst"], rec.get("id"), rec.get("ip_len"), *transport)
+
+
+class ZeroedIdTracker:
+    """Copies whose IP ID the writing tool set to 0 while the original keeps its real one.
+
+    A capture tool that writes a decapsulated copy of each tunnelled packet may rebuild the IP header with
+    IP ID 0, so ``copy_key`` (which holds the IP ID) cannot match the pair. This key leaves the IP ID out and
+    keeps the transport checksum, which does not cover the IP ID, and two packets count as copies only when
+    one of them has IP ID 0 and they arrive within ``window``. Two packets with different non-zero IDs are
+    never copies here, however alike.
+    """
+
+    def __init__(self, window: float = DUPLICATE_WINDOW_S) -> None:
+        self.window = window
+        self._seen: dict[Hashable, tuple[float | None, bool]] = {}
+
+    def check(self, rec: dict[str, Any], time: float | None) -> bool:
+        key = copy_key({**rec, "id": None}, False)
+        if key is None:
+            return False
+        zero = not nonzero(rec.get("id"))
+        previous = self._seen.get(key)
+        self._seen[key] = (time, zero)
+        if previous is None or time is None or previous[0] is None:
+            return False
+        return (zero or previous[1]) and abs(time - previous[0]) <= self.window
