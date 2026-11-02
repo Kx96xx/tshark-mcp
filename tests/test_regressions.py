@@ -197,3 +197,13 @@ class TestMapReplies:
         assert error["type"] == "returnError"
         assert error["error_code"] == 1 and error["error"] == "unknownSubscriber"
         assert error.get("opcode") != 1
+
+    def test_replies_are_named_after_the_invoke_they_answer(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sigtran_messages(str(_map_replies(tmp_path)))
+        comps = _components_by_frame(result)
+        assert comps[2][0]["operation"] == "sendAuthenticationInfo"
+        assert comps[4][0]["type"] == "returnResultLast"
+        assert comps[4][0]["operation"] == "mo-forwardSM" and comps[4][0]["opcode"] == 46
+        # Errors are counted by error, results by the operation they answer.
+        assert result["summary"]["by_operation"] == {"sendAuthenticationInfo": 1, "unknownSubscriber": 1, "mo-forwardSM": 2}

@@ -675,7 +675,8 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> 
         ops: dict[str, int] = {}
         for r in rows:
             for c in r.get("components", []):
-                name = c.get("operation") or c.get("error") or c.get("type")
+                # A returnError now carries the operation it answers; count it by its error.
+                name = c.get("error") or c.get("operation") or c.get("type")
                 ops[name] = ops.get(name, 0) + 1
         summary = {"by_operation": ops, "unanswered_begins": sum(1 for r in rows if r.get("unanswered")),
                    "segmented": sum(1 for r in rows if r.get("segmentation"))}
