@@ -56,15 +56,17 @@ class Transaction:
         return self.request is not None and self.answer is None and self.request.expects_answer
 
 
-Compatible = Callable[[Message, Message], bool]
+Compatible = Callable[[Message, Message], "bool | int"]
 
 
 def pair_messages(messages: Iterable[Message], compatible: Compatible | None = None) -> list[Transaction]:
     """Pair requests with answers sharing the same ``key``.
 
     ``compatible`` can veto a candidate match (for example when both sides carry
-    a Session-Id and they differ). Unmatched answers are returned as
-    transactions with ``request=None`` so nothing silently disappears.
+    a Session-Id and they differ) or rank it: a false or zero result rejects
+    the candidate, a higher integer is preferred over a lower one, and among
+    equal ranks the oldest pending request wins. Unmatched answers are returned
+    as transactions with ``request=None`` so nothing silently disappears.
     """
     ordered = sorted(messages, key=lambda m: (m.time, m.frame))
     pending: dict[Hashable, deque[Transaction]] = defaultdict(deque)
@@ -77,11 +79,12 @@ def pair_messages(messages: Iterable[Message], compatible: Compatible | None = N
             continue
         queue = pending.get(msg.key)
         matched = None
+        best = 0
         if queue:
             for candidate in queue:
-                if compatible is None or compatible(candidate.request, msg):  # type: ignore[arg-type]
-                    matched = candidate
-                    break
+                rank = 1 if compatible is None else int(compatible(candidate.request, msg))  # type: ignore[arg-type]
+                if rank > best:
+                    matched, best = candidate, rank
         if matched is None:
             transactions.append(Transaction(request=None, answer=msg))
         else:

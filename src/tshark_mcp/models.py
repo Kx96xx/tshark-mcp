@@ -230,6 +230,7 @@ class GtpTransactionRow(PairedRow, total=False):
     accepted: bool
     paa: str
     response_fteids: list[Fteid]
+    response_path: str
 
 
 class GtpSessionsResult(RowsResult, total=False):

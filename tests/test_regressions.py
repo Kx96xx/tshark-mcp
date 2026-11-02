@@ -111,3 +111,43 @@ class TestFrameReadCap:
                                     fields=["diameter.hopbyhopid", "frame.number", "ip.src"])
         assert [p["frame.number"] for p in result["packets"]] == ["8", "9", "10"]
         assert all("ip.src" in p and "diameter.hopbyhopid" in p for p in result["packets"])
+
+
+# ------------------------------------------- GTPv2-C seen across a NAT or proxy
+def _gtp_behind_nat(tmp_path: Path) -> Path:
+    """A Create Session Request sent to the PGW's public address and answered from
+    that address towards the SGW's inner (NATed) address, then a request whose
+    sequence number collides with a response between two unrelated hosts."""
+    sgw_outer, sgw_inner, pgw, other_a, other_b = "192.0.2.30", "198.51.100.30", "192.0.2.40", "203.0.113.1", "203.0.113.2"
+    g = pcapgen
+    csr = g._gtpv2(32, 0, 0x77, [g._ie(1, g._tbcd(g.IMSI)), g._apn_ie(g.APN), g._ie(87, g._fteid(6, 0xA0A0, sgw_outer))])
+    resp = g._gtpv2(33, 0xA0A0, 0x77, [g._ie(2, bytes([16, 0])), g._ie(87, g._fteid(7, 0xB0B0, pgw), instance=1)])
+    csr2 = g._gtpv2(32, 0, 0x99, [g._ie(1, g._tbcd(g.IMSI_OTHER))])
+    stray = g._gtpv2(33, 0xC0C0, 0x99, [g._ie(2, bytes([16, 0]))])
+    t0 = 1_700_000_900.0
+    frames = [
+        (t0, g._udp_frame(sgw_outer, pgw, 2123, 2123, csr)),
+        (t0 + 0.010, g._udp_frame(pgw, sgw_inner, 2123, 2123, resp)),
+        (t0 + 1.0, g._udp_frame(sgw_outer, pgw, 2123, 2123, csr2)),
+        (t0 + 1.010, g._udp_frame(other_a, other_b, 2123, 2123, stray)),
+    ]
+    return g._frames_to_pcap(tmp_path / "nat.pcap", frames)
+
+
+class TestGtpAcrossNat:
+    def test_response_from_the_request_target_on_another_path_is_paired(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.gtp_sessions(str(_gtp_behind_nat(tmp_path)))
+        rows = {(r.get("seq"), r.get("message")): r for r in result["transactions"]}
+        first = rows[(0x77, "Create Session Request")]
+        assert first.get("unanswered") is None
+        assert first["response"] == "Create Session Response" and first["cause"] == 16
+        assert first["response_path"] == "192.0.2.40 > 198.51.100.30"
+
+    def test_unrelated_hosts_reusing_a_sequence_number_are_not_paired(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.gtp_sessions(str(_gtp_behind_nat(tmp_path)))
+        second = next(r for r in result["transactions"] if r.get("message") == "Create Session Request" and r.get("seq") == 0x99)
+        assert second["unanswered"] is True
+        assert any(r.get("unmatched_answer") for r in result["transactions"])
+        assert result["summary"]["unanswered"] == 1
