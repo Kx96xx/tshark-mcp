@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twenty-eight narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent twenty-nine narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -96,6 +96,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `sip_call_detail(path, call_id)` | One INVITE call by Call-ID, built on the `sip_dialogs` row: the ladder with the messages that carry SDP marked, `outcome`, final response with its reason phrase, post-dial delay (INVITE to the first 180/183, or to the failure response as RFC 6076 defines it), ringing, answer and setup times, early media, call duration from 200 OK to BYE, retransmissions per message, Reason headers with the Q.850 cause named, Warning headers, whether the caller or the callee sent BYE or CANCEL (by From tag), and each SDP with its offer/answer role, address, port, codecs, direction and ptime, plus the codecs offer and answer (or a 488's SDP) have in common |
 | `response_times(path, filter, limit, offset)` | Where the time goes per TCP flow: each connection cut into exchanges (client data, then the server's answer) with think time, `server_ms` (think time less the capture-to-server round trip, so it holds at any capture point), transfer time, retransmissions and out-of-order segments (told apart by IPv4 ID), stalls with their cause (retransmission, zero_window, server_pause), HTTP/1.x method, URI and status when dissected; per flow the handshake (or ACK) round trip, lost SYNs or SYN-ACKs with the time to connect, which side the capture sits near, `time_split_ms` and a `verdict`: server-bound, network-bound, receiver-bound, fast, idle-or-push (answers only after 10 s: long polls, push channels) or no-response; per-server server_ms percentiles, SYNs never answered or refused (`not_opened`). One connection split over several tcp.stream numbers by a tap's copies is joined |
 | `media_path_check(path, call_id, heuristic)` | One call's SDP offer and answer (the last completed exchange, so a re-INVITE wins) against the RTP captured in each direction: per direction the expected source and destination, the streams seen and a status (as negotiated, arrives from another source, sent elsewhere, missing); `issues` such as no_rtp, one_way_media, source_differs_from_sdp, nat_not_latched (a private SDP address the far end keeps sending to), rtp_to_wrong_address, private_sdp_address, media_direction (hold), media_rejected, payload_type_not_negotiated, codec_mismatch (no codec in common between the offer and the answer or a 488's SDP) and no_answer; `verdict` in one sentence |
+| `dtmf_events(path, call_id, heuristic, limit, offset)` | DTMF digits in time order from RFC 4733/2833 telephone-events (one row per digit however many update and end packets: duration, volume, end packets, payload type, SSRC, call) and SIP INFO (application/dtmf-relay, application/dtmf, KPML) with the INFO's response status; each RTP event is checked against the telephone-event payload type the call's SDP negotiated, and `issues` flag an unnegotiated payload type, a digit without an end packet, or a rejected or unanswered INFO; `calls` gives the digits per call and method and notes calls that use both |
 | `sip_dialogs(path, call_id, number, method, filter, limit, offset)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit, offset)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit, offset)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -309,10 +310,10 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 483 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 488 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
-Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP and RFC 4733 events (loss,
+Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
 reordering, jitter, NAT, one-way media, a 488), an SCTP handshake with an
 unanswered heartbeat, and MAP updateLocation and mo-forwardSM over M3UA), so nothing in the
 repository contains traffic from a real network.
