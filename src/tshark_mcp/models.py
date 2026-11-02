@@ -679,6 +679,7 @@ class MessageRatesResult(ToolResult, total=False):
     messages: int
     distinct_messages: int
     copies: int
+    attributed_messages: int
     first: str
     last: str
     duration_s: float
