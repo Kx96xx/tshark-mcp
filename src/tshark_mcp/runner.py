@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import selectors
+from contextvars import ContextVar, Token
 import shutil
 import subprocess
 import threading
@@ -23,6 +24,35 @@ from pathlib import Path
 from typing import Sequence
 
 from .limits import Limits, ToolError
+
+# Messages tshark prints when a capture ends early or has a damaged record. The
+# packets before the bad record are still dissected and printed, so a run that
+# stopped for one of these reasons is returned with a warning instead of failing.
+PARTIAL_READ_MARKERS: tuple[str, ...] = (
+    "appears to have been cut short",
+    "appears to be damaged or corrupt",
+    "has a packet with a network type that",
+    "less data than indicated",
+)
+
+_WARNINGS: ContextVar[list[str] | None] = ContextVar("tshark_mcp_warnings", default=None)
+
+
+def begin_warnings() -> Token:
+    """Start collecting per-call warnings (one list per tool call, context-local)."""
+    return _WARNINGS.set([])
+
+
+def note_warning(message: str) -> None:
+    sink = _WARNINGS.get()
+    if sink is not None and message not in sink:
+        sink.append(message)
+
+
+def collect_warnings(token: Token) -> list[str]:
+    warnings = list(_WARNINGS.get() or [])
+    _WARNINGS.reset(token)
+    return warnings
 
 # Flags that would make tshark capture, write, export or load code. Any of
 # these anywhere in argv aborts the call before a process is created.
@@ -236,8 +266,19 @@ def _kill(proc: subprocess.Popen) -> None:
 
 
 def check_result(result: RunResult, *, allow_nonzero: bool = False) -> RunResult:
-    """Turn a failing tshark exit into a ToolError with the stderr text."""
+    """Turn a failing tshark exit into a ToolError with the stderr text.
+
+    A capture that was cut short (a ring-buffer file still being written, an
+    interrupted copy) makes tshark exit non-zero after printing everything it
+    could read, which may be nothing when the filter matched no packet. That
+    output is kept and the condition is reported as a warning.
+    """
     if result.returncode != 0 and not allow_nonzero:
-        raise ToolError("tshark_failed", result.stderr.strip() or f"tshark exited with {result.returncode}",
+        stderr = result.stderr.strip()
+        if any(marker in stderr for marker in PARTIAL_READ_MARKERS):
+            first_line = stderr.splitlines()[0]
+            note_warning(f"tshark stopped before the end of the file; results cover the readable part only: {first_line}")
+            return result
+        raise ToolError("tshark_failed", stderr or f"tshark exited with {result.returncode}",
                         returncode=result.returncode)
     return result

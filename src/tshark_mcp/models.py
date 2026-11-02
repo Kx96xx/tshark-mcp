@@ -30,6 +30,7 @@ class ToolResult(TypedDict, total=False):
     error: ErrorInfo
     truncated: bool
     truncated_reason: str
+    warnings: list[str]
 
 
 class RowsResult(ToolResult, total=False):
