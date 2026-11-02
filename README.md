@@ -147,9 +147,9 @@ switch off.
 | --- | --- | --- |
 | Path allowlist: resolved real path must sit under an `--allow-dir`; paths outside are refused before existence is checked | none (server refuses to start) | `limits.Allowlist` |
 | Maximum capture size | 500 MB (`--max-file-mb`, `TSHARK_MCP_MAX_FILE_MB`) | `limits.Limits` |
-| Packets dissected per call (`-c`) by the per-packet tools | 500 (`--max-packets`, `TSHARK_MCP_MAX_PACKETS`) | `limits.Limits` |
-| Packets scanned per call (`-c`) by the aggregating tools (`gtp_user_plane`, `sctp_associations`, `find_identifier`) | 20 000 (`--max-scan-packets`, `TSHARK_MCP_MAX_SCAN_PACKETS`) | `limits.Limits` |
-| Hard ceiling on any `-c` the runner will pass, whatever a tool asks for | 100 x `max_packets` (50 000 by default) | `runner.Runner.read_capture` |
+| Matching packets dissected in full per call by the per-packet tools (Diameter, GTPv2-C, SIGTRAN) | 500 (`--max-packets`, `TSHARK_MCP_MAX_PACKETS`) | `limits.Limits` |
+| Frames read from a capture per tshark run (`-c`), and matching packets kept by the aggregating tools (`gtp_user_plane`, `sctp_associations`, `sip_dialogs`, `find_identifier`); a longer capture is reported as truncated | 200 000 (`--max-scan-packets`, `TSHARK_MCP_MAX_SCAN_PACKETS`) | `limits.Limits` |
+| Hard ceiling on any `-c` the runner will pass, whatever a tool asks for | `max_scan_packets` + 1 (one sentinel frame that shows whether the file goes on) | `runner.Runner.read_capture` |
 | Files opened by one `find_identifier` call | 50 (`--max-files`, `TSHARK_MCP_MAX_FILES`), and the whole call shares one `--timeout` budget | `limits.Limits`, `server.find_identifier` |
 | JSON returned per call | 200 KB (`--max-output-kb`); rows are dropped to fit and `truncated` is set | `server._fit` |
 | Raw tshark stdout kept in memory | 64 MB (`TSHARK_MCP_MAX_STDOUT_MB`); tshark is killed beyond it | `runner.Runner` |

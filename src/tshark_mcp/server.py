@@ -166,36 +166,123 @@ def _filter(user_filter: str | None, base: str | None = None) -> str | None:
     return f"({base}) && ({text})" if base else text
 
 
-def _json_run(capture: Path, display_filter: str | None, layers: str, max_packets: int) -> tuple[list[dict], bool]:
-    """Run tshark in JSON mode; return (packets, hit_packet_cap)."""
-    result = check_result(state().runner.read_capture(
-        capture, ["-T", "json", "--no-duplicate-keys", "-J", layers], max_packets=max_packets,
-        display_filter=display_filter,
-    ))
-    packets = parse_packets(result.stdout)
-    return packets, len(packets) >= max_packets
+@dataclass
+class Scan:
+    """What one bounded pass over a capture saw.
+
+    tshark's ``-c N`` stops after N frames *read*, not N frames matched, so a
+    display filter on a long capture would silently see only the start of the
+    file. Every pass therefore reads up to ``max_scan_packets`` frames (plus one
+    sentinel frame that reveals whether the file goes on) and keeps the first
+    ``match_cap`` matching packets; both caps are reported separately.
+    """
+
+    matched: int = 0
+    match_cap: int = 0
+    read_cap: int = 0
+    hit_match_cap: bool = False
+    hit_read_cap: bool = False
+
+    @property
+    def truncated(self) -> bool:
+        return self.hit_match_cap or self.hit_read_cap
+
+    def reason(self) -> str | None:
+        parts = []
+        if self.hit_match_cap:
+            parts.append(f"packet cap reached: only the first {self.match_cap} matching packets were dissected; narrow the filter")
+        if self.hit_read_cap:
+            parts.append(f"frame cap reached: only the first {self.read_cap} frames of the capture were read; "
+                         "slice the capture or raise max_scan_packets")
+        return "; ".join(parts) or None
 
 
-def _fields_run(capture: Path, display_filter: str | None, fields: list[str], max_packets: int,
-                aggregator: str = ",") -> tuple[str, int, bool]:
+def _fields_core(capture: Path, display_filter: str | None, fields: list[str], max_matched: int,
+                 aggregator: str) -> tuple[list[tuple[int | None, str]], Scan]:
+    """Run ``-T fields`` under the frame-read cap; return (frame, line) pairs for the kept matches."""
+    st = state()
+    read_cap = st.limits.max_scan_packets
+    sentinel = read_cap + 1
+    flt = f"({display_filter}) || frame.number == {sentinel}" if display_filter else None
+    # tshark prints a field asked for twice only once, so reuse the caller's own frame.number column.
+    appended = "frame.number" not in fields
+    columns = [*fields, "frame.number"] if appended else list(fields)
+    frame_index = columns.index("frame.number")
     args = ["-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", "-E", f"aggregator={aggregator}"]
-    for f in fields:
+    for f in columns:
         args += ["-e", f]
-    result = check_result(state().runner.read_capture(capture, args, max_packets=max_packets, display_filter=display_filter))
-    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
-    return result.stdout, len(lines), len(lines) >= max_packets
+    result = check_result(st.runner.read_capture(capture, args, max_packets=sentinel, display_filter=flt))
+    scan = Scan(match_cap=max_matched, read_cap=read_cap)
+    kept: list[tuple[int | None, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        frame_col = parts[frame_index] if frame_index < len(parts) else ""
+        body = "\t".join(parts[:-1]) if appended else line
+        frame = to_int(frame_col.split(aggregator)[0].strip())
+        if frame is not None and frame > read_cap:
+            scan.hit_read_cap = True
+            continue
+        if scan.matched >= max_matched:
+            scan.hit_match_cap = True
+            continue
+        scan.matched += 1
+        kept.append((frame, body))
+    return kept, scan
 
 
-def _envelope(rows_key: str, rows: list[dict[str, Any]], limit: int, scanned: int | None, hit_cap: bool,
+def _fields_run(capture: Path, display_filter: str | None, fields: list[str], max_matched: int,
+                aggregator: str = ",") -> tuple[str, Scan]:
+    """``-T fields`` output (one line per kept packet, ``fields`` columns) and the scan summary."""
+    kept, scan = _fields_core(capture, display_filter, fields, max_matched, aggregator)
+    stdout = "".join(body + "\n" for _, body in kept)
+    return stdout, scan
+
+
+def _json_run(capture: Path, display_filter: str | None, layers: str, max_matched: int) -> tuple[list[dict], Scan]:
+    """Fully dissect the first ``max_matched`` packets matching ``display_filter``.
+
+    A cheap first pass lists the matching frame numbers under the read cap; the
+    JSON pass then dissects exactly those frames, so a broad filter on a large
+    capture costs one bounded JSON run rather than an oversized one.
+    """
+    kept, scan = _fields_core(capture, display_filter, [], max_matched, ",")
+    frames = [f for f, _ in kept if f is not None]
+    if not frames:
+        return [], scan
+    last = max(frames)
+    flt = f"({display_filter}) && frame.number <= {last}" if display_filter else f"frame.number <= {last}"
+    result = check_result(state().runner.read_capture(
+        capture, ["-T", "json", "--no-duplicate-keys", "-J", layers], max_packets=last, display_filter=flt,
+    ))
+    return parse_packets(result.stdout), scan
+
+
+def _envelope(rows_key: str, rows: list[dict[str, Any]], limit: int, scan: Scan | None = None,
               **extra: Any) -> dict[str, Any]:
     out: dict[str, Any] = {rows_key: rows[:limit], "count": len(rows[:limit]), "total_found": len(rows)}
-    if scanned is not None:
-        out["packets_scanned"] = scanned
+    if scan is not None:
+        out["packets_scanned"] = scan.matched
     out.update(extra)
-    if hit_cap or len(rows) > limit:
+    reasons = []
+    if scan is not None and scan.truncated:
+        reasons.append(scan.reason())
+    if len(rows) > limit:
+        reasons.append("more rows than limit; narrow the filter or page with a tighter filter")
+    if reasons:
         out["truncated"] = True
-        out["truncated_reason"] = ("packet cap reached" if hit_cap else "more rows than limit") + "; narrow the filter"
+        out["truncated_reason"] = "; ".join(r for r in reasons if r)
     return out
+
+
+def _merge_scans(first: Scan | None, second: Scan) -> Scan:
+    """Combine the selection pass and the fetch pass of a two-pass tool into one summary."""
+    if first is None:
+        return second
+    return Scan(matched=second.matched, match_cap=second.match_cap, read_cap=second.read_cap,
+                hit_match_cap=first.hit_match_cap or second.hit_match_cap,
+                hit_read_cap=first.hit_read_cap or second.hit_read_cap)
 
 
 # ------------------------------------------------------------------ tools
@@ -244,7 +331,7 @@ def conversations(path: str, layer: str = "ip", filter: str | None = None, limit
         result = check_result(state().runner.read_capture(capture, ["-q", "-z", stat]))
         rows = _parse_conversations(result.stdout)
         rows.sort(key=lambda r: -r["frames_total"])
-        return _envelope("conversations", rows, cap, None, False, layer=layer, display_filter=flt,
+        return _envelope("conversations", rows, cap, None, layer=layer, display_filter=flt,
                          total_frames=sum(r["frames_total"] for r in rows),
                          total_bytes=sum(r["bytes_total"] for r in rows))
     return _guarded("conversations", {"path": path, "layer": layer, "filter": filter, "limit": limit}, run)
@@ -266,14 +353,14 @@ def filter_packets(path: str, display_filter: str, fields: list[str] | None = No
             raise ToolError("invalid_argument", "fields must not be empty")
         validate_fields(st.runner, names)
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        stdout, scanned, hit = _fields_run(capture, flt, names, cap)
+        stdout, scan = _fields_run(capture, flt, names, cap)
         rows = []
         for line in stdout.splitlines():
             cols = split_fields_line(line)
             if len(cols) != len(names):
                 continue
             rows.append({k: v for k, v in zip(names, cols) if v != ""})
-        return _envelope("packets", rows, cap, scanned, hit, fields=names, display_filter=flt)
+        return _envelope("packets", rows, cap, scan, fields=names, display_filter=flt)
     return _guarded("filter_packets", {"path": path, "display_filter": display_filter, "fields": fields, "limit": limit}, run)
 
 
@@ -314,11 +401,11 @@ def diameter_transactions(path: str, filter: str | None = None, limit: int = 200
         st = state()
         flt = _filter(filter, base="diameter")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        packets, hit = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
+        packets, scan = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
         txs = diameter.pair(diameter.extract_messages(packets))
         rows = [diameter.transaction_row(t) for t in txs]
         summary = _summarise(rows, "request", "unanswered", lambda r: r.get("success") is False)
-        return _envelope("transactions", rows, cap, len(packets), hit, summary=summary)
+        return _envelope("transactions", rows, cap, scan, summary=summary)
     return _guarded("diameter_transactions", {"path": path, "filter": filter, "limit": limit}, run)
 
 
@@ -347,17 +434,18 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         base = _filter(filter, base="diameter")
         select = diameter.session_filter(sid, imsi_d, code)
-        hit = False
+        pre: Scan | None = None
         flt = base
         if select:
-            stdout, _, hit = _fields_run(capture, f"({base}) && ({select})", ["diameter.Session-Id"], st.limits.max_packets)
+            stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["diameter.Session-Id"], st.limits.max_scan_packets)
             sessions = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
             corr = diameter.correlation_filter(sessions)
             if corr is None:
-                return _envelope("sessions", [], cap, 0, hit, summary={"sessions": 0, "unanswered": 0, "failed": 0,
-                                                                        "without_session_id": 0}, selection=select)
+                return _envelope("sessions", [], cap, pre, summary={"sessions": 0, "unanswered": 0, "failed": 0,
+                                                                     "without_session_id": 0}, selection=select)
             flt = f"({base}) && ({corr})"
-        packets, hit2 = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
+        packets, scan = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
+        scan = _merge_scans(pre, scan)
         txs = diameter.pair(diameter.extract_messages(packets))
         rows, without = diameter.session_rows(txs)
         if code is not None:
@@ -369,7 +457,7 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
             "without_session_id": without,
             "by_application": _count(rows, "application"),
         }
-        return _envelope("sessions", rows, cap, len(packets), hit or hit2, summary=summary, selection=select)
+        return _envelope("sessions", rows, cap, scan, summary=summary, selection=select)
     return _guarded("diameter_sessions", {"path": path, "session_id": session_id, "imsi": imsi,
                                           "command_code": command_code, "filter": filter, "limit": limit}, run)
 
@@ -394,23 +482,24 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         base = _filter(filter, base="gtpv2")
         select = gtp.selection_filter(imsi_d, apn_s, teid_i)
-        hit = False
+        pre: Scan | None = None
         flt = base
         if select:
-            stdout, scanned, hit = _fields_run(capture, f"({base}) && ({select})", ["gtpv2.seq"], st.limits.max_packets)
+            stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["gtpv2.seq"], st.limits.max_scan_packets)
             seqs = {s for ln in stdout.splitlines() for s in (to_int(v) for v in ln.strip().split(",")) if s is not None}
             corr = gtp.correlation_filter(seqs, set())
             if corr is None:
-                return _envelope("transactions", [], cap, scanned, hit,
+                return _envelope("transactions", [], cap, pre,
                                  summary={"by_message": {}, "unanswered": 0, "failed": 0}, selection=select)
             flt = f"({base}) && ({corr})"
-        packets, hit2 = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
+        packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
+        scan = _merge_scans(pre, scan)
         txs = gtp.pair(gtp.extract_messages(packets))
         rows = [gtp.transaction_row(t) for t in txs]
         if select:
             rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
-        return _envelope("transactions", rows, cap, len(packets), hit or hit2, summary=summary, selection=select)
+        return _envelope("transactions", rows, cap, scan, summary=summary, selection=select)
     return _guarded("gtp_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
                                      "limit": limit}, run)
 
@@ -430,10 +519,10 @@ def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -
             if teid_int is None or teid_int < 0 or teid_int > 0xFFFFFFFF:
                 raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {teid!r}")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        stdout, scanned, hit = _fields_run(capture, gtp.user_plane_filter(teid_int), gtp.USER_PLANE_FIELDS,
-                                           st.limits.max_scan_packets)
+        stdout, scan = _fields_run(capture, gtp.user_plane_filter(teid_int), gtp.USER_PLANE_FIELDS,
+                                   st.limits.max_scan_packets)
         rows = gtp.summarise_user_plane(stdout)
-        return _envelope("tunnels", rows, cap, scanned, hit,
+        return _envelope("tunnels", rows, cap, scan,
                          total_packets=sum(r["packets"] for r in rows),
                          total_payload_bytes=sum(r["payload_bytes"] for r in rows))
     return _guarded("gtp_user_plane", {"path": path, "teid": teid, "limit": limit}, run)
@@ -459,21 +548,21 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         base = _filter(filter, base="sip")
         select = sip.selection_filter(cid, num, meth)
-        hit = False
+        pre: Scan | None = None
         flt = base
         if select:
-            stdout, _, hit = _fields_run(capture, f"({base}) && ({select})", ["sip.Call-ID"], st.limits.max_packets)
+            stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["sip.Call-ID"], st.limits.max_scan_packets)
             call_ids = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
             corr = sip.correlation_filter(call_ids)
             if corr is None:
-                return _envelope("dialogs", [], cap, 0, hit, summary={"by_message": {}, "unanswered": 0, "failed": 0},
+                return _envelope("dialogs", [], cap, pre, summary={"by_message": {}, "unanswered": 0, "failed": 0},
                                  selection=select)
             flt = f"({base}) && ({corr})"
-        stdout, scanned, hit2 = _fields_run(capture, flt, sip.FIELDS, st.limits.max_packets, aggregator=sip.AGGREGATOR)
+        stdout, scan = _fields_run(capture, flt, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
         rows = sip.group_dialogs(stdout)
         summary = _summarise(rows, "initial_method", "no_final_response",
                              lambda r: (r.get("final_status") or 0) >= 400)
-        return _envelope("dialogs", rows, cap, scanned, hit or hit2, summary=summary, selection=select)
+        return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
                                     "filter": filter, "limit": limit}, run)
 
@@ -524,7 +613,7 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             scanned += 1
             try:
                 capture = st.allowlist.resolve(str(candidate), st.limits)
-                stdout, lines, hit = _fields_run(capture, flt, fields, st.limits.max_scan_packets)
+                stdout, scan = _fields_run(capture, flt, fields, st.limits.max_scan_packets)
             except ToolError as exc:
                 errors.append({"path": str(candidate), "error": exc.type, "message": exc.message})
                 continue
@@ -535,12 +624,12 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
                 "path": str(capture), "hits": summary["hits"], "first": iso(summary["first"]),
                 "last": iso(summary["last"]), "protocols": summary["protocols"],
             }
-            if hit:
+            if scan.truncated:
                 row["truncated"] = True
-                row["truncated_reason"] = "packet cap reached in this file; the count is a lower bound"
+                row["truncated_reason"] = f"{scan.reason()}; the count is a lower bound"
             rows.append(row)
         rows.sort(key=lambda r: (-r["hits"], r["path"]))
-        out = _envelope("files", rows, file_cap, None, False, identifier=identifier.strip(), kind=resolved_kind,
+        out = _envelope("files", rows, file_cap, None, identifier=identifier.strip(), kind=resolved_kind,
                         display_filter=flt, files_scanned=scanned, files_found=len(candidates),
                         files_with_hits=len(rows), total_hits=sum(r["hits"] for r in rows), errors=errors)
         if truncated_reason:
@@ -560,9 +649,9 @@ def sctp_associations(path: str, limit: int = 200) -> models.SctpAssociationsRes
         capture = _resolve(path)
         st = state()
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        stdout, scanned, hit = _fields_run(capture, sigtran.SCTP_FILTER, sigtran.SCTP_FIELDS, st.limits.max_scan_packets)
+        stdout, scan = _fields_run(capture, sigtran.SCTP_FILTER, sigtran.SCTP_FIELDS, st.limits.max_scan_packets)
         rows = sigtran.summarise_sctp(stdout)
-        return _envelope("associations", rows, cap, scanned, hit)
+        return _envelope("associations", rows, cap, scan)
     return _guarded("sctp_associations", {"path": path, "limit": limit}, run)
 
 
@@ -579,7 +668,7 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> 
         st = state()
         flt = _filter(filter, base=sigtran.MESSAGE_FILTER)
         cap = clamp_limit(limit, st.limits.max_packets, 200)
-        packets, hit = _json_run(capture, flt, sigtran.JSON_LAYERS, st.limits.max_packets)
+        packets, scan = _json_run(capture, flt, sigtran.JSON_LAYERS, st.limits.max_packets)
         rows = sigtran.extract_rows(packets)
         ops: dict[str, int] = {}
         for r in rows:
@@ -588,7 +677,7 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> 
                 ops[name] = ops.get(name, 0) + 1
         summary = {"by_operation": ops, "unanswered_begins": sum(1 for r in rows if r.get("unanswered")),
                    "segmented": sum(1 for r in rows if r.get("segmentation"))}
-        return _envelope("messages", rows, cap, len(packets), hit, summary=summary)
+        return _envelope("messages", rows, cap, scan, summary=summary)
     return _guarded("sigtran_messages", {"path": path, "filter": filter, "limit": limit}, run)
 
 
@@ -615,27 +704,28 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
         sessions: set[str] = set()
         flt = diameter.identity_filter(imsi_d, msisdn_d)
         if flt:
-            stdout, _, hit = _fields_run(capture, flt, ["diameter.Session-Id"], st.limits.max_packets)
+            stdout, scan = _fields_run(capture, flt, ["diameter.Session-Id"], st.limits.max_scan_packets)
             sessions = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
-            notes["diameter"] = {"sessions": len(sessions), "truncated": hit}
+            notes["diameter"] = {"sessions": len(sessions), "truncated": scan.truncated}
         corr = diameter.correlation_filter(sessions)
         if corr:
-            packets, hit = _json_run(capture, corr, diameter.JSON_LAYERS, st.limits.max_packets)
+            packets, scan = _json_run(capture, corr, diameter.JSON_LAYERS, st.limits.max_packets)
             for tx in diameter.pair(diameter.extract_messages(packets)):
                 row = diameter.transaction_row(tx)
                 timeline.append(_timeline_row("diameter", row, message=f'{row.get("request")}/{row.get("answer") or "-"}',
                                               detail=row.get("command"), result=row.get("result"),
                                               identity=row.get("user_name"), extra={"application": row.get("application"),
                                               "origin_host": row.get("origin_host"), "destination_host": row.get("destination_host")}))
-            notes["diameter"]["truncated"] = notes["diameter"]["truncated"] or hit
+            notes["diameter"]["truncated"] = notes["diameter"]["truncated"] or scan.truncated
 
         # GTPv2-C: requests naming the subscriber, then the same sequence numbers and TEIDs.
         flt = gtp.identity_filter(imsi_d, msisdn_d)
         if flt:
-            packets, hit = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
+            packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
             seed = gtp.extract_messages(packets)
             seqs, teids = gtp.sequence_numbers(seed), gtp.control_teids(seed)
-            notes["gtpv2"] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids), "truncated": hit}
+            notes["gtpv2"] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids),
+                              "truncated": scan.truncated}
             corr = gtp.correlation_filter(seqs, teids)
             seen_frames: set[int] = set()
             # Pass two fetches the paired responses; they reveal the peer's control-plane
@@ -644,7 +734,7 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
             for _pass in range(2):
                 if not corr:
                     break
-                packets, hit = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets)
+                packets, scan = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets)
                 learnt: set[int] = set()
                 for tx in gtp.pair(gtp.extract_messages(packets)):
                     row = gtp.transaction_row(tx)
@@ -660,7 +750,7 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
                                                   extra={"apn": row.get("apn"), "paa": row.get("paa"), "teid": row.get("teid"),
                                                          "request_fteids": row.get("request_fteids"),
                                                          "response_fteids": row.get("response_fteids")}))
-                notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or hit
+                notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or scan.truncated
                 new_teids = learnt - teids
                 teids |= new_teids
                 notes["gtpv2"]["control_teids"] = len(teids)
@@ -669,12 +759,12 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
         # MAP: components naming the subscriber, then the whole TCAP transactions.
         flt = sigtran.identity_filter(imsi_d, msisdn_d)
         if flt:
-            stdout, _, hit = _fields_run(capture, flt, ["tcap.tid"], st.limits.max_packets)
+            stdout, scan = _fields_run(capture, flt, ["tcap.tid"], st.limits.max_scan_packets)
             tids = {_colonise(t) for ln in stdout.splitlines() for t in ln.strip().split(",") if t.strip()}
-            notes["map"] = {"transactions": len(tids), "truncated": hit}
+            notes["map"] = {"transactions": len(tids), "truncated": scan.truncated}
             corr = sigtran.correlation_filter(tids)
             if corr:
-                packets, hit = _json_run(capture, corr, sigtran.JSON_LAYERS, st.limits.max_packets)
+                packets, scan = _json_run(capture, corr, sigtran.JSON_LAYERS, st.limits.max_packets)
                 for row in sigtran.extract_rows(packets):
                     comps = row.get("components", [])
                     names = [c.get("operation") or c.get("error") or c.get("type") for c in comps]
@@ -688,17 +778,17 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
                                                          "segmentation": row.get("segmentation"),
                                                          "answered_in_frame": row.get("answered_in_frame"),
                                                          "in_response_to_frame": row.get("in_response_to_frame")}))
-                notes["map"]["truncated"] = notes["map"]["truncated"] or hit
+                notes["map"]["truncated"] = notes["map"]["truncated"] or scan.truncated
 
         # SIP: dialogs whose identities contain the MSISDN (or IMSI), then the full dialogs.
         flt = sip.identity_filter(imsi_d, msisdn_d)
         if flt:
-            stdout, _, hit = _fields_run(capture, flt, ["sip.Call-ID"], st.limits.max_packets)
+            stdout, scan = _fields_run(capture, flt, ["sip.Call-ID"], st.limits.max_scan_packets)
             call_ids = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
-            notes["sip"] = {"dialogs": len(call_ids), "truncated": hit}
+            notes["sip"] = {"dialogs": len(call_ids), "truncated": scan.truncated}
             corr = sip.correlation_filter(call_ids)
             if corr:
-                stdout, _, hit = _fields_run(capture, corr, sip.FIELDS, st.limits.max_packets, aggregator=sip.AGGREGATOR)
+                stdout, scan = _fields_run(capture, corr, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
                 for row in sip.group_dialogs(stdout):
                     final = row.get("final_status")
                     timeline.append(_timeline_row("sip", row, message=f'{row.get("initial_method")} -> {final if final else "no final response"}',
@@ -706,16 +796,18 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
                                                   identity=row.get("p_asserted_identity") or row.get("from"),
                                                   extra={"call_id": row.get("call_id"), "from": row.get("from"), "to": row.get("to"),
                                                          "time_to_final_ms": row.get("time_to_final_ms"), "methods": row.get("methods")}))
-                notes["sip"]["truncated"] = notes["sip"]["truncated"] or hit
+                notes["sip"]["truncated"] = notes["sip"]["truncated"] or scan.truncated
 
         timeline.sort(key=lambda r: (r.get("time") or "", r.get("request_frame") or r.get("frame") or 0))
         by_protocol: dict[str, int] = {}
         for r in timeline:
             by_protocol[r["protocol"]] = by_protocol.get(r["protocol"], 0) + 1
         failures = [r for r in timeline if r.get("unanswered") or r.get("failed")]
-        out = _envelope("timeline", timeline, cap, None, any(n.get("truncated") for n in notes.values()),
-                        identity={"imsi": imsi_d, "msisdn": msisdn_d}, by_protocol=by_protocol,
-                        failures=len(failures), passes=notes)
+        out = _envelope("timeline", timeline, cap, None, identity={"imsi": imsi_d, "msisdn": msisdn_d},
+                        by_protocol=by_protocol, failures=len(failures), passes=notes)
+        if any(n.get("truncated") for n in notes.values()):
+            out["truncated"] = True
+            out["truncated_reason"] = "a pass hit the packet or frame cap (see passes); the timeline may be incomplete"
         return out
     return _guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit}, run)
 
@@ -879,9 +971,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="append one JSON line per tool call here (or TSHARK_MCP_LOG)")
     p.add_argument("--tshark", default=None, help="path to the tshark binary (or TSHARK_MCP_TSHARK)")
     p.add_argument("--max-file-mb", type=float, default=None, help="refuse captures larger than this (default 500)")
-    p.add_argument("--max-packets", type=int, default=None, help="packets dissected per call (default 500)")
+    p.add_argument("--max-packets", type=int, default=None, help="matching packets dissected in full per call (default 500)")
     p.add_argument("--max-scan-packets", type=int, default=None,
-                   help="packets scanned per call by the aggregating tools (default 20000)")
+                   help="frames read from a capture per tshark run, and matching packets kept by the aggregating tools (default 200000)")
     p.add_argument("--max-output-kb", type=float, default=None, help="JSON bytes returned per call (default 200)")
     p.add_argument("--timeout", type=float, default=None, help="seconds per tshark run (default 60)")
     p.add_argument("--max-files", type=int, default=None, help="capture files one find_identifier call may open (default 50)")

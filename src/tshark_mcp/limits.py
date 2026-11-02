@@ -42,10 +42,12 @@ class Limits:
     """Captures larger than this are refused before tshark is started."""
 
     max_packets: int = 500
-    """Upper bound on dissected packets handed to a per-packet tool (``-c``)."""
+    """Matching packets a per-packet tool dissects in full per call (Diameter, GTPv2-C, SIGTRAN rows)."""
 
-    max_scan_packets: int = 20_000
-    """Upper bound on packets scanned by aggregating tools (GTP-U, SCTP)."""
+    max_scan_packets: int = 200_000
+    """Frames read from a capture per tshark run (``-c``), and the matching packets an
+    aggregating tool (GTP-U, SCTP, SIP, find_identifier) keeps. A long capture is reported
+    as truncated when it has more frames than this."""
 
     max_output_bytes: int = 200 * 1024
     """Upper bound on the JSON returned to the model; rows are dropped to fit."""

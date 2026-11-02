@@ -146,7 +146,8 @@ class Runner:
         """Run ``tshark -n -r <capture> [-c N] [-Y filter] <args>``."""
         argv: list[str] = ["-n", "-r", str(capture)]
         if max_packets is not None:
-            argv += ["-c", str(max(1, min(int(max_packets), self.limits.max_packets * 100)))]
+            # One more than the frame-read cap so a caller can place a sentinel frame just past it.
+            argv += ["-c", str(max(1, min(int(max_packets), self.limits.max_scan_packets + 1)))]
         if display_filter:
             argv += ["-Y", display_filter]
         argv += list(args)

@@ -5,7 +5,7 @@
 ## What it can and cannot do
 
 - Reads capture files that already exist inside directories the operator allowed with `--allow-dir`. Every path an agent passes must resolve (symlinks followed) inside one of them; anything else is refused before the file is looked at.
-- Every call is bounded: file size (500 MB), packets dissected (500 per call, 20 000 for aggregating tools), JSON returned (200 KB, rows are dropped and `truncated: true` is set), tshark run time (60 s), files opened by one multi-file call (50).
+- Every call is bounded: file size (500 MB), matching packets dissected in full (500 per call), frames read per tshark run (200 000), JSON returned (200 KB, rows are dropped and `truncated: true` is set), tshark run time (60 s), files opened by one multi-file call (50).
 - tshark is started with an argv list, never a shell, always with `-n` (no name resolution) and `-r` (read a file). Capture, write, export and extension flags are refused before a process starts.
 - Display filters are linted and compiled against an empty capture before touching the real file. Field names must exist in `tshark -G fields`.
 - Failures come back as `{"error": {"type": ..., "message": ...}}`, never as exceptions.
