@@ -597,3 +597,64 @@ class CompareCapturesResult(RowsResult, total=False):
     identical: bool
     timing: dict[str, Any]
     notes: list[str]
+
+
+# ----------------------------------------------------------------- rates
+class MessageRate(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    protocol: str
+    message: str
+    request: bool | None
+    total: int
+    distinct: int
+    peak: int
+    peak_at: str
+    mean_per_s: float
+    active_intervals: int
+    bursts: int
+
+
+class Burst(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    protocol: str
+    message: str
+    start: str
+    end: str
+    duration_s: float
+    messages: int
+    peak_per_interval: int
+    baseline_per_interval: float
+
+
+class SubscriberLoop(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    subscriber: str
+    protocol: str
+    message: str
+    count: int
+    first: str
+    last: str
+    span_s: float
+    median_gap_s: float
+    min_gap_s: float
+    max_gap_s: float
+    regular: bool
+
+
+class MessageRatesResult(ToolResult, total=False):
+    protocol: str
+    interval_s: float
+    display_filter: str
+    packets_scanned: int
+    messages: int
+    distinct_messages: int
+    copies: int
+    first: str
+    last: str
+    duration_s: float
+    by_message: list[MessageRate]
+    bursts: list[Burst]
+    subscriber_loops: list[SubscriberLoop]
+    timeline: list[dict[str, Any]]
+    timeline_interval_s: float
+    storms: list[str]

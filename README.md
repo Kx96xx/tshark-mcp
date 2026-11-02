@@ -15,7 +15,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent fifteen narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent sixteen narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply.
 
@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 264 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 273 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -81,6 +81,7 @@ Tests: 264 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `gtp_sessions(path, imsi, apn, teid, filter, limit)` | GTPv2-C requests paired with responses by sequence and peer (across a NAT too, with `response_path`): message name, IMSI, MSISDN, APN, F-TEIDs with interface names, cause code and name, PAA, RTT, `unanswered`; the structured filters keep both halves of each transaction, and `apn` given as a network identifier also matches it with the operator identifier appended |
 | `gtp_user_plane(path, teid, limit)` | GTP-U per TEID: packets, bytes, first/last time, outer endpoints, inner IP addresses |
 | `gtp_tunnel_health(path, teid, mtu, limit)` | User-plane health per GTP-U tunnel from the packets inside it: inner TCP flows, SYN/SYN-ACK MSS, retransmissions and their share of data segments, out-of-order segments, keep-alives, duplicate ACKs, zero windows, resets; inner ICMP by type with the fragmentation-needed MTU; largest outer and inner packets, tunnel overhead and DF packets above `mtu`; whether the reverse direction carries traffic; `issues` in plain words; ICMP errors sent about the tunnel packets themselves (`outer_icmp`). Copies of the same packet (a capture on several interfaces) are counted once |
+| `message_rates(path, protocol, interval, imsi, filter, burst_min, storm_min, limit)` | Diameter, GTPv2-C, SIP and MAP messages counted by name per interval: total and distinct (a message seen on both legs of a relay or retransmitted counts once), peak and when, mean rate; `bursts` (three times the usual rate or more), `subscriber_loops` (one subscriber repeating a request, with the gap between repeats and whether it is regular), a per-interval `timeline` and one-line `storms` |
 | `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -166,6 +167,16 @@ gtp_tunnel_health(path="/pcaps/userplane.pcap")
     "outer_icmp": [{"error": "fragmentation needed", "mtu": 1450, "count": 1, "teids": ["0x00001001"]}]}
 ```
 
+Is this a purge storm, and how fast is it looping?
+
+```
+message_rates(path="/pcaps/dra.pcap", interval=10)
+-> {"messages": 577, "distinct_messages": 317, "copies": 260,
+    "by_message": [{"message": "AIR", "total": 113, "distinct": 57, "peak": 2, ...}, ...],
+    "subscriber_loops": [{"subscriber": "001010123456789", "message": "PUR", "count": 6, "median_gap_s": 10.0, "regular": true}],
+    "storms": ["001010123456789 sent 6 ULR over 50.0 s, about every 10.0 s", ...]}
+```
+
 Top talkers on the Diameter port only:
 
 ```
@@ -230,7 +241,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 264 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 273 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
