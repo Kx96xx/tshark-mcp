@@ -27,7 +27,7 @@ from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid, outside_quotes,
 )
-from .pairing import annotate_legs
+from .pairing import annotate_legs, session_identity
 from . import pfcp
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 
@@ -1092,8 +1092,13 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
     the matching requests select sequence numbers, then both halves of each transaction
     are fetched so responses are kept. `filter` is a raw display filter ANDed with `gtpv2`,
     e.g. `gtpv2.message_type == 32`; it applies literally to each packet.
-    Proxy chains: legs of one procedure (same IMSI, message and APN within 1 s) where
-    some leg has no response get `chain` (leg k of n, answered legs and their frames);
+    Proxy chains: legs of one procedure (same message and session within 1 s) where
+    some leg has no response get `chain` (leg k of n, answered legs and their frames).
+    The session is the IMSI and APN of a Create; later requests without an IMSI (Modify
+    Bearer, Delete Session, Update/Delete PDP Context, ...) join it through the TEIDs
+    the Create and its response announced on each leg (or an F-TEID they repeat), or,
+    when the Create is not in the capture, through the same sequence number and header
+    TEID on both legs (a proxy that keeps both);
     a leg without a response while another leg was answered gets
     `leg_without_response` and a `note` (not `unanswered`), saying whether the
     response was not relayed back or the relaying node answered on its own. A request
@@ -1122,7 +1127,7 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         scan = _merge_scans(pre, scan)
         txs = gtp.pair(gtp.extract_messages(packets))
         rows = [gtp.transaction_row(t) for t in txs]
-        annotate_legs(txs, rows, _gtp_identity)
+        annotate_legs(txs, rows, session_identity(txs, gtp.announced_teids))
         if select:
             rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
@@ -1144,8 +1149,13 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
     header TEID or a TEID-C/TEID-U, decimal or 0x hex): matching requests select sequence
     numbers and both halves of each transaction are fetched. `filter` is ANDed with
     GTPv1-C (`gtp && gtp.message != 0xff`).
-    Proxy chains: legs of one procedure (same IMSI, message and APN within 1 s) where
-    some leg has no response get `chain` (leg k of n, answered legs and their frames);
+    Proxy chains: legs of one procedure (same message and session within 1 s) where
+    some leg has no response get `chain` (leg k of n, answered legs and their frames).
+    The session is the IMSI and APN of a Create; later requests without an IMSI (Modify
+    Bearer, Delete Session, Update/Delete PDP Context, ...) join it through the TEIDs
+    the Create and its response announced on each leg (or an F-TEID they repeat), or,
+    when the Create is not in the capture, through the same sequence number and header
+    TEID on both legs (a proxy that keeps both);
     a leg without a response while another leg was answered gets
     `leg_without_response` and a `note` (not `unanswered`), saying whether the
     response was not relayed back or the relaying node answered on its own. A request
@@ -1174,7 +1184,7 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
         scan = _merge_scans(pre, scan)
         txs = gtpv1.pair(gtpv1.extract_messages(packets))
         rows = [gtpv1.transaction_row(t) for t in txs]
-        annotate_legs(txs, rows, _gtp_identity)
+        annotate_legs(txs, rows, session_identity(txs, gtpv1.announced_teids))
         if select:
             rows = [r for r in rows if gtpv1.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
@@ -2225,7 +2235,7 @@ def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_
         # still meets the response that pass two fetched by sequence number.
         txs = module.pair(list(collected.values()))
         rows = [module.transaction_row(tx) for tx in txs]
-        annotate_legs(txs, rows, _gtp_identity)
+        annotate_legs(txs, rows, session_identity(txs, module.announced_teids))
         for row in rows:
             if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
                 timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
@@ -2356,14 +2366,6 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
         out["failed"] = True
     out.update({k: v for k, v in extra.items() if v not in (None, "", [], {})})
     return {k: v for k, v in out.items() if v not in (None, "", [], {})}
-
-
-def _gtp_identity(msg: Any) -> tuple | None:
-    """Legs of one GTP procedure relayed through proxies: same IMSI, message and APN."""
-    f = msg.fields
-    if not f.get("imsi"):
-        return None
-    return (f["imsi"], f.get("message_type"), (f.get("apn") or "").lower())
 
 
 def _leg_summary(rows: list[dict[str, Any]]) -> dict[str, int]:

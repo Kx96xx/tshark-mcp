@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 from . import pcapgen as g
 from .conftest import requires_tshark
 from .test_gtpv1 import create_request as v1_create_request
 from .test_gtpv1 import create_response as v1_create_response
+from .test_gtpv1 import gtpv1, tv
 
 pytestmark = requires_tshark
 
@@ -130,3 +132,133 @@ def test_gtpv1_upstream_leg(configure, tmp_path: Path):
     rows = _by_frame(result["transactions"])
     assert rows[1]["leg_without_response"] is True and rows[2]["answer_frame"] == 3
     assert result["summary"]["unanswered"] == 0 and result["summary"]["legs_without_response"] == 1
+
+
+# --------------------------------------------- legs of later procedures (no IMSI)
+SGW_B = "192.0.2.93"
+
+
+def _csr_from(imsi: str, seq: int, teid: int, addr: str) -> bytes:
+    return g._gtpv2(32, 0, seq, [g._ie(1, g._tbcd(imsi)), g._ie(82, bytes([6])), g._ie(87, g._fteid(6, teid, addr)),
+                                 g._apn_ie(g.APN), g._ie(99, bytes([1]))])
+
+
+def _csresp_from(header: int, seq: int, teid: int, addr: str) -> bytes:
+    return g._gtpv2(33, header, seq, [g._ie(2, bytes([16, 0])), g._ie(87, g._fteid(7, teid, addr))])
+
+
+def _plain(msg_type: int, header: int, seq: int, cause: int | None = None) -> bytes:
+    return g._gtpv2(msg_type, header, seq, [g._ie(2, bytes([cause, 0])) if cause is not None else g._ie(73, bytes([5]))])
+
+
+def lifecycle_capture(tmp_path: Path) -> Path:
+    """One session set up through a proxy that renumbers sequence numbers and has its own
+    TEIDs on each leg, then:
+    - a Modify Bearer the PGW answers, which the proxy never relays back to the SGW;
+    - a Delete Session the PGW never answers, rejected by the proxy on its own (cause 94).
+    A second subscriber's session, set up directly (no proxy), sends a Modify Bearer at
+    the same time that nobody answers: it is not a leg of the first chain."""
+    c = Cap(1_700_032_000.0)
+    c.send(0.0, SGW, PROXY_IN, _csr_from(g.IMSI, 0x300, 0xA1, SGW))
+    c.send(0.002, PROXY_OUT, PGW, _csr_from(g.IMSI, 0x9300, 0xB1, PROXY_OUT))
+    c.send(0.04, PGW, PROXY_OUT, _csresp_from(0xB1, 0x9300, 0xC1, PGW))
+    c.send(0.042, PROXY_IN, SGW, _csresp_from(0xA1, 0x300, 0xD1, PROXY_IN))
+    c.send(1.0, SGW_B, PGW, _csr_from(g.IMSI_OTHER, 0x400, 0xA2, SGW_B))
+    c.send(1.03, PGW, SGW_B, _csresp_from(0xA2, 0x400, 0xC2, PGW))
+    # Modify Bearer: frames 7 (SGW leg) and 8 (PGW leg), answered on frame 9 only.
+    c.send(5.0, SGW, PROXY_IN, _plain(34, 0xD1, 0x301))
+    c.send(5.002, PROXY_OUT, PGW, _plain(34, 0xC1, 0x9301))
+    c.send(5.03, PGW, PROXY_OUT, _plain(35, 0xB1, 0x9301, 16))
+    # The other subscriber's Modify Bearer, frame 10: no response at all.
+    c.send(5.1, SGW_B, PGW, _plain(34, 0xC2, 0x401))
+    # Delete Session: frames 11 (SGW leg) and 12 (PGW leg); the proxy answers frame 11 on its own.
+    c.send(9.0, SGW, PROXY_IN, _plain(36, 0xD1, 0x302))
+    c.send(9.002, PROXY_OUT, PGW, _plain(36, 0xC1, 0x9302))
+    c.send(9.5, PROXY_IN, SGW, _plain(37, 0xA1, 0x302, 94))
+    return c.write(tmp_path / "lifecycle.pcap")
+
+
+def test_modify_bearer_not_relayed_back(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtp_sessions(str(lifecycle_capture(tmp_path)))
+    rows = _by_frame(result["transactions"])
+    outer, inner = rows[7], rows[8]
+    assert inner["answer_frame"] == 9 and inner["chain"]["leg"] == 2
+    assert outer["leg_without_response"] is True and "unanswered" not in outer
+    assert outer["chain"] == {"leg": 1, "legs": 2, "answered_legs": 1, "answered_on_frames": [9]}
+    assert "not relayed back" in outer["note"]
+
+
+def test_delete_session_answered_by_the_proxy(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    rows = _by_frame(srv.gtp_sessions(str(lifecycle_capture(tmp_path)))["transactions"])
+    outer, inner = rows[11], rows[12]
+    assert outer["answer_frame"] == 13 and outer["cause"] == 94
+    assert inner["leg_without_response"] is True and "unanswered" not in inner
+    assert "before it was answered" in inner["note"] and "cause 94" in inner["note"]
+
+
+def test_other_session_is_not_a_leg(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtp_sessions(str(lifecycle_capture(tmp_path)))
+    other = _by_frame(result["transactions"])[10]
+    assert other["unanswered"] is True and "chain" not in other and "leg_without_response" not in other
+    assert result["summary"]["unanswered"] == 1 and result["summary"]["legs_without_response"] == 2
+
+
+def test_trace_carries_later_legs(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.trace_subscriber(str(lifecycle_capture(tmp_path)), imsi=g.IMSI)
+    legs = {r["request_frame"]: r for r in result["timeline"] if r.get("leg_without_response")}
+    assert set(legs) == {7, 12}
+    assert not any(r.get("unanswered") for r in result["timeline"])
+
+
+def test_transparent_proxy_without_the_create(configure, tmp_path: Path):
+    """A proxy that keeps the sequence number and TEID, on a session set up before the
+    capture: the Delete Session legs share both. The PGW answers 'Context Not Found' and
+    the proxy does not relay it. A Modify Bearer with the same sequence number but another
+    TEID is a different procedure."""
+    c = Cap(1_700_033_000.0)
+    c.send(0.0, SGW, PROXY_IN, _plain(36, 0x7777, 0x500))
+    c.send(0.0001, PROXY_OUT, PGW, _plain(36, 0x7777, 0x500))
+    c.send(0.02, PGW, PROXY_OUT, _plain(37, 0, 0x500, 64))
+    c.send(0.3, SGW, PROXY_IN, _plain(34, 0x8888, 0x600))
+    c.send(0.3001, PROXY_OUT, PGW, _plain(34, 0x9999, 0x600))
+    c.send(0.33, PGW, PROXY_OUT, _plain(35, 0x1234, 0x600, 16))
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtp_sessions(str(c.write(tmp_path / "transparent.pcap")))
+    rows = _by_frame(result["transactions"])
+    assert rows[1]["leg_without_response"] is True and "cause 64" in rows[1]["note"]
+    assert rows[2]["answer_frame"] == 3
+    assert rows[4]["unanswered"] is True and "chain" not in rows[4]
+    assert result["summary"]["unanswered"] == 1 and result["summary"]["legs_without_response"] == 1
+
+
+def test_gtpv1_update_and_delete_legs(configure, tmp_path: Path):
+    """GTPv1 through a proxy with its own TEID-C on each leg: the Update PDP Context the
+    GGSN answers is not relayed back; the Delete PDP Context gets no response on any leg."""
+    proxy_out = "198.51.100.93"
+    c = Cap(1_700_034_000.0)
+    c.send(0.0, SGW, PROXY_IN, v1_create_request(g.IMSI, 0x10, 0x111, 0x112, "internet.test"))
+    c.send(0.003, proxy_out, PGW, v1_create_request(g.IMSI, 0x7710, 0x511, 0x512, "internet.test"))
+    c.send(0.04, PGW, proxy_out, v1_create_response(0x511, 0x7710, 128, 0x221, 0x222))
+    c.send(0.042, PROXY_IN, SGW, v1_create_response(0x111, 0x10, 128, 0x611, 0x612))
+    c.send(5.0, SGW, PROXY_IN, v1_update(0x611, 0x20, 0x111))
+    c.send(5.002, proxy_out, PGW, v1_update(0x221, 0x7720, 0x511))
+    c.send(5.03, PGW, proxy_out, gtpv1(19, 0x511, 0x7720, tv(1, bytes([128]))))
+    c.send(9.0, SGW, PROXY_IN, gtpv1(20, 0x611, 0x30, tv(20, bytes([5]))))
+    c.send(9.002, proxy_out, PGW, gtpv1(20, 0x221, 0x7730, tv(20, bytes([5]))))
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtpv1_sessions(str(c.write(tmp_path / "gn_lifecycle.pcap")))
+    rows = _by_frame(result["transactions"])
+    assert rows[5]["leg_without_response"] is True and "not relayed back" in rows[5]["note"]
+    assert rows[6]["answer_frame"] == 7
+    for leg, frame in ((1, 8), (2, 9)):
+        assert rows[frame]["unanswered"] is True
+        assert rows[frame]["chain"] == {"leg": leg, "legs": 2, "answered_legs": 0}
+    assert result["summary"]["legs_without_response"] == 1 and result["summary"]["unanswered"] == 2
+
+
+def v1_update(header: int, seq: int, teid_c: int) -> bytes:
+    return gtpv1(18, header, seq, tv(17, struct.pack("!I", teid_c)) + tv(20, bytes([5])))
