@@ -1,6 +1,6 @@
 """tshark-mcp: read-only packet capture analysis for LLM agents.
 
-The MCP app and the twelve tools live here. Every tool goes through
+The MCP app and the tools live here. Every tool goes through
 :func:`_guarded`, which resolves the capture path against the allowlist,
 converts failures into structured errors, trims oversized results and writes a
 JSON-lines audit record.
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, diameter, gtp, models, search, sigtran, sip
+from . import __version__, avps, diameter, gtp, models, search, sigtran, sip
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -46,7 +46,8 @@ the directory first. Start on a file with pcap_info, then use the protocol
 tools. For "why did subscriber X fail" questions call trace_subscriber first,
 then drill into diameter_sessions, diameter_transactions, gtp_sessions,
 sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
-call_id, ...) or a display filter. Results are JSON; "truncated": true means a
+call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
+Diameter transaction (subscription data, flags, cancellation type). Results are JSON; "truncated": true means a
 cap was reached and you should narrow the filter.
 """
 
@@ -447,21 +448,10 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         base = _filter(filter, base="diameter")
         select = diameter.session_filter(sid, imsi_d, code)
-        pre: Scan | None = None
-        flt = base
-        if select:
-            stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["diameter.Session-Id"], st.limits.max_scan_packets)
-            # A packet can bundle several messages; keep every Session-Id it carries and
-            # drop the sessions that turn out not to match once each message is dissected.
-            sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
-            corr = diameter.correlation_filter(sessions)
-            if corr is None:
-                return _envelope("sessions", [], cap, pre, summary={"sessions": 0, "unanswered": 0, "failed": 0,
-                                                                     "without_session_id": 0}, selection=select)
-            flt = f"({base}) && ({corr})"
-        packets, scan = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
-        scan = _merge_scans(pre, scan)
-        messages = diameter.extract_messages(packets)
+        messages, scan = _diameter_fetch(capture, base, select)
+        if messages is None:
+            return _envelope("sessions", [], cap, scan, summary={"sessions": 0, "unanswered": 0, "failed": 0,
+                                                                  "without_session_id": 0}, selection=select)
         txs = diameter.pair(messages)
         rows, without = diameter.session_rows(txs)
         if sid:
@@ -481,6 +471,115 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         return _envelope("sessions", rows, cap, scan, summary=summary, selection=select)
     return _guarded("diameter_sessions", {"path": path, "session_id": session_id, "imsi": imsi,
                                           "command_code": command_code, "filter": filter, "limit": limit}, run)
+
+
+def _diameter_fetch(capture: Path, base: str, select: str | None, keep_raw: bool = False,
+                    fallback_to_selection: bool = False) -> tuple[list | None, Scan]:
+    """Messages of every Diameter session that ``select`` touches (all messages under
+    ``base`` without a selection). Answers rarely repeat the selecting AVPs, so a first
+    pass collects the Session-Ids and a second fetches those sessions whole. Returns
+    ``None`` for the messages when the selection matched no session."""
+    st = state()
+    pre: Scan | None = None
+    flt = base
+    if select:
+        stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["diameter.Session-Id"], st.limits.max_scan_packets)
+        # A packet can bundle several messages; keep every Session-Id it carries and
+        # drop the sessions that turn out not to match once each message is dissected.
+        sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
+        corr = diameter.correlation_filter(sessions)
+        if corr is not None:
+            flt = f"({base}) && ({corr})"
+        elif fallback_to_selection and stdout.strip():
+            flt = f"({base}) && ({select})"  # messages without a Session-Id (CER, DWR)
+        else:
+            return None, pre
+    packets, scan = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
+    return diameter.extract_messages(packets, keep_raw=keep_raw), _merge_scans(pre, scan)
+
+
+AVP_DETAIL = ("key", "full")
+
+
+@app.tool(title="Diameter AVP detail", annotations=READ_ONLY)
+def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = None, command_code: int | None = None,
+                  frame: int | None = None, filter: str | None = None, detail: str = "key", max_avps: int = 200,
+                  limit: int = 20) -> models.DiameterAvpsResult:
+    """The AVPs of Diameter requests and answers, paired as in diameter_transactions.
+    Select with `session_id`, `imsi` (User-Name digits), `command_code` (316 ULR, 317 CLR,
+    318 AIR, 319 IDR, 321 PUR, 272 CCR, ...) and/or `frame` (a request or answer frame
+    number); the whole session is fetched so answers are kept. `detail="key"` (default)
+    gives the AVPs read first: Result-Code and Experimental-Result, ULR/ULA/CLR/PUR/PUA/
+    IDR/NOR flags with bit names, Cancellation-Type, RAT-Type, Visited-PLMN-Id, AIR
+    vectors, Gx CC-Request-Type, Event-Trigger, rule reports and QoS, and a digest of
+    Subscription-Data (MSISDN, status, ODB, access restrictions, AMBR, one line per APN
+    with PDN type, QCI, ARP, AMBR and PGW). `detail="full"` gives every AVP as a nested
+    tree, at most `max_avps` leaf AVPs per message (server cap 2000); `avps_dropped`
+    counts the rest. Enumerated values are named, e.g. "SUBSCRIPTION_WITHDRAWAL (2)".
+    `limit` caps transactions (default 20). `filter` is ANDed with `diameter`."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if detail not in AVP_DETAIL:
+            raise ToolError("invalid_argument", f"detail must be one of {', '.join(AVP_DETAIL)}")
+        sid = lint_quoted_value(session_id, "session_id") if session_id else None
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        code = None
+        if command_code is not None:
+            code = to_int(str(command_code))
+            if code is None or code < 0 or code > 0xFFFFFF:
+                raise ToolError("invalid_argument", f"command_code must be a 24-bit integer, got {command_code!r}")
+        frame_n = None
+        if frame is not None:
+            frame_n = to_int(str(frame))
+            if frame_n is None or frame_n < 1:
+                raise ToolError("invalid_argument", f"frame must be a positive frame number, got {frame!r}")
+        leaves = clamp_limit(max_avps, avps.HARD_MAX_AVPS, 200)
+        cap = clamp_limit(limit, st.limits.max_packets, 20)
+        base = _filter(filter, base="diameter")
+        parts = [p for p in (diameter.session_filter(sid, imsi_d, code),
+                             f"frame.number == {frame_n}" if frame_n is not None else None) if p]
+        select = " && ".join(parts) if parts else None
+        messages, scan = _diameter_fetch(capture, base, select, keep_raw=True, fallback_to_selection=True)
+        if messages is None:
+            return _envelope("transactions", [], cap, scan, detail=detail, selection=select)
+        txs = diameter.pair(messages)
+        mine = diameter.subscriber_sessions(messages, imsi_d, None, exact_imsi=True) if imsi_d else None
+        rows = []
+        for tx in txs:
+            anchor = tx.request or tx.answer
+            assert anchor is not None
+            f = anchor.fields
+            if sid and f.get("session_id") != sid:
+                continue
+            if mine is not None and f.get("session_id") not in mine:
+                continue
+            if code is not None and f.get("command_code") != code:
+                continue
+            if frame_n is not None and frame_n not in {m.frame for m in (tx.request, tx.answer) if m is not None}:
+                continue
+            row = diameter.transaction_row(tx)
+            out = {k: row[k] for k in ("time", "request", "answer", "command", "application", "session_id", "user_name",
+                                       "origin_host", "destination_host", "answer_origin_host", "request_frame",
+                                       "answer_frame", "rtt_ms", "result", "success", "unanswered", "unmatched_answer")
+                   if k in row}
+            for side, msg in (("request", tx.request), ("answer", tx.answer)):
+                if msg is None:
+                    continue
+                tree, dropped = avps.avp_tree(msg.fields.get("raw") or {}, leaves)
+                out[f"{side}_avps"] = tree if detail == "full" else avps.key_view(tree)
+                if dropped and detail == "full":
+                    out[f"{side}_avps_dropped"] = dropped
+            rows.append(out)
+        out = _envelope("transactions", rows, cap, scan, detail=detail, selection=select)
+        if detail == "full" and any(k.endswith("_avps_dropped") for r in rows for k in r):
+            note = f"some messages have more than {leaves} AVPs; raise max_avps (server cap {avps.HARD_MAX_AVPS})"
+            out["truncated"] = True
+            out["truncated_reason"] = f'{out["truncated_reason"]}; {note}' if out.get("truncated_reason") else note
+        return out
+    return _guarded("diameter_avps", {"path": path, "session_id": session_id, "imsi": imsi, "command_code": command_code,
+                                      "frame": frame, "filter": filter, "detail": detail, "max_avps": max_avps,
+                                      "limit": limit}, run)
 
 
 @app.tool(title="GTPv2-C sessions", annotations=READ_ONLY)

@@ -22,6 +22,7 @@ pytestmark = requires_tshark
 EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
+    "diameter_avps",
 }
 
 
@@ -49,6 +50,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("sigtran_messages", {"path": f"{d}/sigtran.pcap"}),
         ("trace_subscriber", {"path": f"{d}/all.pcap", "imsi": pcapgen.IMSI, "msisdn": pcapgen.MSISDN}),
         ("find_identifier", {"path": d, "identifier": pcapgen.IMSI, "max_files": 3}),
+        ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
         ("gtp_sessions", {"path": f"{d}/gtpv2.pcap", "apn": "bad;apn"}),
@@ -128,7 +130,7 @@ def test_list_tools_names_and_schemas(client_run):
 
 def test_every_tool_call_returns_structured_content(client_run):
     results = client_run["results"]
-    assert len(results) == 14
+    assert len(results) == len(_calls(Path("/x")))
     for name, args, result in results:
         assert _attr(result, "is_error", "isError") in (None, False), (name, result)
         structured = _attr(result, "structured_content", "structuredContent")
@@ -138,8 +140,8 @@ def test_every_tool_call_returns_structured_content(client_run):
             assert args in ({"path": "/definitely/not/allowed.pcap"}, {"path": args.get("path"), "apn": "bad;apn"}), (name, structured)
             assert structured["error"]["type"] in ("path_not_allowed", "invalid_argument")
 
-    # The first twelve calls are the happy paths, one per tool; the last two are the error paths.
-    by_name = {(n, tuple(sorted(a))): _attr(r, "structured_content", "structuredContent") for n, a, r in results[:12]}
+    # Every call but the last two is a happy path, one per tool; the last two are the error paths.
+    by_name = {(n, tuple(sorted(a))): _attr(r, "structured_content", "structuredContent") for n, a, r in results[:-2]}
     info = by_name[("pcap_info", ("path",))]
     assert info["packets"] == 7 and info["protocol_hierarchy"][0]["frames"] == 7
 
@@ -157,6 +159,9 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert trace["by_protocol"] == {"diameter": 2, "gtpv2": 2, "sip": 1, "map": 3}
     sip_row = next(r for r in trace["timeline"] if r["protocol"] == "sip")
     assert sip_row["call_id"] == "a1b2c3d4@ue.example"  # an extra key kept by the open row model
+
+    avp = by_name[("diameter_avps", ("command_code", "path"))]
+    assert avp["transactions"][0]["request_avps"]["ULR-Flags"].startswith("34 [")
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")
