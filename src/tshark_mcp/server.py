@@ -1442,7 +1442,12 @@ def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi
     when, and mean rate; `bursts` are runs of intervals where a type ran at three times
     its usual rate or more and at least `burst_min` per interval; `subscriber_loops`
     lists subscribers for whom the same request was sent `storm_min` times or more, with the
-    gap between repeats and whether they are regular (a purge or attach loop);
+    gap between repeats, whether they are regular (a purge or attach loop), and the
+    nodes that sent and received them (`from_nodes`, `to_nodes`: SCCP global titles for
+    MAP, with the subscriber's E.214 mobile global title labelled `MGT`; Origin-Host and
+    Destination-Host or realm for Diameter; else IP addresses), with `alternating` when
+    the repeats switch back and forth between two nodes (a location ping-pong between two
+    VLRs; a realm or MGT does not count);
     `timeline` gives the busiest message types per interval (merged into wider bins
     past 500 rows); `storms` says it in one line each. `imsi` keeps only messages tied
     to the subscriber: Diameter requests (User-Name), GTP requests and the responses

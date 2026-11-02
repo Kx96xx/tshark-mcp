@@ -140,3 +140,73 @@ def test_reused_transaction_id_starts_a_new_dialogue(configure, tmp_path: Path):
     srv = configure(allow=[str(tmp_path)])
     result = srv.message_rates(str(m.write(tmp_path / "reuse.pcap")), protocol="map", imsi=g.IMSI)
     assert result["messages"] == 2
+
+
+# MGT: the HLR's country and network code, then the start of the test IMSI's MSIN (E.214).
+VLR_A_GT, VLR_B_GT, MGT = "15550109011", "15550109012", "155501001234567"
+
+
+def _ul_arg(imsi: str, vlr: str) -> bytes:
+    return g._ber(0x30, g._ber(0x04, g._tbcd(imsi)) + g._ber(0x81, g._addr_string(vlr)) + g._ber(0x04, g._addr_string(vlr)))
+
+
+def _cl_arg(imsi: str) -> bytes:
+    return g._ber(0xA3, g._ber(0x04, g._tbcd(imsi)))
+
+
+def ping_pong_capture(tmp_path: Path, vlrs: list[str], sai_to: list[str] = ()) -> Path:
+    """The subscriber's location moves to the VLR in ``vlrs[k]`` every 2 s: an
+    updateLocation from that VLR to the subscriber's MGT, then a cancelLocation from the
+    HLR to the VLR it left. Each message is seen once. ``sai_to``: sendAuthenticationInfo
+    from the first VLR to each of these GTs, 1 s apart."""
+    frames: list[tuple[float, bytes]] = []
+    t0 = 1_700_022_000.0
+    tsn = 1000
+
+    def send(ts: float, calling: str, called: str, tcap: bytes) -> None:
+        nonlocal tsn
+        sccp = g._sccp_udt(g._sccp_gt(called, 6), g._sccp_gt(calling, 7), tcap)
+        frames.append((ts, g._sctp_data(g.STP_A, g.STP_B, 2905, 2905, 0x5151, tsn, 3, g._m3ua_data(100, 200, sccp))))
+        tsn += 1
+
+    for k, vlr in enumerate(vlrs):
+        t = t0 + 2 * k
+        send(t, vlr, MGT, g._tcap_begin(bytes([0, 1, 0, k]), g._invoke(1, 2, _ul_arg(g.IMSI, vlr))))
+        if k:
+            send(t + 0.1, HLR_GT, vlrs[k - 1], g._tcap_begin(bytes([0, 2, 0, k]), g._invoke(1, 3, _cl_arg(g.IMSI))))
+    for k, called in enumerate(sai_to):
+        send(t0 + 100 + k, vlrs[0], called, g._tcap_begin(bytes([0, 3, 0, k]), g._invoke(1, 56, _sai_arg(g.IMSI))))
+    return g._frames_to_pcap(tmp_path / "pingpong.pcap", sorted(frames, key=lambda f: f[0]))
+
+
+def test_loop_names_the_nodes_of_a_location_ping_pong(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.message_rates(str(ping_pong_capture(tmp_path, [VLR_A_GT, VLR_B_GT] * 3)), protocol="map")
+    loops = {lp["message"]: lp for lp in result["subscriber_loops"]}
+    ul, cl = loops["updateLocation"], loops["cancelLocation"]
+    assert ul["count"] == 6 and ul["subscriber"] == g.IMSI
+    assert ul["from_nodes"] == [{"node": f"GT {VLR_A_GT}", "count": 3}, {"node": f"GT {VLR_B_GT}", "count": 3}]
+    assert ul["to_nodes"] == [{"node": f"MGT {MGT}", "count": 6}] and ul["alternating"] == "from"
+    assert cl["from_nodes"] == [{"node": f"GT {HLR_GT}", "count": 5}] and cl["alternating"] == "to"
+    assert (f"6 updateLocation for {g.IMSI} over 10.0 s, about every 2.0 s, from GT {VLR_A_GT} (3) and "
+            f"GT {VLR_B_GT} (3), alternating, to MGT {MGT}") in result["storms"]
+    assert (f"5 cancelLocation for {g.IMSI} over 8.0 s, about every 2.0 s, from GT {HLR_GT}, to GT {VLR_A_GT} (3) and "
+            f"GT {VLR_B_GT} (2), alternating") in result["storms"]
+
+
+def test_a_single_move_is_not_a_ping_pong(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    path = ping_pong_capture(tmp_path, [VLR_A_GT] * 3 + [VLR_B_GT] * 3)
+    ul = next(lp for lp in srv.message_rates(str(path), protocol="map")["subscriber_loops"] if lp["message"] == "updateLocation")
+    assert {n["node"] for n in ul["from_nodes"]} == {f"GT {VLR_A_GT}", f"GT {VLR_B_GT}"}
+    assert "alternating" not in ul
+
+
+def test_hlr_gt_and_mgt_in_turn_are_not_a_ping_pong(configure, tmp_path: Path):
+    """sendAuthenticationInfo routed on the MGT, then on the HLR's own GT, in turn: one HLR."""
+    srv = configure(allow=[str(tmp_path)])
+    path = ping_pong_capture(tmp_path, [VLR_A_GT], sai_to=[MGT, HLR_GT] * 3)
+    sai = next(lp for lp in srv.message_rates(str(path), protocol="map")["subscriber_loops"]
+               if lp["message"] == "sendAuthenticationInfo")
+    assert sai["to_nodes"] == [{"node": f"MGT {MGT}", "count": 3}, {"node": f"GT {HLR_GT}", "count": 3}]
+    assert "alternating" not in sai
