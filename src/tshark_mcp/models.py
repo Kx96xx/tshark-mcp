@@ -300,6 +300,33 @@ class PacketDetailResult(ToolResult, total=False):
     malformed: bool
 
 
+class ExpertItem(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    severity: str
+    group: str
+    protocol: str
+    summary: str
+    count: int
+    first_frame: int
+    frames: list[int]
+    frame_count: int
+
+
+class ExpertSummary(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    by_severity: dict[str, int]
+    by_protocol: dict[str, int]
+    malformed_frames: int
+    malformed_first_frames: list[int]
+
+
+class ExpertInfoResult(RowsResult, total=False):
+    items: list[ExpertItem]
+    severity: str
+    display_filter: str | None
+    summary: ExpertSummary
+
+
 class FilterPacketsResult(RowsResult, total=False):
     packets: list[dict[str, str]]
     fields: list[str]
