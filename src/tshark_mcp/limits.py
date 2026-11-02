@@ -49,8 +49,9 @@ class Limits:
     aggregating tool (GTP-U, SCTP, SIP, find_identifier) keeps. A long capture is reported
     as truncated when it has more frames than this."""
 
-    max_output_bytes: int = 200 * 1024
-    """Upper bound on the JSON returned to the model; rows are dropped to fit."""
+    max_output_bytes: int = 30 * 1024
+    """Upper bound on the JSON returned to the model (about 8k tokens); rows past it are
+    left for the next page (``next_offset``) and inner lists are trimmed to fit."""
 
     max_stdout_bytes: int = 64 * 1024 * 1024
     """Upper bound on raw tshark stdout kept in memory; tshark is killed beyond it."""
