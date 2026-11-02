@@ -1404,10 +1404,13 @@ class TcpExchange(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     frame: int
     time: str
+    h2_stream: int
     method: str
     uri: str
     host: str
     status: int
+    grpc_status: int
+    stream_reset_by: str
     request_bytes: int
     request_ms: float
     response_frame: int
@@ -1427,6 +1430,7 @@ class ResponseTimeFlow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     stream: int
     tcp_streams: list[int]
+    http2: bool
     client: str
     server: str
     frame: int
