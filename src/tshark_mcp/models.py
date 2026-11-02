@@ -567,6 +567,117 @@ class SipDialogsResult(RowsResult, total=False):
     selection: str | None
 
 
+# ----------------------------------------------------------------- RTP / media
+class SdpMedia(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    media: str
+    address: str
+    port: int
+    proto: str
+    codecs: list[str]
+    direction: str
+    ptime_ms: int
+    srtp: bool
+    rejected: bool
+    private_address: bool
+
+
+# "from" is a keyword, so this one uses the functional form.
+SdpEntry = TypedDict("SdpEntry", {
+    "frame": int,
+    "time": str,
+    "message": str,
+    "role": str,
+    "from": str,
+    "media": list[SdpMedia],
+}, total=False)
+SdpEntry.__pydantic_config__ = _EXTRA_OK  # type: ignore[attr-defined]
+
+
+class CallMedia(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    call_id: str
+    sdp: list[SdpEntry]
+
+
+class MosEstimate(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    value: float
+    r_factor: float
+    estimate: bool
+    method: str
+    inputs: dict[str, Any]
+
+
+class RtcpSummary(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    reports: int
+    sender_reported_packets: int
+    fraction_lost_max_pct: float
+    cumulative_lost_last: int
+    jitter_max_ms: float
+    rtt_ms_max: float
+    rtt_ms_mean: float
+    rtt_note: str
+
+
+class RtpStreamRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    ssrc: str
+    src: str
+    dst: str
+    call_id: str
+    linked_by: str
+    sdp_frame: int
+    payload_type: int
+    codec: str
+    codec_source: str
+    clock_rate: int
+    payload_types: dict[str, int]
+    first_time: str
+    last_time: str
+    duration_s: float
+    packets: int
+    expected: int
+    lost: int
+    lost_pct: float
+    duplicates: int
+    sequence_errors: int
+    out_of_order: int
+    max_delta_ms: float
+    mean_delta_ms: float
+    max_jitter_ms: float
+    mean_jitter_ms: float
+    telephone_event_packets: int
+    marker_packets: int
+    rtcp: RtcpSummary
+    mos_estimate: MosEstimate
+    reverse_ssrc: str
+    one_way: bool
+    issues: list[str]
+
+
+class RtcpXrReport(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    time: str
+    reporter_ssrc: str
+    r_factor: int
+    mos_lq: float
+    mos_cq: float
+    round_trip_ms: int
+
+
+class RtpStreamsResult(RowsResult, total=False):
+    streams: list[RtpStreamRow]
+    summary: dict[str, Any]
+    calls: list[CallMedia]
+    rtcp_xr: list[RtcpXrReport]
+    mos_method: str
+    display_filter: str | None
+    notes: list[str]
+
+
 # ----------------------------------------------------------------- SCTP / SIGTRAN
 class SctpAssociationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK

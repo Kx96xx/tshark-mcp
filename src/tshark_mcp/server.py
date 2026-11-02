@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, search, sigtran, sip, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tls, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -48,6 +48,8 @@ then drill into diameter_sessions, diameter_transactions, gtp_sessions,
 gtpv1_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
+For voice quality, rtp_streams gives per-stream loss, jitter, RTCP and a
+labelled MOS estimate linked to the SIP Call-ID.
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
@@ -1080,6 +1082,129 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
         summary = _summarise(rows, "initial_method", "no_final_response", sip.dialog_failed)
         return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), offset=offset, summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
+                                    "filter": filter, "limit": limit, "offset": offset}, run)
+
+
+def _sip_media(capture: Path, cid: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Scan]:
+    """SIP messages carrying a body, for one Call-ID or every message with SDP, and the
+    SDP of each in offer/answer order."""
+    st = state()
+    flt = f'sip.Call-ID == "{cid}"' if cid else "sip && sdp"
+    stdout, scan = _fields_run(capture, flt, sip.MEDIA_FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
+    messages = sip.parse_messages(stdout, sip.MEDIA_FIELDS)
+    if cid:
+        messages = [m for m in messages if m["sip.Call-ID"] == cid]
+    return messages, sip.sdp_messages(messages), scan
+
+
+def _media_addresses(sdps: list[dict[str, Any]]) -> set[str]:
+    """Media addresses from SDP, kept only when they parse as IP literals so they can be
+    embedded in a display filter."""
+    import ipaddress
+
+    out = set()
+    for entry in sdps:
+        for media in entry["sdp"]["media"]:
+            addr = media.get("address")
+            try:
+                out.add(str(ipaddress.ip_address(addr)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _rtp_pass(capture: Path, sdps: list[dict[str, Any]], cid: str | None, heuristic: bool,
+              user_filter: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Scan | None, str | None]:
+    """RTP and RTCP packets: for one call, those to or from the call's SDP media
+    addresses (so NATed sources are kept); otherwise all of them."""
+    st = state()
+    if cid:
+        addresses = _media_addresses(sdps)
+        if not addresses:
+            return [], [], None, None
+        base = rtp.rtp_filter(addresses)
+    else:
+        base = rtp.DISPLAY_FILTER
+    flt = _filter(user_filter, base=base)
+    stdout, scan = _fields_run(capture, flt, rtp.FIELDS, st.limits.max_scan_packets, aggregator=rtp.AGGREGATOR,
+                               extra_args=rtp.HEURISTIC_ARGS if heuristic else ())
+    packets, reports = rtp.parse(stdout)
+    return packets, reports, scan, flt
+
+
+def _calls_media(sdps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    calls: dict[str, dict[str, Any]] = {}
+    for entry in sdps:
+        call = calls.setdefault(entry["call_id"], {"call_id": entry["call_id"], "sdp": []})
+        call["sdp"].append({"frame": entry["frame"], "time": iso(entry["time"]), "message": entry["message"],
+                            "role": entry["role"], "from": entry["src"],
+                            "media": [sdp.summary(m) for m in entry["sdp"]["media"]]})
+    return list(calls.values())
+
+
+def _lint_ssrc(value: Any) -> int:
+    try:
+        n = int(value) if isinstance(value, int) else int(str(value).strip(), 0)
+    except (TypeError, ValueError):
+        raise ToolError("invalid_argument", f"ssrc must be a 32-bit integer (decimal or 0x hex), got {value!r}") from None
+    if not 0 <= n <= 0xFFFFFFFF:
+        raise ToolError("invalid_argument", f"ssrc must be a 32-bit integer (decimal or 0x hex), got {value!r}")
+    return n
+
+
+@app.tool(title="RTP streams and call quality", annotations=READ_ONLY)
+def rtp_streams(path: str, call_id: str | None = None, ssrc: str | int | None = None, heuristic: bool = False,
+                filter: str | None = None, limit: int = 100, offset: int = 0) -> models.RtpStreamsResult:
+    """RTP streams with quality figures, linked to their SIP call. Per stream (SSRC plus
+    source and destination address:port): the Call-ID whose SDP advertised the
+    destination (or source) address and port (`linked_by`), payload type and codec
+    from the SDP rtpmap (or the static payload-type table), packets, expected, lost and
+    lost_pct, duplicates, sequence_errors, out_of_order, max/mean interarrival delta,
+    RFC 3550 max/mean jitter in ms, duration, the reverse stream's SSRC or `one_way`,
+    RTCP reception reports about the stream (fraction lost, cumulative lost, jitter,
+    round trip where the LSR matches a captured SR) and `mos_estimate`: a simplified
+    G.107 E-model score from loss, jitter, delay and codec. It is an ESTIMATE from
+    network metrics only (method and inputs are returned), never a measured MOS.
+    `rtcp_xr` lists RTCP XR VoIP metrics the endpoints reported themselves.
+    `call_id` keeps the streams of one call (RTP to or from its SDP addresses is read,
+    so a NATed source is still found); `ssrc` (decimal or 0x hex) keeps one stream.
+    tshark decodes RTP from the SDP in the capture; for a capture without the SIP
+    signalling set `heuristic: true` (heuristic RTP/RTCP over UDP, may misread other
+    UDP traffic as RTP). `filter` is ANDed with the RTP filter."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        cid = lint_quoted_value(call_id, "call_id") if call_id else None
+        want_ssrc = _lint_ssrc(ssrc) if ssrc is not None and str(ssrc).strip() != "" else None
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        _, sdps, sip_scan = _sip_media(capture, cid)
+        packets, reports, scan, flt = _rtp_pass(capture, sdps, cid, bool(heuristic), filter)
+        notes = []
+        rows = rtp.build_streams(packets, reports, sdps, sip.media_endpoints(sdps))
+        if cid:
+            rows = [r for r in rows if r.get("call_id") == cid]
+            if not sdps:
+                notes.append("no SDP for this Call-ID in the capture, so its media addresses are unknown")
+        if want_ssrc is not None:
+            rows = [r for r in rows if int(r["ssrc"], 16) == want_ssrc]
+        elif not packets and not heuristic:
+            notes.append("no RTP decoded; if the capture lacks the SIP/SDP that set the streams up, retry with heuristic=true")
+        summary = {
+            "streams": len(rows),
+            "one_way": sum(1 for r in rows if r.get("one_way")),
+            "with_loss": sum(1 for r in rows if r.get("lost")),
+            "rtcp_packets": len(reports),
+        }
+        moses = [r["mos_estimate"]["value"] for r in rows if r.get("mos_estimate")]
+        if moses:
+            summary["lowest_mos_estimate"] = min(moses)
+        out = _envelope("streams", rows, cap, _merge_scans(sip_scan, scan) if scan else sip_scan, offset=offset,
+                        summary=summary, calls=_calls_media(sdps)[:cap], rtcp_xr=rtp.xr_reports(reports)[:cap],
+                        mos_method=rtp.MOS_METHOD, display_filter=flt)
+        if notes:
+            out["notes"] = notes
+        return out
+    return _guarded("rtp_streams", {"path": path, "call_id": call_id, "ssrc": ssrc, "heuristic": heuristic,
                                     "filter": filter, "limit": limit, "offset": offset}, run)
 
 

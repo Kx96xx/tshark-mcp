@@ -35,6 +35,8 @@ def pcap_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     directory = tmp_path_factory.mktemp("pcaps")
     pcapgen.write_all(directory)
     pcapgen.write_merged_pcap(directory / "all.pcap", directory)
+    # Voice captures sit in a subdirectory: directory scans of the signalling captures are unchanged.
+    pcapgen.write_voice_pcaps(directory / "voice")
     return directory
 
 
