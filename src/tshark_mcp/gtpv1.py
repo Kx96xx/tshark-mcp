@@ -220,3 +220,10 @@ def control_teids(messages: list[Message]) -> set[int]:
 
 def sequence_numbers(messages: list[Message]) -> set[int]:
     return {m.fields["seq"] for m in messages if m.fields.get("seq") is not None}
+
+
+def announced_teids(msg: Message) -> list[tuple[int, str | None]]:
+    """The TEID-C a message announces and its control-plane GSN address: the TEID its
+    sender expects in the header of later messages of the PDP context."""
+    teid = msg.fields.get("teid_cp")
+    return [(teid, msg.fields.get("gsn_control"))] if teid else []
