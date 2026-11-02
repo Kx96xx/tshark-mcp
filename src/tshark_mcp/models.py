@@ -87,6 +87,119 @@ class PcapInfoResult(ToolResult, total=False):
     limits: dict[str, Any]
 
 
+class CopyExample(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    copy_of: int
+    cause: str
+
+
+class Duplicates(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    copies: int
+    share: float
+    causes: dict[str, int]
+    examples: list[CopyExample]
+
+
+class CaptureGaps(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    tcp_data_segments: int
+    missed_by_capture: int
+    missed_bytes: int
+    directions_with_missed: int
+    lost_before_capture: int
+    retransmitted_after_capture: int
+    out_of_order: int
+    unresolved_gaps: int
+
+
+class TruncatedFrames(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frames: int
+    share: float
+    snaplen: int
+    protocols: dict[str, int]
+
+
+class OversizedPackets(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    packets: int
+    max_ip_len: int
+    link_mtu: int
+
+
+class ChecksumSender(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    sender: str
+    bad: int
+    packets_sent: int
+    layers: dict[str, int]
+
+
+class Checksums(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    validated: dict[str, int]
+    bad: dict[str, int]
+    bad_by_sender: list[ChecksumSender]
+    bad_tcp_data_segments: int
+    bad_tcp_segments_acknowledged: int
+    likely_offload: bool
+    explanation: str
+
+
+class OneSided(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    tcp_streams: int
+    tcp_one_direction: int
+    tcp_one_direction_short: int
+    tcp_syn_unanswered: int
+    udp_flows: int
+    udp_one_way_flows: int
+    examples: list[dict[str, Any]]
+
+
+class TimestampQuality(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    backwards_jumps: int
+    max_backwards_s: float
+    first_backwards_frame: int
+    identical_to_previous: int
+    identical_share: float
+    resolution: str
+    largest_gap_s: float
+    largest_gap_after_frame: int
+    before_year_2000: int
+
+
+class QualityVerdict(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    loss_conclusions: str
+    summary: str
+    reasons: list[str]
+    notes: list[str]
+
+
+class CaptureQualityResult(ToolResult, total=False):
+    path: str
+    frames: int
+    ip_packets: int
+    first: str
+    last: str
+    duration_s: float
+    link_types: dict[str, int]
+    interfaces: int
+    encapsulations: dict[str, int]
+    duplicates: Duplicates
+    tcp_capture_gaps: CaptureGaps
+    truncated_frames: TruncatedFrames
+    oversized_packets: OversizedPackets
+    checksums: Checksums
+    one_sided: OneSided
+    timestamps: TimestampQuality
+    verdict: QualityVerdict
+
+
 class ConversationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     a: str

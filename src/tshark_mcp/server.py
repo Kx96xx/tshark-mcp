@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, pairing, rates, search, sigtran, sip, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, search, sigtran, sip, tls, tunnels
+from . import pairing
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -52,6 +53,9 @@ With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
 tls_handshakes shows why a TLS or QUIC handshake failed, without decrypting.
+Before reading missing packets or retransmissions as network faults,
+capture_quality says whether the capture itself can be trusted (copies,
+capture drops, truncation, clocks).
 Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
 when next_offset is present, call again with offset=next_offset and the same
@@ -303,7 +307,8 @@ class Scan:
 
 
 def _fields_core(capture: Path, display_filter: str | None, fields: list[str], max_matched: int,
-                 aggregator: str, timeout: float | None = None) -> tuple[list[tuple[int | None, str]], Scan]:
+                 aggregator: str, timeout: float | None = None,
+                 extra_args: tuple[str, ...] | list[str] = ()) -> tuple[list[tuple[int | None, str]], Scan]:
     """Run ``-T fields`` under the frame-read cap; return (frame, line) pairs for the kept matches."""
     st = state()
     read_cap = st.limits.max_scan_packets
@@ -313,7 +318,7 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
     appended = "frame.number" not in fields
     columns = [*fields, "frame.number"] if appended else list(fields)
     frame_index = columns.index("frame.number")
-    args = ["-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", "-E", f"aggregator={aggregator}"]
+    args = [*extra_args, "-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", "-E", f"aggregator={aggregator}"]
     for f in columns:
         args += ["-e", f]
     result = check_result(st.runner.read_capture(capture, args, max_packets=sentinel, display_filter=flt, timeout=timeout))
@@ -339,9 +344,10 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
 
 
 def _fields_run(capture: Path, display_filter: str | None, fields: list[str], max_matched: int,
-                aggregator: str = ",", timeout: float | None = None) -> tuple[str, Scan]:
+                aggregator: str = ",", timeout: float | None = None,
+                extra_args: tuple[str, ...] | list[str] = ()) -> tuple[str, Scan]:
     """``-T fields`` output (one line per kept packet, ``fields`` columns) and the scan summary."""
-    kept, scan = _fields_core(capture, display_filter, fields, max_matched, aggregator, timeout)
+    kept, scan = _fields_core(capture, display_filter, fields, max_matched, aggregator, timeout, extra_args)
     stdout = "".join(body + "\n" for _, body in kept)
     return stdout, scan
 
@@ -465,6 +471,36 @@ def pcap_info(path: str) -> models.PcapInfoResult:
 
 
 CONVERSATION_LAYERS = ("ip", "ipv6", "tcp", "udp", "sctp", "eth")
+
+
+@app.tool(title="Capture quality", annotations=READ_ONLY)
+def capture_quality(path: str) -> models.CaptureQualityResult:
+    """Can loss and timing conclusions be drawn from this capture? Call it before
+    reading retransmissions or missing packets as network faults. One pass over the
+    file reports: `duplicates` (the same packet captured more than once: SPAN of
+    ingress and egress, two VLANs or interfaces, tunnelled and decapsulated, with the
+    likely cause; tshark counts these copies as retransmissions); `tcp_capture_gaps`
+    (bytes the receiver acknowledged that the capture never saw, i.e. dropped by the
+    capture, versus gaps a retransmission filled, i.e. lost on the network before the
+    capture point); `truncated_frames` (cut to the snapshot length); `oversized_packets`
+    (above 1500 bytes: segmentation offload on the capturing host); `checksums` (bad IP,
+    TCP and UDP checksums and whether they look like checksum offload or corruption);
+    `one_sided` (TCP streams seen in one direction only, unanswered SYNs, one-way UDP
+    flows); `timestamps` (backwards jumps, identical stamps, resolution, longest silence);
+    link types, interfaces and encapsulations. `verdict.loss_conclusions` is
+    trustworthy, use with care or not trustworthy, with the reasons."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        stdout, scan = _fields_run(capture, None, quality.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=packets.AGGREGATOR, extra_args=quality.tshark_args())
+        out = {"path": str(capture), **quality.analyse(packets.parse(stdout, quality.FIELDS))}
+        if scan.truncated:
+            out["truncated"] = True
+            out["truncated_reason"] = scan.reason()
+            out["verdict"]["reasons"].append(f"only the first {scan.read_cap} frames were read")
+        return out
+    return _guarded("capture_quality", {"path": path}, run)
 
 
 @app.tool(title="Conversations (top talkers)", annotations=READ_ONLY)

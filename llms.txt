@@ -1,12 +1,12 @@
 # tshark-mcp
 
-> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Nineteen tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP, SCTP/M3UA/SCCP/TCAP/MAP, DNS and TLS handshakes, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Twenty tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP, SCTP/M3UA/SCCP/TCAP/MAP, DNS and TLS handshakes, pair requests with answers, name result codes and flag what never got a reply, and say whether the capture itself can be trusted for loss conclusions. It cannot capture, write, export, resolve names or load code.
 
 ## What it can and cannot do
 
 - Reads capture files that already exist inside directories the operator allowed with `--allow-dir`. Every path an agent passes must resolve (symlinks followed) inside one of them; anything else is refused before the file is looked at.
 - Every call is bounded: file size (500 MB), matching packets dissected in full (500 per call), frames read per tshark run (200 000), JSON returned (30 KB by default, about 8k tokens; rows past it go to the next page), tshark run time (60 s), files opened by one multi-file call (50).
-- tshark is started with an argv list, never a shell, always with `-n` (no name resolution) and `-r` (read a file). Capture, write, export and extension flags are refused before a process starts.
+- tshark is started with an argv list, never a shell, always with `-n` (no name resolution) and `-r` (read a file). Capture, write, export and extension flags are refused before a process starts; `-o` is allowed only for the three checksum-validation preferences the server sets itself.
 - Display filters are linted and compiled against an empty capture before touching the real file. Field names must exist in `tshark -G fields`.
 - Failures come back as `{"error": {"type": ..., "message": ...}}`, never as exceptions.
 - Every tool with a `limit` also takes `offset` (in `find_identifier` it skips files of the directory).
@@ -18,6 +18,7 @@
 
 - `find_identifier(path, identifier, kind="auto", max_files=20)`: which files in a directory mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id; hit counts, first/last timestamps, protocol breakdown per file. Call this first when you do not know which capture to open.
 - `pcap_info(path)`: packet count, duration, first/last timestamp, link type, protocol hierarchy, active limits. Call this first on a file.
+- `capture_quality(path)`: can missing packets and retransmissions in this file be read as network faults? Duplicate copies of the same packet and their cause, TCP bytes the receiver acknowledged that the capture never saw (the capture dropped them), gaps a retransmission filled (lost before the capture point), snaplen-truncated frames, segmentation-offload packets above 1500 bytes, bad checksums and whether they are offload artifacts, one-direction TCP streams, backwards or coarse timestamps; `verdict.loss_conclusions` is trustworthy, use with care or not trustworthy, with reasons. Call it before blaming the network for loss.
 - `conversations(path, layer="ip", filter=None, limit=200)`: top talkers at ip, ipv6, tcp, udp, sctp or eth, optionally restricted by a display filter.
 - `filter_packets(path, display_filter, fields=None, limit=200)`: rows of fields for packets matching a display filter; the escape hatch for anything the protocol tools do not cover.
 - `diameter_sessions(path, session_id=None, imsi=None, command_code=None, filter=None, limit=200)`: Diameter grouped by Session-Id with the paired transactions, result codes, unanswered and failed counts.
@@ -38,7 +39,7 @@
 
 ## How to work with it
 
-1. `find_identifier` on the directory, then `pcap_info` on the file it points at.
+1. `find_identifier` on the directory, then `pcap_info` on the file it points at; `capture_quality` before drawing loss or timing conclusions from it.
 2. `trace_subscriber` for the subscriber (or `compare_captures` when a working capture exists too), then the protocol tool whose row needs more detail, using the structured filters (`imsi`, `session_id`, `call_id`, `teid`, `apn`, `method`) before raw display filters.
 3. List tools return one page: `total_matched`, `returned`, `dropped` after the page, and `next_offset` when more rows exist. Call again with `offset=next_offset` and the same arguments for the next page. `truncated: true` always comes with a `truncated_reason` saying how to get the rest; `total_is_lower_bound: true` means a packet or frame cap stopped the scan, so narrow the filter instead of paging. Never conclude something is absent from a truncated result.
 4. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`.
