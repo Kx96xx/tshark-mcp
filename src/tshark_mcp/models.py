@@ -1263,6 +1263,9 @@ class SubscriberLoop(TypedDict, total=False):
     regular: bool
     first_frame: int
     last_frame: int
+    from_nodes: list[dict[str, Any]]
+    to_nodes: list[dict[str, Any]]
+    alternating: str
 
 
 class MessageRatesResult(RowsResult, total=False):
