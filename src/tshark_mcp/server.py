@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, gtp, models, search, sigtran, sip, tunnels
+from . import __version__, avps, compare, diameter, gtp, models, rates, search, sigtran, sip, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -689,6 +689,50 @@ def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500,
         }
         return _envelope("tunnels", rows, cap, scan, path_mtu=path_mtu, summary=summary, outer_icmp=outer_errors)
     return _guarded("gtp_tunnel_health", {"path": path, "teid": teid, "mtu": mtu, "limit": limit}, run)
+
+
+@app.tool(title="Message rates and storms", annotations=READ_ONLY)
+def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi: str | None = None,
+                  filter: str | None = None, burst_min: int = 5, storm_min: int = 5, limit: int = 50) -> models.MessageRatesResult:
+    """Message rates over time and storm detection for Diameter, GTPv2-C, SIP and MAP
+    (`protocol` auto, diameter, gtpv2, sip or map). Every message is counted by name
+    (ULR, ULA, PUR, Create Session Request, REGISTER, 4xx REGISTER, updateLocation, ...)
+    per `interval` seconds. `by_message` gives each type's total, peak per interval and
+    when, and mean rate; `bursts` are runs of intervals where a type ran at three times
+    its usual rate or more and at least `burst_min` per interval; `subscriber_loops`
+    lists subscribers that sent the same request `storm_min` times or more, with the
+    gap between repeats and whether they are regular (a purge or attach loop);
+    `timeline` gives the busiest message types per interval (merged into wider bins
+    past 500 rows); `storms` says it in one line each. `imsi` keeps only messages that
+    name the subscriber (mostly requests). `filter` is ANDed with the protocol filter."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if protocol not in rates.PROTOCOLS:
+            raise ToolError("invalid_argument", f"protocol must be one of {', '.join(rates.PROTOCOLS)}")
+        try:
+            step = float(interval)
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", f"interval must be a number of seconds, got {interval!r}") from None
+        if not 0.001 <= step <= 86400:
+            raise ToolError("invalid_argument", "interval must be between 0.001 and 86400 seconds")
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        b_min = clamp_limit(burst_min, 1_000_000, 5)
+        s_min = clamp_limit(storm_min, 1_000_000, 5)
+        cap = clamp_limit(limit, st.limits.max_packets, 50)
+        flt = _filter(filter, base=rates.display_filter(protocol))
+        stdout, scan = _fields_run(capture, flt, rates.FIELDS, st.limits.max_scan_packets, aggregator=rates.AGGREGATOR)
+        evts = rates.events(stdout, protocol)
+        if imsi_d:
+            evts = [e for e in evts if e.get("subscriber") and imsi_d in e["subscriber"]]
+        out = rates.summarise(evts, step, b_min, s_min, cap)
+        out.update({"protocol": protocol, "interval_s": step, "display_filter": flt, "packets_scanned": scan.matched})
+        if scan.truncated:
+            out["truncated"] = True
+            out["truncated_reason"] = scan.reason()
+        return out
+    return _guarded("message_rates", {"path": path, "protocol": protocol, "interval": interval, "imsi": imsi,
+                                      "filter": filter, "burst_min": burst_min, "storm_min": storm_min, "limit": limit}, run)
 
 
 @app.tool(title="SIP dialogs", annotations=READ_ONLY)

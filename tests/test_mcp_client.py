@@ -22,7 +22,7 @@ pytestmark = requires_tshark
 EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
-    "diameter_avps", "compare_captures", "gtp_tunnel_health",
+    "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
 }
 
 
@@ -52,6 +52,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("find_identifier", {"path": d, "identifier": pcapgen.IMSI, "max_files": 3}),
         ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
         ("gtp_tunnel_health", {"path": f"{d}/gtpu.pcap"}),
+        ("message_rates", {"path": f"{d}/all.pcap", "interval": 10}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
@@ -165,6 +166,9 @@ def test_every_tool_call_returns_structured_content(client_run):
 
     avp = by_name[("diameter_avps", ("command_code", "path"))]
     assert avp["transactions"][0]["request_avps"]["ULR-Flags"].startswith("34 [")
+
+    rates = by_name[("message_rates", ("interval", "path"))]
+    assert rates["distinct_messages"] > 0 and rates["by_message"][0]["distinct"] >= 1
 
     health = by_name[("gtp_tunnel_health", ("path",))]
     assert health["summary"]["tunnels"] >= 1 and "outer_icmp" in health
