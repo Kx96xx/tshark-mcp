@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tshark_mcp.limits import Limits
+
 from . import pcapgen
 from .conftest import requires_tshark
 
@@ -42,3 +44,70 @@ class TestCutShortCapture:
         srv = configure(allow=[str(tmp_path)])
         result = srv.diameter_transactions(str(pcapgen.write_diameter_pcap(tmp_path / "ok.pcap")))
         assert "warnings" not in result
+
+
+# ------------------------------------------- tshark -c counts frames read, not matched
+def _after_filler(tmp_path: Path, source: Path, filler: int, name: str) -> Path:
+    """``filler`` unrelated UDP frames (DNS-port noise) followed by every frame of ``source``."""
+    from scapy.all import Ether, rdpcap, wrpcap  # type: ignore
+
+    t0 = 1_699_999_000.0
+    noise = []
+    for i in range(filler):
+        p = Ether(pcapgen._udp_frame("192.0.2.200", "192.0.2.201", 40000 + i, 9, b"noise" * 4))
+        p.time = t0 + i * 0.001
+        noise.append(p)
+    path = tmp_path / name
+    wrpcap(str(path), noise + list(rdpcap(str(source))))
+    return path
+
+
+class TestFrameReadCap:
+    def test_matches_after_the_first_max_packets_frames_are_found(self, configure, tmp_path: Path):
+        diam = pcapgen.write_diameter_pcap(tmp_path / "d.pcap")
+        padded = _after_filler(tmp_path, diam, 50, "padded.pcap")
+        srv = configure(allow=[str(tmp_path)], limits=Limits(max_packets=20))
+        result = srv.diameter_transactions(str(padded))
+        # Before the fix tshark -c 20 stopped inside the noise and nothing was found.
+        assert result["summary"]["by_message"] == {"ULR": 1, "AIR": 2, "DWR": 1}
+        assert result["packets_scanned"] == 7
+        assert "truncated" not in result
+
+    def test_match_cap_counts_matching_packets(self, configure, tmp_path: Path):
+        diam = pcapgen.write_diameter_pcap(tmp_path / "d.pcap")
+        padded = _after_filler(tmp_path, diam, 50, "padded.pcap")
+        srv = configure(allow=[str(tmp_path)], limits=Limits(max_packets=3))
+        result = srv.diameter_transactions(str(padded))
+        assert result["packets_scanned"] == 3
+        assert result["truncated"] is True
+        assert "first 3 matching packets" in result["truncated_reason"]
+
+    def test_frame_cap_reports_an_unread_tail(self, configure, tmp_path: Path):
+        diam = pcapgen.write_diameter_pcap(tmp_path / "d.pcap")
+        padded = _after_filler(tmp_path, diam, 50, "padded.pcap")
+        srv = configure(allow=[str(tmp_path)], limits=Limits(max_scan_packets=30))
+        for result in (srv.diameter_transactions(str(padded)),
+                       srv.sctp_associations(str(padded)),
+                       srv.filter_packets(str(padded), "diameter", fields=["frame.number"])):
+            assert result["total_found"] == 0
+            assert result["truncated"] is True
+            assert "first 30 frames" in result["truncated_reason"]
+
+    def test_frame_cap_not_reported_when_the_file_fits(self, configure, tmp_path: Path):
+        diam = pcapgen.write_diameter_pcap(tmp_path / "d.pcap")
+        padded = _after_filler(tmp_path, diam, 3, "padded.pcap")  # exactly 10 frames
+        srv = configure(allow=[str(tmp_path)], limits=Limits(max_scan_packets=10))
+        result = srv.diameter_transactions(str(padded))
+        assert result["summary"]["by_message"] == {"ULR": 1, "AIR": 2, "DWR": 1}
+        assert "truncated" not in result
+
+    def test_caller_frame_number_column_is_kept(self, configure, tmp_path: Path):
+        # tshark prints a field asked for twice in one column only, so the hidden
+        # frame-number column must reuse the caller's own frame.number.
+        diam = pcapgen.write_diameter_pcap(tmp_path / "d.pcap")
+        padded = _after_filler(tmp_path, diam, 5, "padded.pcap")
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.filter_packets(str(padded), "diameter.cmd.code == 318",
+                                    fields=["diameter.hopbyhopid", "frame.number", "ip.src"])
+        assert [p["frame.number"] for p in result["packets"]] == ["8", "9", "10"]
+        assert all("ip.src" in p and "diameter.hopbyhopid" in p for p in result["packets"])

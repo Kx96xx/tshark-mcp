@@ -34,7 +34,8 @@ class ToolResult(TypedDict, total=False):
 
 
 class RowsResult(ToolResult, total=False):
-    """A capped list of rows: ``count`` rows returned out of ``total_found``."""
+    """A capped list of rows: ``count`` rows returned out of ``total_found``.
+    ``packets_scanned`` is the number of matching packets the call dissected."""
     count: int
     total_found: int
     packets_scanned: int

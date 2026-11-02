@@ -24,7 +24,7 @@ block is the real output of the tool against that file.
     {"protocol": "eth/ip/udp/gtp", "frames": 6, "bytes": 918},
     {"protocol": "eth/ip/sctp/m3ua/sccp/tcap", "frames": 3, "bytes": 506}
   ],
-  "limits": {"max_file_mb": 500.0, "max_packets": 500, "max_scan_packets": 20000, "max_output_kb": 200.0, "timeout_seconds": 60.0}
+  "limits": {"max_file_mb": 500.0, "max_packets": 500, "max_scan_packets": 200000, "max_output_kb": 200.0, "timeout_seconds": 60.0}
 }
 ```
 
