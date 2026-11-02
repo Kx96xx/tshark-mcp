@@ -937,6 +937,34 @@ class MediaPathCheckResult(ToolResult, total=False):
     display_filter: str
 
 
+class DtmfEventRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    time: str
+    frame: int
+    source: str
+    digit: str
+    event: int
+    call_id: str
+    src: str
+    dst: str
+    ssrc: str
+    payload_type: int
+    clock_rate: int
+    duration_ms: float
+    volume_dbm0: int
+    packets: int
+    end_packets: int
+    content_type: str
+    response: int
+    issues: list[str]
+
+
+class DtmfEventsResult(RowsResult, total=False):
+    events: list[DtmfEventRow]
+    summary: dict[str, int]
+    calls: list[dict[str, Any]]
+
+
 # ----------------------------------------------------------------- SCTP / SIGTRAN
 class SctpAssociationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK

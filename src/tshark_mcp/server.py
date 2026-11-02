@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, expert, gtp, gtpv1, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
 from .fields import (
     compact, dicts_with, field_catalogue, iso, parse_packets, parse_time, split_fields_line, to_int, validate_fields,
 )
@@ -55,7 +55,8 @@ Diameter transaction (subscription data, flags, cancellation type).
 sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
 up). media_path_check explains one-way audio and 488s. For voice quality,
 rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
-linked to the SIP Call-ID.
+linked to the SIP Call-ID; dtmf_events lists the digits sent in RTP or SIP
+INFO.
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
@@ -1534,6 +1535,53 @@ def media_path_check(path: str, call_id: str, heuristic: bool = False) -> models
             out["display_filter"] = flt
         return out
     return _guarded("media_path_check", {"path": path, "call_id": call_id, "heuristic": heuristic}, run)
+
+
+@app.tool(title="DTMF events", annotations=READ_ONLY)
+def dtmf_events(path: str, call_id: str | None = None, heuristic: bool = False, limit: int = 200,
+                offset: int = 0) -> models.DtmfEventsResult:
+    """DTMF digits in time order from both signalling methods: RFC 4733/2833
+    telephone-events in RTP (one row per digit however many update and end packets were
+    sent: duration, volume, end packets, payload type, SSRC) and SIP INFO bodies
+    (application/dtmf-relay Signal/Duration, application/dtmf, KPML) with the status of
+    the INFO's response. Each RTP event is checked against the telephone-event payload
+    type the call's SDP negotiated; `issues` flag a payload type that was not
+    negotiated, a digit without an end packet, an INFO that was rejected or never
+    answered. `calls` gives the digits per call and method, the negotiated
+    telephone-event types, and a note when the same call sends DTMF both ways. `call_id`
+    keeps one call; `heuristic: true` decodes RTP that no SDP in the capture set up."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        cid = lint_quoted_value(call_id, "call_id") if call_id else None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        messages, sdps, sip_scan = _sip_media(capture, cid)
+        if not cid:
+            stdout, info_scan = _fields_run(capture, dtmf.info_filter(None), sip.MEDIA_FIELDS, st.limits.max_scan_packets,
+                                            aggregator=sip.AGGREGATOR)
+            messages = sip.parse_messages(stdout, sip.MEDIA_FIELDS)
+            sip_scan = _merge_scans(sip_scan, info_scan)
+        rows = dtmf.info_events(messages)
+        scan = sip_scan
+        if not cid or sdps:
+            addresses = _media_addresses(sdps) if cid else set()
+            stdout, rtp_scan = _fields_run(capture, dtmf.rtp_filter(addresses), rtp.FIELDS, st.limits.max_scan_packets,
+                                           aggregator=rtp.AGGREGATOR, extra_args=rtp.HEURISTIC_ARGS if heuristic else ())
+            packets, _ = rtp.parse(stdout)
+            events = dtmf.rtp_events(packets, sdps, sip.media_endpoints(sdps))
+            if cid:
+                events = [e for e in events if e.get("call_id") == cid]
+            rows += events
+            scan = _merge_scans(sip_scan, rtp_scan)
+        rows.sort(key=lambda r: (r.get("time") or "", r.get("frame") or 0))
+        summary = {
+            "rfc4733_digits": sum(1 for r in rows if r["source"] == "rfc4733"),
+            "sip_info_digits": sum(1 for r in rows if r["source"] == "sip_info"),
+            "with_issues": sum(1 for r in rows if r.get("issues")),
+        }
+        return _envelope("events", rows, cap, scan, offset=offset, summary=summary, calls=dtmf.summarise(rows, sdps))
+    return _guarded("dtmf_events", {"path": path, "call_id": call_id, "heuristic": heuristic, "limit": limit,
+                                    "offset": offset}, run)
 
 
 def _calls_media(sdps: list[dict[str, Any]]) -> list[dict[str, Any]]:
