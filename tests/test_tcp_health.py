@@ -338,3 +338,49 @@ def test_tunnelled_and_decapsulated_copy_with_inner_ip_id_zero(configure, tmp_pa
     s = only(out)
     assert out["summary"]["copies_dropped"] == 4
     assert s["server_to_client"]["retransmissions"] == 0 and s["server_to_client"]["data_segments"] == 4
+
+
+def _blackhole(cap: Cap) -> tuple[Conn, list[bytes]]:
+    """A stream whose full-size segments never get through; returns the quoted headers of two
+    of those attempts (each with its own IP ID)."""
+    c = Conn(cap)
+    c.handshake(mss=(1460, 1460))
+    c.down(3, size=300)
+    stuck = c.sseq
+    quoted = []
+    for attempt in range(2):
+        p = c.pkt(False, stuck, c.cseq, "PA", payload=1460)
+        cap.add(p, t=round(cap.t + 0.2 * (attempt + 1), 6))
+        cap.t = round(cap.t + 0.2 * (attempt + 1), 6)
+        quoted.append(bytes(p[IP])[:28])
+    return c, quoted
+
+
+def test_mirrored_icmp_error_counts_once(configure, tmp_path: Path):
+    """The router's fragmentation-needed, mirrored (same IP ID, 0.1 ms apart), is one error."""
+    cap = Cap()
+    _, quoted = _blackhole(cap)
+    err = Ether() / IP(src="203.0.113.1", dst=SRV, id=0x4242) / ICMP(type=3, code=4, nexthopmtu=1400) / Raw(quoted[0])
+    t = round(cap.t + 0.001, 6)
+    cap.add(err, t=t)
+    cap.add(err, t=round(t + 0.0001, 6))
+    out = run(configure, tmp_path, cap, mtu=1400)
+    s = only(out)
+    assert s["icmp"] == [{"from": "203.0.113.1", "error": "fragmentation needed", "mtu": 1400, "count": 1}]
+    assert out["summary"]["icmp_copies_dropped"] == 1
+    assert "203.0.113.1 sent 1 ICMP fragmentation needed about this stream" in " | ".join(s["issues"])
+
+
+def test_icmp_errors_without_ip_id(configure, tmp_path: Path):
+    """IP ID 0 (as Linux routers send ICMP): an error and its mirror copy count once; a
+    second error 1 ms later about another attempt (another quoted IP ID) is a new error."""
+    cap = Cap()
+    _, quoted = _blackhole(cap)
+    t = round(cap.t + 0.001, 6)
+    for dt, q in ((0.0, quoted[0]), (0.0001, quoted[0]), (0.001, quoted[1])):
+        cap.add(Ether() / IP(src="203.0.113.1", dst=SRV, id=0) / ICMP(type=3, code=4, nexthopmtu=1400) / Raw(q),
+                t=round(t + dt, 6))
+    out = run(configure, tmp_path, cap, mtu=1400)
+    s = only(out)
+    assert s["icmp"] == [{"from": "203.0.113.1", "error": "fragmentation needed", "mtu": 1400, "count": 2}]
+    assert out["summary"]["icmp_copies_dropped"] == 1
