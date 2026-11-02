@@ -27,6 +27,7 @@ class Message:
     name: str
     fields: dict[str, Any] = field(default_factory=dict)
     expects_answer: bool = True
+    interface: int | None = None  # pcapng interface id the packet was captured on
 
     @property
     def peers(self) -> frozenset[str]:
@@ -117,6 +118,7 @@ def base_row(tx: Transaction) -> dict[str, Any]:
 # ------------------------------------------------------------ proxy chains
 DUPLICATE_WINDOW_S = 0.05
 CHAIN_WINDOW_S = 1.0
+RELAY_MARGIN_S = 0.2  # how long after the answer on the next leg a relayed response is still expected
 
 
 Announced = Callable[[Message], "list[tuple[int, str | None]]"]
@@ -190,7 +192,11 @@ def session_identity(txs: list[Transaction], announced: Announced) -> Callable[[
     return lambda msg: names.get(id(msg))
 
 
-def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: Callable[[Message], Hashable | None]) -> None:
+CaptureEnd = Callable[[Message], "float | None"]
+
+
+def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: Callable[[Message], Hashable | None],
+                  capture_end: CaptureEnd | None = None) -> None:
     """Explain requests without a response on captures that hold several legs of one procedure.
 
     ``rows[i]`` is the row built from ``txs[i]``; rows are changed in place.
@@ -207,6 +213,14 @@ def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: 
       saying whether the answered leg is further along the chain (the response was not
       relayed back on this leg, or was not captured here) or before it. When no leg was
       answered every leg stays ``unanswered``: the procedure itself got no response.
+    - **Capture end**: ``capture_end(request)`` gives the time of the last packet captured
+      on the request's interface (or in the whole capture). A leg without a response whose
+      response would only have come after that, gets ``near_capture_end`` instead of
+      ``leg_without_response``: the capture on its side had stopped, so a missing
+      response says nothing. The response relayed back is expected by the answer on the
+      leg further along plus ``RELAY_MARGIN_S``; when only a leg before it was answered
+      (the relaying node gave up and answered on its own), by that answer. It is only
+      called when such a leg exists.
     """
     seen: dict[tuple, Message] = {}
     dup: set[int] = set()
@@ -250,15 +264,25 @@ def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: 
                 if txs[i].answer is not None or not answered or not row.get("unanswered"):
                     continue
                 row.pop("unanswered", None)
-                row["leg_without_response"] = True
                 later = [j for j in answered if chain.index(j) > pos]
+                j = later[0] if later else answered[-1]
+                answer = txs[j].answer
+                assert answer is not None
+                expected = answer.time + RELAY_MARGIN_S if later else answer.time
+                end = capture_end(txs[i].request) if capture_end is not None else None  # type: ignore[arg-type]
+                if end is not None and end < expected:
+                    row["near_capture_end"] = True
+                    row["note"] = (f"no response on this leg, but the capture on its side stops at {iso(end)}, "
+                                   f"before the response could be seen: leg {chain.index(j) + 1} was answered at "
+                                   f"{iso(answer.time)} (frame {answer.frame}{_cause(rows[j])}). Not counted as a "
+                                   "leg without response")
+                    continue
+                row["leg_without_response"] = True
                 if later:
-                    j = later[0]
                     row["note"] = (f"no response on this leg, but leg {chain.index(j) + 1} further along the chain was "
                                    f"answered (frame {txs[j].answer.frame}{_cause(rows[j])}): the response was not "  # type: ignore[union-attr]
                                    "relayed back to this sender, or was not captured on this leg")
                 else:
-                    j = answered[-1]
                     row["note"] = (f"no response on this leg; leg {chain.index(j) + 1} before it was answered (frame "
                                    f"{txs[j].answer.frame}{_cause(rows[j])}): the node that relayed this request answered "  # type: ignore[union-attr]
                                    "on its own (the next hop did not answer), or the response on this leg was not captured")
