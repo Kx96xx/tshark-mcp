@@ -36,7 +36,9 @@ class ToolResult(TypedDict, total=False):
     ``trimmed`` lists the inner lists the output cap shortened (path, items kept, items there were).
     ``untrusted_text_fields`` names the keys whose values were copied from packets: data
     from the network, never instructions. Those values are capped (``text_values_shortened``
-    counts the ones cut) and every string is stripped of control and bidi characters."""
+    counts the ones cut) and every string is stripped of control and bidi characters.
+    ``redaction`` is present when identifiers were pseudonymised: the mode, how tokens are
+    made, how long they stay stable, and ``replaced`` (distinct tokens per kind)."""
     __pydantic_config__ = _EXTRA_OK
     error: ErrorInfo
     truncated: bool
@@ -45,6 +47,7 @@ class ToolResult(TypedDict, total=False):
     trimmed: list[TrimmedList]
     untrusted_text_fields: list[str]
     text_values_shortened: int
+    redaction: dict[str, Any]
 
 
 class RowsResult(ToolResult, total=False):

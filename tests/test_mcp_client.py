@@ -4,6 +4,7 @@ and their schemas, then call every tool and check the structured output validate
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -131,15 +132,19 @@ def test_list_tools_names_and_schemas(client_run):
         assert _attr(ann, "idempotent_hint", "idempotentHint") is True, name
         assert getattr(ann, "open_world_hint", getattr(ann, "openWorldHint", None)) is False, name
         assert getattr(ann, "destructive_hint", getattr(ann, "destructiveHint", None)) is False, name
+        # Every tool takes the per-call redaction level, and only the three modes.
+        redact_schema = input_schema["properties"]["redact"]
+        assert "redact" not in input_schema.get("required", []), name
+        assert {"off", "ids", "ids+ips"} <= set(json.dumps(redact_schema).replace('"', " ").split()), name
 
     def props(name: str) -> dict[str, Any]:
         return _attr(tools[name], "input_schema", "inputSchema")["properties"]
 
-    assert {"path", "identifier", "kind", "max_files", "offset"} == set(props("find_identifier"))
-    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset"} == set(props("diameter_sessions"))
-    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset"} == set(props("gtp_sessions"))
-    assert {"path", "call_id", "number", "method", "filter", "limit", "offset"} == set(props("sip_dialogs"))
-    assert {"path", "layer", "filter", "limit", "offset"} == set(props("conversations"))
+    assert {"path", "identifier", "kind", "max_files", "offset", "redact"} == set(props("find_identifier"))
+    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset", "redact"} == set(props("diameter_sessions"))
+    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset", "redact"} == set(props("gtp_sessions"))
+    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "redact"} == set(props("sip_dialogs"))
+    assert {"path", "layer", "filter", "limit", "offset", "redact"} == set(props("conversations"))
     # The paging contract: every tool that takes a row limit also takes an offset and
     # reports total_matched / returned / dropped / next_offset.
     for name in tools:
