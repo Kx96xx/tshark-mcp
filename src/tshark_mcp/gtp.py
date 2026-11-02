@@ -322,6 +322,17 @@ def sequence_numbers(messages: list[Message]) -> set[int]:
     return {m.fields["seq"] for m in messages if m.fields.get("seq") is not None}
 
 
+def announced_teids(msg: Message) -> list[tuple[int, str | None]]:
+    """Control-plane F-TEIDs a message announces (TEID and address): the TEID its
+    sender expects in the header of later messages of the session."""
+    out = []
+    for ft in msg.fields.get("fteids", []):
+        if "GTP-C" in ft.get("interface", "") and ft.get("teid"):
+            teid = int(ft["teid"], 16)
+            if teid:
+                out.append((teid, ft.get("ipv4") or ft.get("ipv6")))
+    return out
+
 
 def _hex(value: int | None) -> str | None:
     return None if value is None else f"0x{value:08x}"

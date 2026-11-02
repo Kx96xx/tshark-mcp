@@ -119,6 +119,77 @@ DUPLICATE_WINDOW_S = 0.05
 CHAIN_WINDOW_S = 1.0
 
 
+Announced = Callable[[Message], "list[tuple[int, str | None]]"]
+
+
+def session_identity(txs: list[Transaction], announced: Announced) -> Callable[[Message], Hashable | None]:
+    """Name the session (IMSI and APN) of every request, for :func:`annotate_legs`.
+
+    A request that carries an IMSI (Create Session, Create PDP Context) names its own
+    session. The control-plane TEIDs it and its response announce (``announced``: the
+    sender F-TEID or TEID-C with its address) are remembered for that session, on each
+    leg of a proxy chain, since each leg has its own. A later request without an IMSI
+    (Modify Bearer, Delete Session, Update or Delete PDP Context, ...) belongs to the
+    session whose TEID it carries in its header, or whose TEID it announces again
+    (a Delete Session Request repeats the sender F-TEID). The TEIDs it announces are
+    then added to that session too (a new SGW after a relocation). When a TEID was
+    announced by several sessions, the one announced on the address the request is sent
+    to (or that it announces) is preferred, then the latest before the request.
+    The result is ``(imsi, message type, APN)``, so legs of one procedure share it
+    whether or not they carry the IMSI. A request of an unknown session (its Create is
+    not in the capture) is linked to the requests with the same message, sequence number
+    and header TEID, which a proxy that keeps both sends on its other leg; with none of
+    them in a known session they share a key of their own; a request without a header
+    TEID or sequence number gets ``None``.
+    """
+    known: dict[int, list[tuple[float, str | None, tuple[str, str]]]] = defaultdict(list)
+    names: dict[int, Hashable | None] = {}
+
+    def lookup(req: Message) -> tuple[str, str] | None:
+        header = req.fields.get("teid")
+        wanted: list[tuple[int, str | None]] = [(header, req.dst)] if header else []
+        wanted += announced(req)
+        for teid, addr in wanted:
+            entries = known.get(teid)
+            if not entries:
+                continue
+            same_addr = [e for e in entries if addr and e[1] == addr]
+            pool = same_addr or entries
+            before = [e for e in pool if e[0] <= req.time]
+            return max(before or pool, key=lambda e: e[0])[2]
+        return None
+
+    ordered = sorted((tx for tx in txs if tx.request is not None), key=lambda t: (t.request.time, t.request.frame))  # type: ignore[union-attr]
+    for tx in ordered:
+        req = tx.request
+        assert req is not None
+        imsi = req.fields.get("imsi")
+        session = (imsi, (req.fields.get("apn") or "").lower()) if imsi else lookup(req)
+        names[id(req)] = None if session is None else (session[0], req.fields.get("message_type"), session[1])
+        if session is None:
+            continue
+        for msg in (req, tx.answer):
+            if msg is None:
+                continue
+            for teid, addr in announced(msg):
+                known[teid].append((msg.time, addr, session))
+    # A proxy that keeps both the sequence number and the header TEID (the session was
+    # set up before the capture started, so no TEID is known): the legs share the
+    # message, sequence number and TEID. They take the session of a leg that has one.
+    relayed: dict[tuple, list[Message]] = defaultdict(list)
+    for tx in ordered:
+        req = tx.request
+        assert req is not None
+        if req.fields.get("teid") and req.fields.get("seq") is not None:
+            relayed[(req.fields.get("message_type"), req.fields["seq"], req.fields["teid"])].append(req)
+    for key, reqs in relayed.items():
+        named = [names[id(r)] for r in reqs if names[id(r)] is not None]
+        for r in reqs:
+            if names[id(r)] is None:
+                names[id(r)] = named[0] if named else ("relayed",) + key
+    return lambda msg: names.get(id(msg))
+
+
 def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: Callable[[Message], Hashable | None]) -> None:
     """Explain requests without a response on captures that hold several legs of one procedure.
 
@@ -127,9 +198,9 @@ def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: 
     - **Duplicates**: the same request (same peers, sequence key and name) seen again
       within 50 ms is one packet captured twice (two interfaces or a mirror), not a
       retransmission; it gets ``duplicate_of_frame`` instead of ``unanswered``.
-    - **Proxy chains**: requests with the same ``identity`` (for GTP: IMSI, message and
-      APN) within one second of the first are legs of one procedure relayed through
-      proxies. When at least one leg has no response, every leg of the chain gets
+    - **Proxy chains**: requests with the same ``identity`` (for GTP: the message and the
+      session's IMSI and APN, see :func:`session_identity`) within one second of the first
+      are legs of one procedure relayed through proxies. When at least one leg has no response, every leg of the chain gets
       ``chain`` (``leg`` k of ``legs`` in time order, how many legs were answered and on
       which frames); fully answered chains are left as they are. When some legs were answered, a leg without a
       response gets ``leg_without_response`` instead of ``unanswered``, with a note
