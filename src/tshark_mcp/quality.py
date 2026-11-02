@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import packets
-from .copies import CopyTracker, copy_key, nonzero
+from .copies import CopyTracker, copy_key, has_ip_id
 from .fields import iso
 from .tcpflow import FlowTracker, ahead
 
@@ -58,8 +58,8 @@ def tshark_args() -> list[str]:
 def _copy_key(rec: dict[str, Any]) -> tuple | None:
     """What a copy shares with the original. Without an IP ID (zero, or IPv6) two different
     packets of the same size can follow each other closely, so the transport checksum is
-    added: it differs with the payload and is the same in a copy."""
-    return copy_key(rec, nonzero(*rec.get("ids", ())))
+    added: it differs with the payload and is the same in a copy. Only the innermost IP ID counts."""
+    return copy_key(rec, has_ip_id(rec))
 
 
 def _copy_cause(first: dict[str, Any], rec: dict[str, Any]) -> str:
@@ -128,7 +128,7 @@ def analyse(recs: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         key = _copy_key(rec)
         if key is not None:
-            is_copy, first = tracker.check(key, nonzero(*rec.get("ids", ())), rec["time"], _copy_info(rec))
+            is_copy, first = tracker.check(key, has_ip_id(rec), rec["time"], _copy_info(rec))
             if is_copy:
                 copies += 1
                 cause = _copy_cause(first, rec)

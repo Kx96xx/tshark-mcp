@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from .copies import CopyTracker, copy_key, nonzero
+from .copies import CopyTracker, copy_key, has_ip_id
 from .fields import compact, iso
 from .packets import zeroed_tcp_header
 from .tcpflow import FlowTracker, ahead
@@ -127,8 +127,8 @@ def analyse(recs: list[dict[str, Any]], mtu: int) -> tuple[list[dict[str, Any]],
         st = streams.get(key)
         if st is None:
             st = streams[key] = _Stream(rec)
-        if zeroed_tcp_header(rec) or tracker.check(copy_key(rec, nonzero(*rec.get("ids", ()))), nonzero(*rec.get("ids", ())),
-                                                   rec["time"])[0]:
+        has_id = has_ip_id(rec)
+        if zeroed_tcp_header(rec) or tracker.check(copy_key(rec, has_id), has_id, rec["time"])[0]:
             st.copies += 1
             copies += 1
             continue

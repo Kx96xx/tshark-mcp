@@ -25,7 +25,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from .copies import CopyTracker, ZeroedIdTracker, copy_key, nonzero
+from .copies import CopyTracker, ZeroedIdTracker, copy_key, has_ip_id
 from .fields import compact, iso, parse_time, split_fields_line, to_int
 from .packets import record as packet_record, zeroed_tcp_header
 
@@ -268,7 +268,7 @@ def parse(stdout: str) -> list[dict[str, Any]]:
         # header. Only the IP ID that is in the key (the innermost one) says whether the window is the
         # IP-ID one or the short zero-ID one; an outer tunnel ID differs between legs and proves nothing.
         rec = packet_record(raw)
-        has_id = nonzero(rec.get("id"))
+        has_id = has_ip_id(rec)
         packets.append({
             "copy_key": copy_key(rec, has_id), "has_id": has_id, "zeroed": zeroed_tcp_header(rec), "rec": rec,
             "frame": to_int(_nth(raw["frame.number"], 0)), "time": parse_time(_nth(raw["frame.time_epoch"], 0)),

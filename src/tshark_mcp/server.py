@@ -1568,8 +1568,12 @@ def response_times(path: str, filter: str | None = None, limit: int = 100,
     server_ms percentiles; `not_opened` lists SYNs that got no answer or a reset. One
     connection split over several tcp.stream numbers by a tap's copies is joined.
     Copies of the same packet count once. TCP inside GTP-U is read from the inner
-    packet. Pipelined or multiplexed protocols (HTTP/2, gRPC) give exchanges that
-    group several requests. `filter` is ANDed with `tcp`, e.g. `tcp.port == 443`.
+    packet. On HTTP/2 and gRPC that tshark dissects (cleartext h2c on any port with
+    tshark 4.4.0+, only on an HTTP port such as 80 or 8080 with 4.2; TLS only with keys) each stream is its own exchange (`h2_stream`, with :method, :path,
+    :authority, :status and `grpc_status`; `stream_reset_by` for RST_STREAM;
+    pushed streams count as `server_pushes`) and the flow has `http2: true`.
+    Pipelined HTTP/1.1 still groups requests. `filter` is ANDed with `tcp`,
+    e.g. `tcp.port == 443`.
     Slowest flows first."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)

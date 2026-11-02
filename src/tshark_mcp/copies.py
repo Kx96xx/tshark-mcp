@@ -6,7 +6,9 @@ same packet more than once. tshark's TCP analysis counts the later copies as
 retransmissions. A copy carries the same IP identification, addresses, length
 and transport header as the first; a genuine retransmission is a new packet with
 a new IP ID. When the IP ID is zero (common with DF set) only packets that arrive
-within a few milliseconds of each other are treated as copies.
+within a few milliseconds of each other are treated as copies. Only the
+innermost IP ID counts, in the key and in the choice of window: the outer ID of a
+tunnel changes between legs and between a retransmission and its original alike.
 """
 
 from __future__ import annotations
@@ -56,6 +58,13 @@ def nonzero(*ids: str | None) -> bool:
         except ValueError:
             continue
     return False
+
+
+def has_ip_id(rec: dict[str, Any]) -> bool:
+    """Whether a generic packet record (``packets.record``) has a usable IP ID: the innermost one,
+    the only one ``copy_key`` holds. An outer tunnel ID differs between legs and says nothing about
+    the packet inside, so it must not choose the long window for a key that does not hold it."""
+    return nonzero(rec.get("id"))
 
 
 def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
