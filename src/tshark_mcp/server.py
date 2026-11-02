@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -65,7 +65,9 @@ rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
 linked to the SIP Call-ID; dtmf_events lists the digits sent in RTP or SIP
 INFO. ims_registration gives each UE's IMS registration (challenge, 200 OK,
 refreshes, implicit IMPUs, smsip/MMTel feature tags, third-party REGISTERs)
-with a verdict: call it before blaming voice or SMS on a UE.
+with a verdict: call it before blaming voice or SMS on a UE. sms_over_ims pairs
+each SMS (SIP MESSAGE with RP-DATA) with its RP-ACK or RP-ERROR and SIP responses
+and says why it failed, including a UE registered without +g.3gpp.smsip.
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
@@ -1966,6 +1968,74 @@ def ims_registration(path: str, impu: str | None = None, imsi: str | None = None
         return _envelope("registrations", rows, cap, scan, offset=offset, **extra)
     return _guarded("ims_registration", {"path": path, "impu": impu, "imsi": imsi, "filter": filter, "limit": limit,
                                          "offset": offset}, run)
+
+
+@_tool(title="SMS over IMS", annotations=READ_ONLY)
+def sms_over_ims(path: str, number: str | None = None, imsi: str | None = None, filter: str | None = None,
+                 limit: int = 100, offset: int = 0) -> models.SmsOverImsResult:
+    """SMS over IMS (TS 24.341): SIP MESSAGE carrying application/vnd.3gpp.sms, one row
+    per RP-DATA or RP-SMMA. Each row gives `direction` (MO: RP-DATA from the UE with an
+    SMS-SUBMIT; MT: RP-DATA to the UE with an SMS-DELIVER or SMS-STATUS-REPORT), the RP
+    message reference, the SMSC address (`smsc_digits`), the TPDU (type, TP-MR,
+    TP-OA/TP-DA, status report requested, concatenation part, TP-Status of a status
+    report; never the text), the SIP response to the MESSAGE with its frame and delay,
+    and `ack`: the RP-ACK or RP-ERROR that answers it (paired by RP-MR and the UE's
+    identity, including the identities its REGISTER associated), with RP cause named,
+    the TPDU it carries and the SIP response to the MESSAGE that carried it. An MO
+    submit that asked for a status report gets `status_report`. `ue_registration` is the
+    UE's IMS registration from this capture and whether its Contact had +g.3gpp.smsip.
+    `verdict`: accepted (MO, RP-ACK from the network), delivered (MT, RP-ACK from the
+    UE), rejected (RP-ERROR), ack_not_delivered (the MESSAGE carrying the RP-ACK was
+    refused or never answered), sip_failed (4xx-6xx to the MESSAGE, named),
+    not_registered_for_sms (the failure goes with a registration without
+    +g.3gpp.smsip), no_rp_ack (2xx but no RP answer within 60 s), no_response,
+    in_progress (the capture ends too soon), rp_unknown (no body in the capture), or
+    orphan_ack (an RP-ACK/RP-ERROR whose RP-DATA is not in the capture), with `reasons`
+    (an RP-ACK coded for the wrong direction is named). A MESSAGE seen on several legs
+    counts once. `number` keeps rows naming those digits (SIP users, TP addresses,
+    SMSC), `imsi` rows whose identities contain it; `filter` is a raw display filter
+    ANDed with the MESSAGE filter."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        num = lint_digits(number, "number") if number else None
+        want_imsi = lint_digits(imsi, "imsi") if imsi else None
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        known = field_catalogue(st.runner)
+        fields = [*sip.FIELDS, *(f for f in sms.EXTRA_FIELDS if f in known)]
+        stdout, scan = _fields_run(capture, _filter(filter, base=sms.FILTER), fields, st.limits.max_scan_packets,
+                                   aggregator=sip.AGGREGATOR)
+        txs, other = sms.transactions(stdout, fields)
+        registrations: list[dict[str, Any]] = []
+        end, end_source = _last_packet_time(capture, stdout)
+        if txs:
+            reg_fields = [*sip.FIELDS, *(f for f in ims.EXTRA_FIELDS if f in known)]
+            reg_out, reg_scan = _fields_run(capture, ims.FILTER, reg_fields, st.limits.max_scan_packets,
+                                            aggregator=sip.AGGREGATOR)
+            registrations = ims.registrations(reg_out, reg_fields, end)
+            ims.attach_esp(registrations, None)
+            scan.hit_match_cap = scan.hit_match_cap or reg_scan.hit_match_cap
+            scan.hit_read_cap = scan.hit_read_cap or reg_scan.hit_read_cap
+        rows = sms.messages(txs, registrations, end)
+        if num or want_imsi:
+            rows = [r for r in rows if sms.matches(r, num, want_imsi)]
+        by_verdict: dict[str, int] = {}
+        for r in rows:
+            by_verdict[r["verdict"]] = by_verdict.get(r["verdict"], 0) + 1
+        summary = {
+            "mo": sum(1 for r in rows if r.get("direction") == "MO"),
+            "mt": sum(1 for r in rows if r.get("direction") == "MT"),
+            "by_verdict": by_verdict, "other_messages": other,
+            "registrations_seen": len(registrations),
+        }
+        extra: dict[str, Any] = {"summary": summary}
+        if end is not None:
+            extra["capture_end"] = iso(end)
+            if end_source != "capinfos":
+                extra["capture_end_source"] = end_source
+        return _envelope("messages", rows, cap, scan, offset=offset, **extra)
+    return _guarded("sms_over_ims", {"path": path, "number": number, "imsi": imsi, "filter": filter, "limit": limit,
+                                     "offset": offset}, run)
 
 
 def _last_packet_time(capture: Path, stdout: str) -> tuple[float | None, str]:

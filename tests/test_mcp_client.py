@@ -27,7 +27,7 @@ EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "ims_registration", "find_fields", "check_filter",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "ims_registration", "sms_over_ims", "find_fields", "check_filter",
 }
 
 
@@ -69,6 +69,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("media_path_check", {"path": f"{d}/voice/voice_problems.pcap", "call_id": pcapgen.CALL_ID_NAT}),
         ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
+        ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
         ("find_fields", {"query": "result code", "protocol": "diameter", "limit": 5}),
         ("check_filter", {"filter": "gtp.teid == 0x100000000"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),

@@ -1050,10 +1050,175 @@ def write_ims_register_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+SMS_A = "001010000000201"           # registered with +g.3gpp.smsip
+SMS_B = "001010000000202"           # registered without it
+SMS_A_MSISDN = "15550100201"
+SMS_B_MSISDN = "15550100202"
+SMSC = "15550100900"
+SMS_PEER = "15550100300"
+UE_SMS = {SMS_A: "198.51.100.61", SMS_B: "198.51.100.62"}
+IPSMGW_IP = AS_IP
+
+
+def _bcd_addr(digits: str) -> bytes:
+    """Type of address (international, E.164) and swapped-nibble BCD digits."""
+    padded = digits + ("F" if len(digits) % 2 else "")
+    return bytes([0x91]) + bytes.fromhex("".join(padded[i + 1] + padded[i] for i in range(0, len(padded), 2)))
+
+
+_SCTS = bytes([0x32, 0x11, 0x51, 0x01, 0x02, 0x03, 0x00])
+_UD_HI = bytes([2, 0xE8, 0x34])  # TP-UDL 2 and "hi" in the GSM 7-bit alphabet
+
+
+def _tp_submit(mr: int, dest: str, srr: bool = False) -> bytes:
+    return bytes([0x01 | (0x20 if srr else 0), mr, len(dest)]) + _bcd_addr(dest) + bytes([0, 0]) + _UD_HI
+
+
+def _tp_deliver(orig: str) -> bytes:
+    return bytes([0x04, len(orig)]) + _bcd_addr(orig) + bytes([0, 0]) + _SCTS + _UD_HI
+
+
+def _tp_status_report(mr: int, recipient: str, status: int) -> bytes:
+    return bytes([0x06, mr, len(recipient)]) + _bcd_addr(recipient) + _SCTS + _SCTS + bytes([status])
+
+
+def _rp_data_mo(mr: int, tpdu: bytes) -> bytes:
+    sc = _bcd_addr(SMSC)
+    return bytes([0x00, mr, 0x00, len(sc)]) + sc + bytes([len(tpdu)]) + tpdu
+
+
+def _rp_data_mt(mr: int, tpdu: bytes) -> bytes:
+    sc = _bcd_addr(SMSC)
+    return bytes([0x01, mr, len(sc)]) + sc + bytes([0x00, len(tpdu)]) + tpdu
+
+
+def _rp_ack(rp_type: int, mr: int, tpdu: bytes | None = None) -> bytes:
+    return bytes([rp_type, mr]) + (bytes([0x41, len(tpdu)]) + tpdu if tpdu else b"")
+
+
+def _rp_error(rp_type: int, mr: int, cause: int) -> bytes:
+    return bytes([rp_type, mr, 0x01, cause])
+
+
+def _sip_bin(lines: list[str], body: bytes) -> bytes:
+    return ("\r\n".join(lines) + f"\r\nContent-Length: {len(body)}\r\n\r\n").encode() + body
+
+
+def _message(call_id: str, frm: str, to: str, body: bytes, cseq: int = 1, ruri: str | None = None,
+             ctype: str = "application/vnd.3gpp.sms", via: str = "192.0.2.50") -> bytes:
+    return _sip_bin([
+        f"MESSAGE {ruri or to} SIP/2.0", f"Via: SIP/2.0/UDP {via}:5060;branch=z9hG4bK{call_id}", f"From: <{frm}>;tag=f{cseq}",
+        f"To: <{to}>", f"Call-ID: {call_id}@ims.example.com", f"CSeq: {cseq} MESSAGE", "Max-Forwards: 70",
+        f"Content-Type: {ctype}",
+    ], body)
+
+
+def _message_response(call_id: str, frm: str, to: str, code: int, reason: str, cseq: int = 1,
+                      via: str = "192.0.2.50") -> bytes:
+    return _sip([
+        f"SIP/2.0 {code} {reason}", f"Via: SIP/2.0/UDP {via}:5060;branch=z9hG4bK{call_id}", f"From: <{frm}>;tag=f{cseq}",
+        f"To: <{to}>;tag=t{cseq}", f"Call-ID: {call_id}@ims.example.com", f"CSeq: {cseq} MESSAGE",
+    ])
+
+
+def write_ims_sms_pcap(path: Path) -> Path:
+    """SMS over IMS between two registered test UEs (:data:`SMS_A` with +g.3gpp.smsip,
+    :data:`SMS_B` without), the P-CSCF and an IP-SM-GW (``IPSMGW_IP``): an MO submit
+    acknowledged, with a status report delivered later; an MO submit refused with
+    RP-ERROR 21; an MO submit whose RP-ACK is coded MS-to-network and never accepted by
+    the UE (408); an MT delivery to the MSISDN alias answered by an RP-ACK from the
+    IMSI-based identity; an MT to the UE without smsip refused with 488; an MT refused
+    by the UE with RP-ERROR 22; an MO submit answered 202 and never by the RP layer; an
+    RP-ACK with no RP-DATA; a pager-mode text MESSAGE; a MESSAGE whose body is missing;
+    and an MO submit just before the end of the capture."""
+    t0 = 1_700_040_000.0
+    frames: list[tuple[float, bytes]] = []
+    p, g = PCSCF_IP, IPSMGW_IP
+    ua, ub = UE_SMS[SMS_A], UE_SMS[SMS_B]
+    a_impu = f"sip:{SMS_A}@{IMS_DOMAIN}"
+    a_tel, b_tel = f"sip:+{SMS_A_MSISDN}@{IMS_DOMAIN}", f"sip:+{SMS_B_MSISDN}@{IMS_DOMAIN}"
+    sc = f"sip:+{SMSC}@{IMS_DOMAIN}"
+
+    def add(dt: float, src: str, dst: str, msg: bytes) -> None:
+        frames.append((t0 + dt, _udp_frame(src, dst, 5060, 5060, msg)))
+
+    def register(dt: float, imsi: str, ue: str, msisdn: str, tags: str) -> None:
+        impu = f"sip:{imsi}@{IMS_DOMAIN}"
+        add(dt, ue, p, _sip([
+            f"REGISTER sip:{IMS_DOMAIN} SIP/2.0", f"Via: SIP/2.0/UDP {ue}:5060;branch=z9hG4bKr{imsi[-3:]}",
+            f"From: <{impu}>;tag=r1", f"To: <{impu}>", f"Call-ID: reg-{imsi[-3:]}@ue.example", "CSeq: 1 REGISTER",
+            f'Contact: <sip:{ue}:5060>{tags}', "Expires: 600000",
+            f'Authorization: Digest username="{imsi}@{IMS_DOMAIN}", realm="{IMS_DOMAIN}", nonce="", '
+            f'uri="sip:{IMS_DOMAIN}", response="11"',
+        ]))
+        add(dt + 0.05, p, ue, _sip([
+            "SIP/2.0 200 OK", f"Via: SIP/2.0/UDP {ue}:5060;branch=z9hG4bKr{imsi[-3:]}", f"From: <{impu}>;tag=r1",
+            f"To: <{impu}>;tag=s1", f"Call-ID: reg-{imsi[-3:]}@ue.example", "CSeq: 1 REGISTER",
+            f"Contact: <sip:{ue}:5060>;expires=3600{tags}",
+            f"P-Associated-URI: <sip:+{msisdn}@{IMS_DOMAIN}>, <tel:+{msisdn}>",
+        ]))
+
+    register(0.0, SMS_A, ua, SMS_A_MSISDN, f";+g.3gpp.smsip;{MMTEL_TAG}")
+    register(0.5, SMS_B, ub, SMS_B_MSISDN, f";{MMTEL_TAG}")
+
+    # 1. MO submit (status report requested), RP-ACK with SUBMIT-REPORT, then the status report.
+    add(10.0, ua, p, _message("mo1", a_tel, sc, _rp_data_mo(5, _tp_submit(9, SMS_PEER, srr=True))))
+    add(10.01, p, g, _message("mo1", a_tel, sc, _rp_data_mo(5, _tp_submit(9, SMS_PEER, srr=True))))
+    add(10.02, g, p, _message_response("mo1", a_tel, sc, 202, "Accepted"))
+    add(10.03, p, ua, _message_response("mo1", a_tel, sc, 202, "Accepted"))
+    add(10.20, g, ua, _message("ack1", sc, a_tel, _rp_ack(3, 5, bytes([0x01, 0x00]) + _SCTS)))
+    add(10.25, ua, g, _message_response("ack1", sc, a_tel, 200, "OK"))
+    add(15.00, g, ua, _message("sr1", sc, a_tel, _rp_data_mt(6, _tp_status_report(9, SMS_PEER, 0x00))))
+    add(15.05, ua, g, _message_response("sr1", sc, a_tel, 200, "OK"))
+    add(15.10, ua, g, _message("sr1ack", a_tel, sc, _rp_ack(2, 6, bytes([0x00, 0x00]))))
+    add(15.15, g, ua, _message_response("sr1ack", a_tel, sc, 200, "OK"))
+    # 2. MO submit refused by the SMSC: RP-ERROR cause 21.
+    add(20.0, ua, g, _message("mo2", a_tel, sc, _rp_data_mo(7, _tp_submit(10, SMS_PEER))))
+    add(20.02, g, ua, _message_response("mo2", a_tel, sc, 202, "Accepted"))
+    add(20.30, g, ua, _message("err2", sc, a_tel, _rp_error(5, 7, 21)))
+    add(20.35, ua, g, _message_response("err2", sc, a_tel, 200, "OK"))
+    # 3. MO submit whose RP-ACK is coded MS to network (2) and never accepted by the UE.
+    add(30.0, ua, g, _message("mo3", a_tel, sc, _rp_data_mo(17, _tp_submit(11, SMS_PEER))))
+    add(30.02, g, ua, _message_response("mo3", a_tel, sc, 200, "OK"))
+    for dt in (30.04, 30.54, 31.54):
+        add(dt, g, ua, _message("ack3", sc, a_tel, _rp_ack(2, 17)))
+    add(62.04, p, g, _message_response("ack3", sc, a_tel, 408, "Request Timeout"))
+    # 4. MT delivery to the MSISDN alias, RP-ACK from the IMSI-based identity.
+    add(70.0, g, ua, _message("mt4", sc, a_tel, _rp_data_mt(20, _tp_deliver(SMS_PEER))))
+    add(70.05, ua, g, _message_response("mt4", sc, a_tel, 200, "OK"))
+    add(70.10, ua, g, _message("ack4", a_impu, sc, _rp_ack(2, 20, bytes([0x00, 0x00]))))
+    add(70.15, g, ua, _message_response("ack4", a_impu, sc, 200, "OK"))
+    # 5. MT to the UE registered without smsip: 488.
+    add(80.0, g, p, _message("mt5", sc, b_tel, _rp_data_mt(30, _tp_deliver(SMS_PEER))))
+    add(80.02, p, g, _message_response("mt5", sc, b_tel, 488, "Not Acceptable Here"))
+    # 6. MT refused by the UE: memory capacity exceeded.
+    add(90.0, g, ua, _message("mt6", sc, a_tel, _rp_data_mt(40, _tp_deliver(SMS_PEER))))
+    add(90.05, ua, g, _message_response("mt6", sc, a_tel, 200, "OK"))
+    add(90.10, ua, g, _message("err6", a_tel, sc, _rp_error(4, 40, 22)))
+    add(90.15, g, ua, _message_response("err6", a_tel, sc, 200, "OK"))
+    # 7. MO submit answered 202 and never by the RP layer.
+    add(100.0, ua, g, _message("mo7", a_tel, sc, _rp_data_mo(50, _tp_submit(12, SMS_PEER))))
+    add(100.02, g, ua, _message_response("mo7", a_tel, sc, 202, "Accepted"))
+    # 8. An RP-ACK with no RP-DATA before it; 9. a pager-mode text MESSAGE; 10. a MESSAGE without its body.
+    add(110.0, g, ua, _message("orphan8", sc, a_tel, _rp_ack(3, 99)))
+    add(110.05, ua, g, _message_response("orphan8", sc, a_tel, 200, "OK"))
+    add(120.0, ua, p, _message("text9", a_tel, b_tel, b"hello", ctype="text/plain"))
+    add(120.05, p, ua, _message_response("text9", a_tel, b_tel, 200, "OK"))
+    add(130.0, ua, g, _message("nobody10", a_tel, sc, b""))
+    add(130.02, g, ua, _message_response("nobody10", a_tel, sc, 202, "Accepted"))
+    # 11. An MO submit five seconds before the end of the capture.
+    add(195.0, ua, g, _message("mo11", a_tel, sc, _rp_data_mo(60, _tp_submit(13, SMS_PEER))))
+    add(195.02, g, ua, _message_response("mo11", a_tel, sc, 202, "Accepted"))
+    add(200.0, SERVER_IP, p, b"keepalive")
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 def write_ims_pcaps(directory: Path) -> dict[str, Path]:
     """The IMS captures, in their own directory like the voice ones."""
     directory.mkdir(parents=True, exist_ok=True)
-    return {"ims_register": write_ims_register_pcap(directory / "ims_register.pcap")}
+    return {"ims_register": write_ims_register_pcap(directory / "ims_register.pcap"),
+            "ims_sms": write_ims_sms_pcap(directory / "ims_sms.pcap")}
 
 
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:
