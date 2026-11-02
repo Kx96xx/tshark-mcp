@@ -385,6 +385,7 @@ class MessageSummary(TypedDict, total=False):
     failed: int
     legs_without_response: int
     legs_near_capture_end: int
+    unanswered_near_capture_end: int
     duplicates: int
 
 
@@ -452,6 +453,8 @@ class DiameterSessionTransaction(TypedDict, total=False):
     success: bool
     rtt_ms: float
     unanswered: bool
+    near_capture_end: bool
+    note: str
     unmatched_answer: bool
     retransmitted: bool
 
@@ -476,6 +479,7 @@ class DiameterSessionRow(TypedDict, total=False):
     answer_codes: list[int]
     result_codes: list[int]
     unanswered: int
+    unanswered_near_capture_end: int
     failed: int
     max_rtt_ms: float
     transactions: list[DiameterSessionTransaction]
@@ -485,6 +489,7 @@ class DiameterSessionSummary(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     sessions: int
     unanswered: int
+    unanswered_near_capture_end: int
     failed: int
     without_session_id: int
     by_application: dict[str, int]
@@ -1131,6 +1136,7 @@ class TraceSubscriberResult(RowsResult, total=False):
     identity: SubscriberIdentity
     by_protocol: dict[str, int]
     failures: int
+    unanswered_near_capture_end: int
     passes: dict[str, Any]
 
 
@@ -1312,6 +1318,7 @@ class DnsTransactionRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     near_capture_end: bool
+    note: str
     retransmissions: int
     retry_of: int
     truncated_tc: bool

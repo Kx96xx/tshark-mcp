@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from .fields import (
-    Json, all_values, compact, endpoints, first, frame_number, frame_time, iso, protocol_messages,
+    Json, all_values, compact, endpoints, first, frame_interface, frame_number, frame_time, iso, protocol_messages,
     to_int,
 )
-from .pairing import Message, Transaction, base_row, pair_messages
+from .pairing import CaptureEnd, Message, Transaction, base_row, mark_unanswered_near_end, pair_messages
 
 LAYER = "diameter"
 JSON_LAYERS = "frame ip ipv6 diameter"
@@ -204,6 +204,7 @@ def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Messag
         ts = frame_time(packet)
         frame = frame_number(packet)
         src, dst = endpoints(packet)
+        iface = frame_interface(packet)
         for msg in protocol_messages(packet, LAYER):
             code = to_int(first(msg, "diameter.cmd.code"))
             if code is None:
@@ -234,7 +235,7 @@ def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Messag
                 fields["raw"] = msg
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=is_request,
-                key=(hbh, e2e), name=command_name(code, is_request), fields=fields,
+                key=(hbh, e2e), name=command_name(code, is_request), fields=fields, interface=iface,
             ))
     return messages
 
@@ -356,17 +357,21 @@ def session_filter(session_id: str | None, imsi: str | None, command_code: int |
     return " && ".join(parts) if parts else None
 
 
-def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]], int]:
+def session_rows(transactions: list[Transaction], capture_end: CaptureEnd | None = None) -> tuple[list[dict[str, Any]], int]:
     """Group paired transactions by Session-Id.
 
     Returns the session rows (ordered by first message) and the number of
     transactions that carried no Session-Id (Device-Watchdog, Capabilities-
     Exchange and other peer-level commands), which are left out of the rows.
+    ``capture_end`` (see :func:`pairing.mark_unanswered_near_end`) flags unanswered
+    requests the capture stopped too soon after; each session counts them as
+    ``unanswered_near_capture_end``.
     """
     sessions: dict[str, dict[str, Any]] = {}
     without_session = 0
-    for tx in transactions:
-        row = transaction_row(tx)
+    all_rows = [transaction_row(tx) for tx in transactions]
+    mark_unanswered_near_end(transactions, all_rows, capture_end)
+    for tx, row in zip(transactions, all_rows):
         sid = row.get("session_id")
         if not sid:
             without_session += 1
@@ -395,6 +400,7 @@ def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]],
                 "answer_codes": [],
                 "result_codes": [],
                 "unanswered": 0,
+                "unanswered_near_capture_end": 0,
                 "failed": 0,
             }
         s["_first"] = min(s["_first"], anchor.time)
@@ -410,6 +416,8 @@ def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]],
             s["result_codes"].append(code)
         if row.get("unanswered"):
             s["unanswered"] += 1
+            if row.get("near_capture_end"):
+                s["unanswered_near_capture_end"] += 1
         if row.get("success") is False:
             s["failed"] += 1
         s["transactions"].append(compact({
@@ -428,6 +436,8 @@ def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]],
             "success": row.get("success"),
             "rtt_ms": row.get("rtt_ms"),
             "unanswered": row.get("unanswered"),
+            "near_capture_end": row.get("near_capture_end"),
+            "note": row.get("note"),
             "unmatched_answer": row.get("unmatched_answer"),
             "retransmitted": row.get("retransmitted"),
         }))
@@ -453,6 +463,7 @@ def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]],
             "answer_codes": s["answer_codes"],
             "result_codes": s["result_codes"],
             "unanswered": s["unanswered"],
+            "unanswered_near_capture_end": s["unanswered_near_capture_end"] or None,
             "failed": s["failed"],
             "max_rtt_ms": max(rtts) if rtts else None,
             "transactions": s["transactions"],

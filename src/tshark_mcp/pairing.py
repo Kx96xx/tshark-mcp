@@ -119,6 +119,7 @@ def base_row(tx: Transaction) -> dict[str, Any]:
 DUPLICATE_WINDOW_S = 0.05
 CHAIN_WINDOW_S = 1.0
 RELAY_MARGIN_S = 0.2  # how long after the answer on the next leg a relayed response is still expected
+ANSWER_WINDOW_S = 2.0  # the longest a request's answer is still expected when nothing in the capture says sooner
 
 
 Announced = Callable[[Message], "list[tuple[int, str | None]]"]
@@ -286,6 +287,63 @@ def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: 
                     row["note"] = (f"no response on this leg; leg {chain.index(j) + 1} before it was answered (frame "
                                    f"{txs[j].answer.frame}{_cause(rows[j])}): the node that relayed this request answered "  # type: ignore[union-attr]
                                    "on its own (the next hop did not answer), or the response on this leg was not captured")
+
+
+def near_capture_end(request: Message | None, capture_end: CaptureEnd | None,
+                     window: float = ANSWER_WINDOW_S) -> float | None:
+    """The end of the capture on ``request``'s side when it stops less than ``window``
+    seconds after the request (its answer could still have come after the capture
+    stopped), else None. ``capture_end`` is the lookup :func:`annotate_legs` takes."""
+    if request is None or capture_end is None:
+        return None
+    end = capture_end(request)
+    if end is None or end >= request.time + window:
+        return None
+    return end
+
+
+def answer_window(slowest_s: float | None, cap: float = ANSWER_WINDOW_S) -> float:
+    """How long after a request its answer is still expected: the slowest answer of the
+    same kind seen in the capture plus ``RELAY_MARGIN_S``, at most ``cap``; ``cap`` when
+    none of that kind was answered."""
+    if slowest_s is None:
+        return cap
+    return min(cap, slowest_s + RELAY_MARGIN_S)
+
+
+def near_end_note(request_time: float, end: float, window: float, slowest_s: float | None = None) -> str:
+    """The note on an unanswered request that the capture stopped too soon after."""
+    why = (f"answers of this kind in the capture took at most {slowest_s * 1000.0:.0f} ms"
+           if slowest_s is not None and window < ANSWER_WINDOW_S else f"answers are expected within {window:g} s")
+    return (f"no response, but the capture on this side stops at {iso(end)}, "
+            f"{(end - request_time) * 1000.0:.0f} ms after the request ({why}): the response may simply "
+            "not have been captured")
+
+
+def mark_unanswered_near_end(txs: list[Transaction], rows: list[dict[str, Any]], capture_end: CaptureEnd | None) -> None:
+    """Flag ``near_capture_end`` (and a ``note``) on rows still ``unanswered`` whose capture
+    stops before the answer was due. The answer is due within :func:`answer_window` of the
+    request: the slowest answer to the same request name in ``txs`` plus
+    ``RELAY_MARGIN_S``, at most ``ANSWER_WINDOW_S`` (2 s). ``unanswered`` stays: the
+    response is missing either way, the flag says the capture cannot tell why. Run it
+    after :func:`annotate_legs`; ``capture_end`` is only called for unanswered rows."""
+    if capture_end is None or not any(r.get("unanswered") for r in rows):
+        return
+    slowest: dict[str, float] = {}
+    for tx in txs:
+        if tx.request is not None and tx.answer is not None:
+            rtt = tx.answer.time - tx.request.time
+            if rtt >= 0 and rtt > slowest.get(tx.request.name, -1.0):
+                slowest[tx.request.name] = rtt
+    for tx, row in zip(txs, rows):
+        if not row.get("unanswered") or tx.request is None:
+            continue
+        seen = slowest.get(tx.request.name)
+        window = answer_window(seen)
+        end = near_capture_end(tx.request, capture_end, window)
+        if end is not None:
+            row["near_capture_end"] = True
+            row["note"] = near_end_note(tx.request.time, end, window, seen)
 
 
 def _cause(row: dict[str, Any]) -> str:
