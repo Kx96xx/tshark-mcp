@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .fields import (
-    Json, all_values, compact, endpoints, first, frame_number, frame_time, protocol_messages,
+    Json, all_values, compact, endpoints, first, frame_number, frame_time, iso, protocol_messages,
     to_int,
 )
 from .pairing import Message, Transaction, base_row, pair_messages
@@ -304,9 +304,131 @@ def session_ids(messages: list[Message]) -> set[str]:
     return {m.fields["session_id"] for m in messages if m.fields.get("session_id")}
 
 
+def session_filter(session_id: str | None, imsi: str | None, command_code: int | None) -> str | None:
+    """Display filter selecting the messages of interest for ``diameter_sessions``.
+
+    Arguments must already be linted (``lint_quoted_value`` / ``lint_digits``).
+    The pieces are ANDed: a Session-Id narrows to one session, an IMSI to the
+    sessions whose User-Name carries it and a command code to one command. An
+    answer does not repeat the User-Name, so the caller fetches the whole
+    session in a second pass with :func:`correlation_filter`.
+    """
+    parts = []
+    if session_id:
+        parts.append(f'diameter.Session-Id == "{session_id}"')
+    if imsi:
+        parts.append(f'diameter.User-Name == "{imsi}"')
+    if command_code is not None:
+        parts.append(f"diameter.cmd.code == {int(command_code)}")
+    return " && ".join(parts) if parts else None
+
+
+def session_rows(transactions: list[Transaction]) -> tuple[list[dict[str, Any]], int]:
+    """Group paired transactions by Session-Id.
+
+    Returns the session rows (ordered by first message) and the number of
+    transactions that carried no Session-Id (Device-Watchdog, Capabilities-
+    Exchange and other peer-level commands), which are left out of the rows.
+    """
+    sessions: dict[str, dict[str, Any]] = {}
+    without_session = 0
+    for tx in transactions:
+        row = transaction_row(tx)
+        sid = row.get("session_id")
+        if not sid:
+            without_session += 1
+            continue
+        anchor = tx.request or tx.answer
+        assert anchor is not None
+        end = tx.answer or tx.request
+        assert end is not None
+        s = sessions.get(sid)
+        if s is None:
+            s = sessions[sid] = {
+                "session_id": sid,
+                "application_id": row.get("application_id"),
+                "application": row.get("application"),
+                "origin_host": row.get("origin_host"),
+                "destination_host": row.get("destination_host") or row.get("answer_origin_host"),
+                "origin_realm": row.get("origin_realm"),
+                "destination_realm": row.get("destination_realm"),
+                "user_name": row.get("user_name"),
+                "src": row.get("src"),
+                "dst": row.get("dst"),
+                "_first": anchor.time,
+                "_last": end.time,
+                "transactions": [],
+                "request_codes": [],
+                "answer_codes": [],
+                "result_codes": [],
+                "unanswered": 0,
+                "failed": 0,
+            }
+        s["_first"] = min(s["_first"], anchor.time)
+        s["_last"] = max(s["_last"], end.time)
+        for key in ("user_name", "destination_host", "application", "application_id"):
+            if s.get(key) is None and row.get(key) is not None:
+                s[key] = row[key]
+        s["request_codes"].append(row["command_code"])
+        if row.get("answer"):
+            s["answer_codes"].append(row["command_code"])
+        code = row.get("experimental_result_code", row.get("result_code"))
+        if code is not None:
+            s["result_codes"].append(code)
+        if row.get("unanswered"):
+            s["unanswered"] += 1
+        if row.get("success") is False:
+            s["failed"] += 1
+        s["transactions"].append(compact({
+            "time": row.get("time"),
+            "request": row.get("request"),
+            "answer": row.get("answer"),
+            "command_code": row["command_code"],
+            "command": row.get("command"),
+            "hop_by_hop": row.get("hop_by_hop"),
+            "end_to_end": row.get("end_to_end"),
+            "request_frame": row.get("request_frame"),
+            "answer_frame": row.get("answer_frame"),
+            "result_code": row.get("result_code"),
+            "experimental_result_code": row.get("experimental_result_code"),
+            "result": row.get("result"),
+            "success": row.get("success"),
+            "rtt_ms": row.get("rtt_ms"),
+            "unanswered": row.get("unanswered"),
+            "unmatched_answer": row.get("unmatched_answer"),
+            "retransmitted": row.get("retransmitted"),
+        }))
+    rows = []
+    for s in sorted(sessions.values(), key=lambda x: x["_first"]):
+        rtts = [t["rtt_ms"] for t in s["transactions"] if t.get("rtt_ms") is not None]
+        rows.append(compact({
+            "session_id": s["session_id"],
+            "first_time": iso(s["_first"]),
+            "last_time": iso(s["_last"]),
+            "duration_ms": round((s["_last"] - s["_first"]) * 1000.0, 3),
+            "application_id": s["application_id"],
+            "application": s["application"],
+            "origin_host": s["origin_host"],
+            "destination_host": s["destination_host"],
+            "origin_realm": s["origin_realm"],
+            "destination_realm": s["destination_realm"],
+            "user_name": s["user_name"],
+            "src": s["src"],
+            "dst": s["dst"],
+            "transaction_count": len(s["transactions"]),
+            "request_codes": s["request_codes"],
+            "answer_codes": s["answer_codes"],
+            "result_codes": s["result_codes"],
+            "unanswered": s["unanswered"],
+            "failed": s["failed"],
+            "max_rtt_ms": max(rtts) if rtts else None,
+            "transactions": s["transactions"],
+        }))
+    return rows, without_session
+
 
 __all__ = [
     "APPLICATIONS", "COMMANDS", "EXPERIMENTAL_RESULT_CODES", "JSON_LAYERS", "LAYER", "RESULT_CODES",
     "all_values", "Json", "command_name", "correlation_filter", "extract_messages", "identity_filter", "pair",
-    "session_ids", "transaction_row",
+    "session_filter", "session_ids", "session_rows", "transaction_row",
 ]
