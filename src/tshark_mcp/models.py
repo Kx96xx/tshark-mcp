@@ -1015,6 +1015,63 @@ class DtmfEventsResult(RowsResult, total=False):
     calls: list[dict[str, Any]]
 
 
+# ----------------------------------------------------------------- IMS registration
+class ImsRegisterStep(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    time: str
+    frame: int
+    kind: str
+    call_id: str
+    cseq: int
+    requested_expires: int
+    auth: str
+    status: int
+    reason_phrase: str
+    status_frame: int
+    rtt_ms: float
+    granted_expires: int
+    challenge_algorithm: str
+    retry_after: int
+    min_expires: int
+    warning: str
+    other_leg_statuses: list[int]
+    legs: int
+    retransmissions: int
+    copies: int
+    no_final_response: bool
+
+
+class ImsRegistrationRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    impu: str
+    impi: str
+    first_time: str
+    first_frame: int
+    last_time: str
+    verdict: str
+    reasons: list[str]
+    registered_until: str
+    time_to_register_ms: float
+    user_agent: str
+    contact: str
+    feature_tags: list[str]
+    smsip: bool
+    mmtel: bool
+    sec_agree: list[str]
+    associated_uris: list[str]
+    service_route: list[str]
+    path_header: list[str]
+    counts: dict[str, int]
+    transactions: list[ImsRegisterStep]
+    third_party: list[dict[str, Any]]
+
+
+class ImsRegistrationResult(RowsResult, total=False):
+    registrations: list[ImsRegistrationRow]
+    summary: dict[str, Any]
+    capture_end: str
+
+
 # ----------------------------------------------------------------- SCTP / SIGTRAN
 class SctpAssociationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
