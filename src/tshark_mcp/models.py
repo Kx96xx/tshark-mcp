@@ -705,10 +705,14 @@ class TunnelTcp(TypedDict, total=False):
     syn_ack: int
     mss_in_syn: dict[str, int]
     retransmissions: int
+    data_retransmissions: int
+    lost_before_capture: int
+    retransmitted_after_capture: int
+    syn_retransmissions: int
     retransmission_ratio: float
-    fast_retransmissions: int
+    out_of_order: int
+    keepalives: int
     duplicate_acks: int
-    lost_segments: int
     zero_windows: int
     resets: int
 

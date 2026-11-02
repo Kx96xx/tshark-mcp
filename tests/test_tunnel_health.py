@@ -126,6 +126,71 @@ def test_reordered_segments_are_not_retransmissions(configure, tmp_path: Path):
     assert any("out of order" in i for i in down["issues"])
 
 
+def test_resent_bytes_in_a_new_order_are_retransmissions_not_reordering(configure, tmp_path: Path):
+    """A burst resent ~200 ms later, whose resends overtake one another: the capture saw
+    every byte before, so all of them are retransmissions (as in tcp_health), even the ones
+    whose IP ID is lower than the resend just ahead of them."""
+    b = Builder()
+    handshake(b, 1380, 1380)
+    nxt = download(b, 20, size=500)
+    b.t += 0.2
+    resend_ids = [400, 402, 401, 404, 403, 405]  # 402 before 401, 404 before 403
+    for ip_id, k in zip(resend_ids, [0, 2, 1, 4, 3, 5]):
+        b.gpdu(False, tcp(False, ip_id, 5001 + k * 500, 1001, "PA", payload=500))
+    b.gpdu(False, tcp(False, 406, nxt, 1001, "PA", payload=500))
+    srv = configure(allow=[str(tmp_path)])
+    down = next(r for r in srv.gtp_tunnel_health(str(b.write(tmp_path / "resend.pcap")))["tunnels"]
+                if r["teid"] == f"0x{DL:08x}")
+    t = down["tcp"]
+    assert t["data_retransmissions"] == 6 and t["retransmitted_after_capture"] == 6
+    assert "out_of_order" not in t and "lost_before_capture" not in t
+    assert t["data_segments"] == 27
+
+
+def test_gap_filled_later_is_lost_before_capture(configure, tmp_path: Path):
+    """A segment missing from the capture and resent 200 ms later was lost before the
+    capture point; one overtaken by its successor (lower IP ID, same millisecond) is reordered."""
+    b = Builder()
+    handshake(b, 1380, 1380)
+    seq, ip_id = 5001, 10
+    for i in range(22):
+        if i == 5:  # lost upstream: the capture never sees ID 15
+            seq, ip_id = seq + 1000, ip_id + 1
+            continue
+        b.gpdu(False, tcp(False, ip_id, seq, 1001, "PA", payload=1000))
+        seq, ip_id = seq + 1000, ip_id + 1
+    b.t += 0.2
+    b.gpdu(False, tcp(False, 500, 5001 + 5 * 1000, 1001, "PA", payload=1000))  # the resend fills the gap
+    b.gpdu(False, tcp(False, 502, seq + 1000, 1001, "PA", payload=200))  # overtakes the segment sent before it
+    b.gpdu(False, tcp(False, 501, seq, 1001, "PA", payload=1000))
+    srv = configure(allow=[str(tmp_path)])
+    down = next(r for r in srv.gtp_tunnel_health(str(b.write(tmp_path / "gap.pcap")))["tunnels"]
+                if r["teid"] == f"0x{DL:08x}")
+    t = down["tcp"]
+    assert t["lost_before_capture"] == 1 and t["data_retransmissions"] == 1 and t["out_of_order"] == 1
+    assert "retransmitted_after_capture" not in t
+
+
+def test_pure_ack_ahead_does_not_make_later_data_reordered(configure, tmp_path: Path):
+    """An empty ACK carrying a higher IP ID and a sequence number ahead of the data (a
+    capture that stamps packets out of order) does not turn the in-order data after it
+    into reordered segments: empty segments carry no bytes to compare."""
+    b = Builder()
+    handshake(b, 1380, 1380)
+    seq = 5001
+    for i in range(24):
+        b.gpdu(False, tcp(False, 10 + i, seq, 1001, "PA", payload=1000))
+        seq += 1000
+        if i == 3:
+            b.gpdu(False, tcp(False, 90, seq + 40_000, 1001, "A"))
+    srv = configure(allow=[str(tmp_path)])
+    down = next(r for r in srv.gtp_tunnel_health(str(b.write(tmp_path / "ackahead.pcap")))["tunnels"]
+                if r["teid"] == f"0x{DL:08x}")
+    t = down["tcp"]
+    assert t["data_segments"] == 24 and t["retransmissions"] == 0
+    assert "out_of_order" not in t
+
+
 def test_keepalives_are_not_retransmissions(configure, tmp_path: Path):
     b = Builder()
     handshake(b, 1380, 1380)
