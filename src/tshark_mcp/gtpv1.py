@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .fields import Json, all_values, compact, endpoints, first, frame_number, frame_time, protocol_messages, to_int
+from .fields import Json, all_values, compact, endpoints, first, frame_interface, frame_number, frame_time, protocol_messages, to_int
 from .pairing import Message, Transaction, base_row, pair_messages
 
 LAYER = "gtp"
@@ -108,6 +108,7 @@ def extract_messages(packets: list[Json]) -> list[Message]:
     for packet in packets:
         ts = frame_time(packet)
         frame = frame_number(packet)
+        iface = frame_interface(packet)
         src, dst = endpoints(packet)
         for msg in protocol_messages(packet, LAYER):
             mtype = to_int(first(msg, "gtp.message"))
@@ -134,7 +135,7 @@ def extract_messages(packets: list[Json]) -> list[Message]:
             }
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=mtype not in RESPONSE_TYPES,
-                key=fields["seq"], name=message_name(mtype), fields=fields,
+                key=fields["seq"], name=message_name(mtype), fields=fields, interface=iface,
                 expects_answer=mtype in REQUEST_TO_RESPONSE,
             ))
     return messages

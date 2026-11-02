@@ -260,6 +260,11 @@ def frame_number(packet: Json) -> int:
     return to_int(first(layers(packet).get("frame", {}), "frame.number"), 0) or 0
 
 
+def frame_interface(packet: Json) -> int | None:
+    """The capture interface (pcapng interface id) the packet was seen on, or None."""
+    return to_int(first(layers(packet).get("frame", {}), "frame.interface_id"))
+
+
 def frame_time(packet: Json) -> float:
     return parse_time(first(layers(packet).get("frame", {}), "frame.time_epoch")) or 0.0
 

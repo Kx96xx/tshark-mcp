@@ -127,6 +127,9 @@ def test_gtpv1_upstream_leg(configure, tmp_path: Path):
     c.send(0.0, SGW, PROXY_IN, v1_create_request(g.IMSI, 0x10, 0x111, 0x112, "internet.test"))
     c.send(0.003, PROXY_OUT, PGW, v1_create_request(g.IMSI, 0x7710, 0x111, 0x112, "internet.test"))
     c.send(0.04, PGW, PROXY_OUT, v1_create_response(0x111, 0x7710, 128, 0x221, 0x222))
+    # The capture runs on past the relay (an Echo on the SGW side), so the missing response is a real gap.
+    c.send(5.0, SGW, PROXY_IN, gtpv1(1, 0, 0x50, b""))
+    c.send(5.001, PROXY_IN, SGW, gtpv1(2, 0, 0x50, tv(14, bytes([0]))))
     srv = configure(allow=[str(tmp_path)])
     result = srv.gtpv1_sessions(str(c.write(tmp_path / "gn_proxy.pcap")))
     rows = _by_frame(result["transactions"])
@@ -262,3 +265,94 @@ def test_gtpv1_update_and_delete_legs(configure, tmp_path: Path):
 
 def v1_update(header: int, seq: int, teid_c: int) -> bytes:
     return gtpv1(18, header, seq, tv(17, struct.pack("!I", teid_c)) + tv(20, bytes([5])))
+
+
+# --------------------------------------------- legs on an interface that stopped capturing
+def _echo(seq: int, response: bool) -> bytes:
+    return g._gtpv2(2 if response else 1, None, seq, [g._ie(3, bytes([0]))])
+
+
+def stopped_side_capture(tmp_path: Path) -> Path:
+    """A transparent proxy (same sequence number and TEID on both legs) captured on two
+    interfaces: 0 faces the SGW, 1 faces the PGW.
+    - Frames 1-3: a Delete Session the PGW answers with cause 64, never relayed back to
+      the SGW while both interfaces keep capturing: a real leg without response.
+    - Interface 0 stops at 10.002, right after it sees a Modify Bearer (frame 8); the
+      PGW answers the other leg at 10.03, and interface 1 keeps capturing until 10.501.
+      The response to the SGW would have come after interface 0 stopped."""
+    frames: list[tuple[float, bytes, int]] = []
+    t0 = 1_700_035_000.0
+
+    def send(dt: float, src: str, dst: str, msg: bytes, iface: int) -> None:
+        frames.append((t0 + dt, g._udp_frame(src, dst, 2123, 2123, msg), iface))
+
+    send(0.0, SGW, PROXY_IN, _plain(36, 0x7777, 0x500), 0)
+    send(0.0001, PROXY_OUT, PGW, _plain(36, 0x7777, 0x500), 1)
+    send(0.02, PGW, PROXY_OUT, _plain(37, 0, 0x500, 64), 1)
+    send(5.0, SGW, PROXY_IN, _echo(0x510, False), 0)
+    send(5.001, PROXY_IN, SGW, _echo(0x510, True), 0)
+    send(10.0, SGW, PROXY_IN, _echo(0x520, False), 0)
+    send(10.001, PROXY_IN, SGW, _echo(0x520, True), 0)
+    send(10.002, SGW, PROXY_IN, _plain(34, 0x8888, 0x600), 0)
+    send(10.0021, PROXY_OUT, PGW, _plain(34, 0x8888, 0x600), 1)
+    send(10.03, PGW, PROXY_OUT, _plain(35, 0x1234, 0x600, 16), 1)
+    send(10.5, PROXY_OUT, PGW, _echo(0x530, False), 1)
+    send(10.501, PGW, PROXY_OUT, _echo(0x530, True), 1)
+    return g.frames_to_pcapng(tmp_path / "two_sides.pcapng", frames, ["sgw-side", "pgw-side"])
+
+
+def test_leg_on_a_stopped_interface_is_near_capture_end(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtp_sessions(str(stopped_side_capture(tmp_path)))
+    rows = _by_frame(result["transactions"])
+    assert rows[1]["leg_without_response"] is True and "cause 64" in rows[1]["note"]
+    late = rows[8]
+    assert late["near_capture_end"] is True
+    assert "leg_without_response" not in late and "unanswered" not in late
+    assert late["chain"] == {"leg": 1, "legs": 2, "answered_legs": 1, "answered_on_frames": [10]}
+    assert "stops at" in late["note"] and "frame 10" in late["note"]
+    assert rows[9]["answer_frame"] == 10
+    summary = result["summary"]
+    assert summary["legs_without_response"] == 1 and summary["legs_near_capture_end"] == 1
+    assert summary["unanswered"] == 0
+
+
+def test_relay_after_the_capture_ended(configure, tmp_path: Path):
+    """One interface: the capture ends on the answer to the inner leg, before the proxy
+    could relay it. gtpv1_sessions and trace_subscriber mark the outer leg."""
+    c = Cap(1_700_036_000.0)
+    c.send(0.0, SGW, PROXY_IN, v1_create_request(g.IMSI, 0x10, 0x111, 0x112, "internet.test"))
+    c.send(0.003, PROXY_OUT, PGW, v1_create_request(g.IMSI, 0x7710, 0x111, 0x112, "internet.test"))
+    c.send(0.04, PGW, PROXY_OUT, v1_create_response(0x111, 0x7710, 128, 0x221, 0x222))
+    path = str(c.write(tmp_path / "gn_cut.pcap"))
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtpv1_sessions(path)
+    rows = _by_frame(result["transactions"])
+    assert rows[1]["near_capture_end"] is True and "leg_without_response" not in rows[1]
+    assert result["summary"]["legs_near_capture_end"] == 1 and "legs_without_response" not in result["summary"]
+    timeline = srv.trace_subscriber(path, imsi=g.IMSI)["timeline"]
+    outer = next(r for r in timeline if r.get("request_frame") == 1)
+    assert outer["near_capture_end"] is True and "stops at" in outer["note"] and not outer.get("unanswered")
+
+
+def test_interface_listed_twice_in_a_merge(configure, tmp_path: Path):
+    """A merged capture lists the SGW-side interface once per input file (ids 0 and 2,
+    one name). It stops on id 0 but goes on on id 2 well past the relay, so the missing
+    response is a real gap, not the end of the capture."""
+    frames: list[tuple[float, bytes, int]] = []
+    t0 = 1_700_037_000.0
+
+    def send(dt: float, src: str, dst: str, msg: bytes, iface: int) -> None:
+        frames.append((t0 + dt, g._udp_frame(src, dst, 2123, 2123, msg), iface))
+
+    send(0.0, SGW, PROXY_IN, _plain(34, 0x8888, 0x600), 0)
+    send(0.0001, PROXY_OUT, PGW, _plain(34, 0x8888, 0x600), 1)
+    send(0.03, PGW, PROXY_OUT, _plain(35, 0x1234, 0x600, 16), 1)
+    send(2.0, SGW, PROXY_IN, _echo(0x610, False), 2)
+    send(2.001, PROXY_IN, SGW, _echo(0x610, True), 2)
+    path = g.frames_to_pcapng(tmp_path / "merged.pcapng", frames, ["sgw-side", "pgw-side", "sgw-side"])
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.gtp_sessions(str(path))
+    row = _by_frame(result["transactions"])[1]
+    assert row["leg_without_response"] is True and "near_capture_end" not in row
+    assert result["summary"]["legs_without_response"] == 1 and "legs_near_capture_end" not in result["summary"]
