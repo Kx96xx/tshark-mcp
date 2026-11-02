@@ -33,8 +33,20 @@ decapsulated) are counted once: same direction, sequence number, length,
 flags and IPv4 ID within 50 ms (within 1 ms when there is no IP ID), and a
 tap's copy with an all-zero TCP header is dropped.
 HTTP/1.x method, URI and status are attached when tshark dissects them.
-Pipelined or multiplexed protocols (HTTP/2, gRPC) still split into exchanges
-by direction, which then group several requests each.
+
+HTTP/2 (and gRPC over it) multiplexes requests on one connection, so a run of
+data in one direction can hold parts of several requests. When tshark
+dissects HTTP/2 (cleartext h2c on an HTTP port, or on any port with tshark 4.4
+and later, which find it by its preface; TLS only with keys), the connection is cut by
+HTTP/2 stream id instead: each client-initiated stream is one exchange, from
+its first to its last client frame and from the first to the last server
+frame on that stream, labelled with :method, :path, :authority, :status and
+grpc-status. A TCP segment that carries only part of an HTTP/2 frame (tshark
+shows the frame in the segment that completes it) is counted with the first
+stream of the next segment from the same side that tshark dissected.
+Connection frames (stream 0) are not exchanges; server-initiated (even)
+streams are server pushes. Pipelined HTTP/1.1 still groups requests by
+direction.
 """
 
 from __future__ import annotations
@@ -50,7 +62,11 @@ FIELDS = [
     "tcp.stream", "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw", "tcp.len",
     "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset", "tcp.window_size_value",
     "http.request.method", "http.request.uri", "http.host", "http.response.code",
+    "http2.streamid", "http2.type", "http2.length", "http2.flags.end_stream", "http2.header.count",
+    "http2.header.name", "http2.header.value",
 ]
+H2_DATA, H2_HEADERS, H2_RST_STREAM, H2_PUSH_PROMISE, H2_CONTINUATION = 0, 1, 3, 5, 9
+H2_FRAME_HEADER = 9  # bytes before each HTTP/2 frame's payload
 AGGREGATOR = "|"
 BASE_FILTER = "tcp && !icmp && !icmpv6"
 
@@ -109,8 +125,40 @@ def parse(stdout: str) -> list[dict[str, Any]]:
             "window": to_int(_last(raw["tcp.window_size_value"])),
             "method": _nth(raw["http.request.method"], 0), "uri": _nth(raw["http.request.uri"], 0),
             "host": _nth(raw["http.host"], 0), "status": to_int(_nth(raw["http.response.code"], 0)),
+            "h2": _h2_frames(raw),
         })
     return packets
+
+
+def _h2_frames(raw: dict[str, list[str]]) -> list[dict[str, Any]] | None:
+    """The HTTP/2 frames tshark dissected in one TCP segment, in order, or None when there are none.
+
+    Every frame has a stream id, type and length; only DATA and HEADERS carry the END_STREAM flag, and only
+    HEADERS and PUSH_PROMISE a header count, so those lists are walked alongside. Header names and values
+    are attached only when their counts add up (a value holding the aggregator would shift them)."""
+    sids = raw.get("http2.streamid") or []
+    if not sids:
+        return None
+    types, lengths, ends = raw.get("http2.type") or [], raw.get("http2.length") or [], raw.get("http2.flags.end_stream") or []
+    counts, names, values = raw.get("http2.header.count") or [], raw.get("http2.header.name") or [], raw.get("http2.header.value") or []
+    headers_ok = len(names) == len(values) == sum(to_int(c, 0) or 0 for c in counts)
+    frames = []
+    e = c = h = 0
+    for i, sid in enumerate(sids):
+        ftype = to_int(_nth(types, i))
+        frame: dict[str, Any] = {"stream": to_int(sid, 0) or 0, "type": ftype, "end": False, "headers": {},
+                                 "bytes": (to_int(_nth(lengths, i), 0) or 0) + H2_FRAME_HEADER}
+        if ftype in (H2_DATA, H2_HEADERS) and e < len(ends):
+            frame["end"] = _truthy(ends[e])
+            e += 1
+        if ftype in (H2_HEADERS, H2_PUSH_PROMISE) and c < len(counts):
+            n = to_int(counts[c], 0) or 0
+            c += 1
+            if headers_ok:
+                frame["headers"] = {names[h + k].lower(): values[h + k] for k in range(n)}
+            h += n
+        frames.append(frame)
+    return frames
 
 
 def _drop_copies(packets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -240,6 +288,7 @@ def analyse_stream(pkts: list[dict[str, Any]]) -> dict[str, Any]:
     resets = Counter()
     closed: dict[str, str] = {}
     pushes = 0
+    h2 = _H2(exchanges) if any(p.get("h2") for p in pkts) else None
     for p in pkts:
         side = "client" if (p["src"], p["sport"]) == client else "server"
         if p["rst"]:
@@ -249,7 +298,9 @@ def analyse_stream(pkts: list[dict[str, Any]]) -> dict[str, Any]:
             closed.setdefault(side, "fin")
         if p["window"] == 0 and not p["syn"] and not p["rst"] and p["ack"]:
             zero_windows.append(p["time"])
-            if side == "client" and cur is not None:
+            if side == "client" and h2 is not None:
+                h2.zero_window(p["time"])
+            elif side == "client" and cur is not None:
                 cur["client_zero_window"].append(p["time"])
         if not p["len"] or p["seq"] is None:
             continue
@@ -273,6 +324,9 @@ def analyse_stream(pkts: list[dict[str, Any]]) -> dict[str, Any]:
         sent[side].add(p["seq"])
         if high[side] is None or not _seq_le(end, high[side]):
             high[side], high_time[side], high_id[side] = end, p["time"], p["ip_id"]
+        if h2 is not None:
+            h2.segment(p, side, retx, ooo)
+            continue
         if side == "client":
             idle = cur is not None and cur["response_first"] is None and p["time"] - cur["request_last"] > IDLE_S
             if cur is None or cur["response_first"] is not None or idle:
@@ -308,12 +362,98 @@ def analyse_stream(pkts: list[dict[str, Any]]) -> dict[str, Any]:
             if p["status"] and "status" not in cur:
                 cur["status"] = p["status"]
 
+    if h2 is not None:
+        pushes += len(h2.pushed)
     rows = [_exchange_row(x, server_rtt, rtt) for x in exchanges]
-    return {"client": client, "server": server, "syn": syn, "synack": synack, "server_rtt": server_rtt,
+    return {"http2": h2 is not None, "client": client, "server": server, "syn": syn, "synack": synack, "server_rtt": server_rtt,
             "connect": connect, "syn_retransmissions": syn_retx, "synack_retransmissions": synack_retx,
             "client_rtt": client_rtt, "rtt": rtt, "rtt_source": rtt_source, "exchanges": rows,
             "zero_windows": len(zero_windows), "resets": dict(resets), "closed": closed, "server_pushes": pushes,
             "first": pkts[0]["time"], "last": pkts[-1]["time"], "frame": pkts[0]["frame"]}
+
+
+def _new_exchange(p: dict[str, Any], start: tuple[float, int]) -> dict[str, Any]:
+    return {"request_first": start[0], "request_last": p["time"], "request_bytes": 0, "request_frame": start[1],
+            "response_first": None, "response_last": None, "response_bytes": 0, "response_frame": None,
+            "server_segments": [], "client_zero_window": [], "retransmissions": 0, "out_of_order": 0}
+
+
+class _H2:
+    """Exchanges of one HTTP/2 connection, one per client-initiated stream (see the module docstring)."""
+
+    def __init__(self, exchanges: list[dict[str, Any]]) -> None:
+        self.exchanges = exchanges
+        self.streams: dict[int, dict[str, Any]] = {}
+        self.pending: dict[str, list[tuple[dict[str, Any], bool, bool]]] = {"client": [], "server": []}
+        self.pushed: set[int] = set()
+
+    def zero_window(self, t: float) -> None:
+        for x in self.streams.values():
+            if not x.get("server_done"):
+                x["client_zero_window"].append(t)
+
+    def segment(self, p: dict[str, Any], side: str, retx: bool, ooo: bool) -> None:
+        if not p.get("h2"):
+            if side == "client" and p["method"] and not self.streams:
+                # h2c by Upgrade: the HTTP/1.1 request that asks for HTTP/2 is stream 1 (RFC 9113 3.1).
+                x = self.streams[1] = _new_exchange(p, (p["time"], p["frame"]))
+                x.update({"h2_stream": 1, "request_bytes": p["len"], "method": p["method"], "uri": p["uri"],
+                          "host": p["host"]})
+                self.exchanges.append(x)
+            elif not (side == "server" and p["status"] == 101):
+                self.pending[side].append((p, retx, ooo))  # part of a frame tshark shows in a later segment
+            return
+        segs = self.pending[side] + [(p, retx, ooo)]
+        self.pending[side] = []
+        first = True
+        for f in p["h2"]:
+            sid = f["stream"]
+            if not sid:
+                continue  # SETTINGS, PING, WINDOW_UPDATE, GOAWAY: the connection, not a request
+            if side == "server" and sid % 2 == 0:
+                self.pushed.add(sid)
+                continue
+            # The segments that were waiting, and this segment's retransmission or reordering, belong to
+            # the first frame this segment completes; later frames in it only add their bytes and time.
+            mine = segs if first else [(p, False, False)]
+            first = False
+            x = self.streams.get(sid)
+            if x is None:
+                if side == "server":
+                    continue  # a response whose request was not captured
+                x = self.streams[sid] = _new_exchange(p, (mine[0][0]["time"], mine[0][0]["frame"]))
+                x["h2_stream"] = sid
+                self.exchanges.append(x)
+            hdr = f["headers"]
+            if f["type"] == H2_RST_STREAM:
+                x.setdefault("stream_reset_by", side)
+                if side == "server":
+                    x["server_done"] = True
+                continue
+            if f["type"] not in (H2_DATA, H2_HEADERS, H2_CONTINUATION):
+                continue
+            for seg, r, o in mine:
+                x["retransmissions"] += r
+                x["out_of_order"] += o
+            if side == "client":
+                x["request_last"] = p["time"]
+                x["request_bytes"] += f["bytes"]
+                if hdr.get(":method") and "method" not in x:
+                    x["method"], x["uri"], x["host"] = hdr[":method"], hdr.get(":path", ""), hdr.get(":authority", "")
+            else:
+                if x["response_first"] is None:
+                    x["response_first"], x["response_frame"] = mine[0][0]["time"], mine[0][0]["frame"]
+                x["response_last"] = p["time"]
+                x["response_bytes"] += f["bytes"]
+                x["server_segments"].extend((seg["time"], r) for seg, r, _ in mine)
+                status = to_int(hdr.get(":status"))
+                if status and status >= 200 and "status" not in x:
+                    x["status"] = status
+                grpc = to_int(hdr.get("grpc-status"))
+                if grpc is not None:
+                    x["grpc_status"] = grpc
+                if f["end"]:
+                    x["server_done"] = True
 
 
 def _seq_le(a: int, b: int) -> bool:
@@ -324,9 +464,11 @@ def _seq_le(a: int, b: int) -> bool:
 def _exchange_row(x: dict[str, Any], server_rtt: float | None, rtt: float | None) -> dict[str, Any]:
     row: dict[str, Any] = {"frame": x["request_frame"], "time": iso(x["request_first"]),
                            "request_bytes": x["request_bytes"], "request_ms": _ms(x["request_last"] - x["request_first"])}
-    for k in ("method", "uri", "host", "status"):
+    for k in ("h2_stream", "method", "uri", "host", "status", "stream_reset_by"):
         if x.get(k):
             row[k] = x[k]
+    if x.get("grpc_status") is not None:
+        row["grpc_status"] = x["grpc_status"]
     if x["response_first"] is None:
         row.update({"no_response": True, "retransmissions": x["retransmissions"] or None,
                     "out_of_order": x["out_of_order"] or None})
@@ -429,7 +571,7 @@ def summarise(packets: list[dict[str, Any]]) -> dict[str, Any]:
         timed = [x for x in answered if not x.get("long_wait")]
         slowest = sorted(info["exchanges"], key=lambda x: (bool(x.get("long_wait")), -(x.get("total_ms") or 0)))[:MAX_EXCHANGES_SHOWN]
         flows.append(compact({
-            "stream": to_int(sid.rstrip("+")), "tcp_streams": _streams_of(pkts),
+            "stream": to_int(sid.rstrip("+")), "tcp_streams": _streams_of(pkts), "http2": info["http2"] or None,
             "client": f"{info['client'][0]}:{info['client'][1]}",
             "server": f"{info['server'][0]}:{info['server'][1]}", "frame": info["frame"], "first": iso(info["first"]),
             "duration_ms": _ms(info["last"] - info["first"]),
