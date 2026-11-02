@@ -9,3 +9,4 @@ dist/
 *.pcapng
 *.log
 .DS_Store
+uv.lock
