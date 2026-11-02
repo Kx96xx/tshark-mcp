@@ -723,7 +723,8 @@ def tcp_health(path: str, filter: str | None = None, stream: int | None = None, 
     not network loss), reordering, duplicate ACKs, zero windows, keep-alives;
     `resets` with `likely_from` endpoint or middlebox, judged by the reset's TTL and
     source MAC against that side's other packets, and the idle time before it; ICMP
-    fragmentation-needed / packet-too-big about the stream; and MTU problems against
+    fragmentation-needed / packet-too-big about the stream (a mirrored copy of an ICMP
+    error counts once, `summary.icmp_copies_dropped`); and MTU problems against
     `mtu` (an MSS too large for the path, DF packets above it, full-size segments
     retransmitted and never acknowledged while small ones pass: a PMTUD black hole).
     `issues` says it in plain words; streams with issues come first. `stream` is

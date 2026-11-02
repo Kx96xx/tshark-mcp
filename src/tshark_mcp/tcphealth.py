@@ -37,7 +37,7 @@ FIELDS = [
     "tcp.stream", "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw", "tcp.len", "tcp.flags", "tcp.checksum",
     "tcp.window_size_value", "tcp.window_size", "tcp.options.mss_val", "tcp.options.wscale.shift",
     "tcp.options.sack_perm", "tcp.options.timestamp.tsval",
-    "icmp.type", "icmp.code", "icmp.mtu", "icmpv6.type", "icmpv6.code", "icmpv6.mtu",
+    "icmp.type", "icmp.code", "icmp.mtu", "icmp.checksum", "icmpv6.type", "icmpv6.code", "icmpv6.mtu", "icmpv6.checksum",
 ]
 
 ICMP_ERRORS = "(icmp.type == 3) || (icmp.type == 11) || (icmpv6.type == 1) || (icmpv6.type == 2) || (icmpv6.type == 3)"
@@ -133,6 +133,11 @@ def analyse(recs: list[dict[str, Any]], mtu: int) -> tuple[list[dict[str, Any]],
             copies += 1
             continue
         _account(st, rec, flows, mtu)
+    # ICMP errors go through the same copy key as capture_quality: a mirrored error about a
+    # stream is one error. Without an IP ID the key holds the ICMP checksum and the quoted
+    # packet (addresses, IP ID, ports, TCP sequence number).
+    icmp_tracker = CopyTracker(id_window=COPY_WINDOW_S)
+    icmp_copies = 0
     for rec in icmp_records:
         q = rec.get("quoted") or {}
         if q.get("proto") != "tcp":
@@ -140,6 +145,11 @@ def analyse(recs: list[dict[str, Any]], mtu: int) -> tuple[list[dict[str, Any]],
         key = tuple(sorted([(q.get("src"), q.get("sport")), (q.get("dst"), q.get("dport"))]))
         st = streams.get(key)
         if st is not None:
+            has_id = has_ip_id(rec)
+            ckey = copy_key(rec, has_id)
+            if ckey is not None and icmp_tracker.check(ckey, has_id, rec["time"])[0]:
+                icmp_copies += 1
+                continue
             icmp = rec["icmp_error"]
             st.icmp[(rec["src"], icmp["family"], icmp["type"], icmp["code"], icmp["mtu"])] += 1
     rows = [_row(st, flows, mtu) for st in streams.values()]
@@ -148,6 +158,7 @@ def analyse(recs: list[dict[str, Any]], mtu: int) -> tuple[list[dict[str, Any]],
         "streams": len(rows),
         "streams_with_issues": sum(1 for r in rows if r.get("issues")),
         "copies_dropped": copies,
+        "icmp_copies_dropped": icmp_copies,
         "retransmissions": sum(r[k].get("retransmissions", 0) for r in rows for k in ("client_to_server", "server_to_client")
                                if r.get(k)),
         "resets": sum(len(r.get("resets", [])) for r in rows),
