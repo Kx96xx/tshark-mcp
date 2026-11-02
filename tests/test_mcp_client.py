@@ -20,6 +20,7 @@ from .conftest import TSHARK, requires_tshark
 pytestmark = requires_tshark
 
 EXPECTED_TOOLS = {
+    "pfcp_sessions",
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
@@ -40,6 +41,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
     d = str(pcap_dir)
     return [
         ("pcap_info", {"path": f"{d}/diameter.pcap"}),
+        ("pfcp_sessions", {"path": f"{d}/all.pcap"}),
         ("conversations", {"path": f"{d}/gtpv2.pcap", "layer": "udp", "filter": "gtpv2"}),
         ("filter_packets", {"path": f"{d}/diameter.pcap", "display_filter": "diameter.cmd.code == 318"}),
         ("diameter_transactions", {"path": f"{d}/diameter.pcap"}),

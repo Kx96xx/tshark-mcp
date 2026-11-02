@@ -549,6 +549,88 @@ class Gtpv1SessionsResult(RowsResult, total=False):
     selection: str | None
 
 
+class PfcpTransactionRow(PairedRow, total=False):
+    message: str
+    response: str
+    seq: int
+    seid: str
+    node_id: str
+    cp_f_seid: str
+    up_f_seid: str
+    ue_ip: list[str]
+    network_instance: str
+    dnn: str
+    imsi: str
+    rules: dict[str, int]
+    far_actions: dict[str, str]
+    report_types: list[str]
+    usage: list[dict[str, Any]]
+    recovery_time: str
+    cause: int
+    cause_name: str
+    accepted: bool
+    offending_ie: int
+    response_rules: dict[str, int]
+    response_usage: list[dict[str, Any]]
+    response_recovery_time: str
+    response_path: str
+    copy_of_frame: int
+
+
+class PfcpSession(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    cp_seid: str
+    up_seid: str
+    cp: str
+    up: str
+    ue_ip: list[str]
+    network_instance: str
+    dnn: str
+    imsi: str
+    established: str
+    establishment: str
+    modifications: int
+    failed_modifications: int
+    reports: dict[str, int]
+    deleted: str
+    deletion: str
+    unanswered: int
+    copies: int
+    first: str
+    last: str
+    usage: dict[str, int]
+    usage_reports: int
+    issues: list[str]
+    state: str
+
+
+class PfcpNode(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    peers: list[str]
+    node_ids: dict[str, str]
+    messages: dict[str, int]
+    heartbeats: int
+    heartbeats_unanswered: int
+    recovery_times: dict[str, list[str]]
+    restarts: list[str]
+    association: str
+
+
+class PfcpSummary(MessageSummary, total=False):
+    sessions: int
+    sessions_with_issues: int
+    by_state: dict[str, int]
+    peer_restarts: int
+
+
+class PfcpSessionsResult(RowsResult, total=False):
+    sessions: list[PfcpSession]
+    transactions: list[PfcpTransactionRow]
+    summary: PfcpSummary
+    nodes: list[PfcpNode]
+    selection: str | None
+
+
 class AddressCount(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     addr: str

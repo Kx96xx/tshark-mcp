@@ -27,6 +27,7 @@ from .limits import (
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid,
 )
 from .pairing import annotate_legs
+from . import pfcp
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 
 from mcp.types import ToolAnnotations
@@ -48,7 +49,7 @@ When you do not know which file holds the subscriber, call find_identifier on
 the directory first. Start on a file with pcap_info, then use the protocol
 tools. For "why did subscriber X fail" questions call trace_subscriber first,
 then drill into diameter_sessions, diameter_transactions, gtp_sessions,
-gtpv1_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
+gtpv1_sessions, pfcp_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
@@ -1071,6 +1072,86 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
                                        "limit": limit, "offset": offset}, run)
 
 
+@app.tool(title="PFCP sessions (N4/Sx)", annotations=READ_ONLY)
+def pfcp_sessions(path: str, seid: str | int | None = None, ue_ip: str | None = None, view: str = "sessions",
+                  filter: str | None = None, limit: int = 200, offset: int = 0) -> models.PfcpSessionsResult:
+    """PFCP (TS 29.244) between SMF/PGW-C and UPF/PGW-U (N4, Sxa, Sxb). Requests are
+    paired with responses by sequence number and peers, then grouped into sessions: the
+    Session Establishment exchange gives the CP and UP F-SEIDs, and every later
+    message carries the peer's SEID. `view="sessions"` (default) lists one row per PFCP
+    session: CP and UP SEIDs and addresses, UE IP, network instance/DNN, establishment
+    result, modification count (and rejected ones), Session Report counts by type (DLDR
+    downlink data waiting for paging, USAR usage, ERIR error indication, UPIR
+    inactivity), deletion result, summed usage-report volumes, `state` (active,
+    deleted, rejected, no response) and `issues` in plain words (a rejection with its
+    cause, a FAR switched to BUFF or DROP, 'Session context not found', requests
+    without a response). `view="transactions"` lists every request/response pair with
+    message, SEID, cause code and name, offending IE, created/updated/removed rule
+    counts, FAR apply actions, report types and usage reports. `nodes` always gives,
+    per peer pair, Association Setup result, heartbeats (and unanswered ones) and every
+    Recovery Time Stamp change (the peer restarted and lost its sessions). Narrow with
+    `seid` (decimal or 0x hex, either side's) or `ue_ip`: the matching messages give
+    the session's SEIDs, then every message carrying them is fetched. `filter` is ANDed
+    with `pfcp`."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if view not in ("sessions", "transactions"):
+            raise ToolError("invalid_argument", "view must be 'sessions' or 'transactions'")
+        try:
+            seid_i = pfcp.parse_seid(seid) if seid is not None and str(seid).strip() != "" else None
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", f"seid must be a 64-bit integer (decimal or 0x hex), got {seid!r}") from None
+        try:
+            ip = pfcp.parse_ip(ue_ip) if ue_ip else None
+        except ValueError:
+            raise ToolError("invalid_argument", f"ue_ip must be an IPv4 or IPv6 address, got {ue_ip!r}") from None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        base = _filter(filter, base=pfcp.BASE_FILTER)
+        select = pfcp.selection_filter(seid_i, ip)
+        pre: Scan | None = None
+        flt = base
+        if select:
+            # The matching messages name the SEIDs of their session; a second round adds
+            # the peer's SEID from the establishment response, so both directions are kept.
+            seids: set[int] = set()
+            query = f"({base}) && ({select})"
+            for _round in range(3):
+                stdout, pre = _fields_run(capture, query, ["pfcp.seid"], st.limits.max_scan_packets)
+                found = {v for ln in stdout.splitlines() for v in (to_int(x) for x in ln.strip().split(",")) if v}
+                if seid_i is not None:
+                    found.add(seid_i)
+                if found <= seids:
+                    break
+                seids |= found
+                query = f"({base}) && ({pfcp.seid_filter(seids)})"
+            corr = pfcp.seid_filter(seids)
+            if corr is None:
+                return _envelope(view, [], cap, pre, offset=offset, summary={"by_message": {}, "unanswered": 0, "failed": 0},
+                                 nodes=[], selection=select)
+            flt = f"({base}) && ({corr})"
+        packets, scan = _json_run(capture, flt, pfcp.JSON_LAYERS, st.limits.max_packets)
+        scan = _merge_scans(pre, scan)
+        txs = pfcp.pair(pfcp.extract_messages(packets))
+        tx_rows = [pfcp.transaction_row(t) for t in txs]
+        pfcp.mark_copies(txs, tx_rows)
+        sess = pfcp.sessions(txs)
+        summary = _summarise(tx_rows, "message", "unanswered", lambda r: r.get("accepted") is False)
+        summary.update({"sessions": len(sess), "sessions_with_issues": sum(1 for r in sess if r.get("issues")),
+                        "by_state": _count(sess, "state")})
+        node_rows = [] if select else pfcp.nodes(txs)
+        restarts = [line for n in node_rows for line in n.get("restarts", [])]
+        if restarts:
+            summary["peer_restarts"] = len(restarts)
+        if view == "sessions":
+            sess.sort(key=lambda r: (not r.get("issues"), r.get("first") or ""))
+            return _envelope("sessions", sess, cap, scan, offset=offset, summary=summary, nodes=node_rows, selection=select)
+        return _envelope("transactions", tx_rows, cap, scan, offset=offset, summary=summary, nodes=node_rows,
+                         selection=select)
+    return _guarded("pfcp_sessions", {"path": path, "seid": seid, "ue_ip": ue_ip, "view": view, "filter": filter,
+                                      "limit": limit, "offset": offset}, run)
+
+
 @app.tool(title="GTP-U tunnels", annotations=READ_ONLY)
 def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200, offset: int = 0) -> models.GtpUserPlaneResult:
     """Summarise GTP-U (G-PDU) traffic per tunnel endpoint id: packets, bytes, first and
@@ -1682,7 +1763,8 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200, off
 @app.tool(title="Subscriber trace", annotations=READ_ONLY)
 def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300, offset: int = 0) -> models.TraceSubscriberResult:
     """Build one time-ordered timeline for a subscriber across Diameter (User-Name),
-    GTPv2-C and GTPv1-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), MAP (IMSI/MSISDN)
+    GTPv2-C and GTPv1-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), PFCP
+    (sessions naming the IMSI or a UE address the GTP rows allocated, followed by SEID), MAP (IMSI/MSISDN)
     and SIP (From/To/P-Asserted-Identity containing the MSISDN). Each row carries the
     protocol, message name, result (Result-Code, GTP cause, SIP final status), peers and
     the request/answer pairing including `unanswered: true`. Give `imsi`, `msisdn` or
@@ -1763,6 +1845,10 @@ def _trace_timeline(capture: Path, imsi_d: str | None, msisdn_d: str | None, dea
         _trace_gtp(gtp, "gtpv2", capture, imsi_d, msisdn_d, deadline, notes, timeline)
         stage = "gtpv1"
         _trace_gtp(gtpv1, "gtpv1", capture, imsi_d, msisdn_d, deadline, notes, timeline)
+
+        stage = "pfcp"
+        # PFCP (N4/Sx): sessions naming the IMSI or a UE address the GTP rows allocated.
+        _trace_pfcp(capture, imsi_d, deadline, notes, timeline)
 
         stage = "map"
         # MAP: components naming the subscriber, then the whole TCAP transactions.
@@ -1995,6 +2081,57 @@ def _gtp_step(row: dict[str, Any]) -> dict[str, Any]:
                          extra={"apn": row.get("apn"), "paa": row.get("paa"), "teid": row.get("teid"),
                                 "rat_type": row.get("rat_type"), "request_fteids": row.get("request_fteids"),
                                 "response_fteids": row.get("response_fteids")})
+
+
+def _trace_pfcp(capture: Path, imsi_d: str | None, deadline: float, notes: dict[str, Any],
+                timeline: list[dict[str, Any]]) -> None:
+    """The PFCP pass of the subscriber trace: messages naming the IMSI (User ID) or a UE
+    address that the GTP rows already in the timeline allocated give SEIDs; the SEIDs
+    are followed (both sides) and every message carrying them is paired."""
+    st = state()
+    ue_ips = {r["paa"] for r in timeline if r.get("protocol") in ("gtpv2", "gtpv1") and r.get("paa")}
+    parts = []
+    if imsi_d:
+        parts.append(f'e212.imsi == "{imsi_d}"')
+    v4 = sorted(ip for ip in ue_ips if ":" not in ip)
+    v6 = sorted(ip for ip in ue_ips if ":" in ip)
+    if v4:
+        parts.append("pfcp.ue_ip_addr_ipv4 in {" + ", ".join(v4) + "}")
+    if v6:
+        parts.append("pfcp.ue_ip_addr_ipv6 in {" + ", ".join(v6) + "}")
+    if not parts:
+        return
+    query = f"pfcp && ({' || '.join(parts)})"
+    seids: set[int] = set()
+    truncated = False
+    for _round in range(3):
+        stdout, scan = _fields_run(capture, query, ["pfcp.seid"], st.limits.max_scan_packets, timeout=_left(deadline))
+        truncated = truncated or scan.truncated
+        found = {v for ln in stdout.splitlines() for v in (to_int(x) for x in ln.strip().split(",")) if v}
+        if found <= seids:
+            break
+        seids |= found
+        query = f"pfcp && ({pfcp.seid_filter(seids)})"
+    corr = pfcp.seid_filter(seids)
+    if not corr:
+        return  # most captures carry no PFCP; keep the passes summary short
+    packets, scan = _json_run(capture, f"pfcp && ({corr})", pfcp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+    txs = pfcp.pair(pfcp.extract_messages(packets))
+    notes["pfcp"] = {"seids": len(seids), "ue_ips_from_gtp": len(ue_ips), "transactions": len(txs),
+                     "truncated": truncated or scan.truncated}
+    rows = [pfcp.transaction_row(tx) for tx in txs]
+    pfcp.mark_copies(txs, rows)
+    for row in rows:
+        timeline.append(_pfcp_step(row))
+
+
+def _pfcp_step(row: dict[str, Any]) -> dict[str, Any]:
+    return _timeline_row("pfcp", row, message=row.get("message"), detail=row.get("response"),
+                         result=row.get("cause_name"), identity=row.get("imsi") or ", ".join(row.get("ue_ip") or []) or None,
+                         extra={"seid": row.get("seid"), "cp_f_seid": row.get("cp_f_seid"), "up_f_seid": row.get("up_f_seid"),
+                                "ue_ip": row.get("ue_ip"), "dnn": row.get("dnn"), "report_types": row.get("report_types"),
+                                "far_actions": row.get("far_actions"), "usage": row.get("usage") or row.get("response_usage"),
+                                "offending_ie": row.get("offending_ie"), "copy_of_frame": row.get("copy_of_frame")})
 
 
 def _gtpv1_step(row: dict[str, Any]) -> dict[str, Any]:
