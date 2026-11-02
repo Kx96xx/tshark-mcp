@@ -3,6 +3,7 @@ captures. Every capture here is synthetic and built from made-up values."""
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 from tshark_mcp.limits import Limits
@@ -285,3 +286,51 @@ class TestSipOutcome:
         rows = [r for r in result["timeline"] if r["protocol"] == "sip"]
         assert {r["message"] for r in rows} == {"REGISTER -> 200", "INVITE -> 200"}
         assert result["failures"] == 0
+
+
+# ------------------------------------------- several Diameter messages in one SCTP packet
+def _bundled_diameter(tmp_path: Path) -> Path:
+    """Two AIRs bundled in one SCTP packet, the other subscriber's first, then
+    their answers bundled the same way."""
+    from scapy.all import IP, SCTP, Ether  # type: ignore
+    from scapy.layers.sctp import SCTPChunkData  # type: ignore
+
+    g = pcapgen
+    mme = "mme01.epc.mnc001.mcc001.3gppnetwork.org"
+    realm = "epc.mnc001.mcc001.3gppnetwork.org"
+    sid_other, sid_mine = f"{mme};1;other", f"{mme};1;mine"
+
+    def air(sid: str, imsi: str, hbh: int) -> bytes:
+        return g._diameter(318, g.S6A, hbh, hbh, True, g._diam_common(sid, mme, realm, realm) + [g._avp(1, imsi.encode())])
+
+    def aia(sid: str, hbh: int) -> bytes:
+        return g._diameter(318, g.S6A, hbh, hbh, False, [g._avp(263, sid.encode()), g._avp(268, struct.pack("!I", 2001)),
+                                                         g._avp(264, b"hss01." + realm.encode()), g._avp(296, realm.encode())])
+
+    def bundle(src: str, dst: str, tsn: int, payloads: list[bytes]) -> bytes:
+        pkt = Ether(src=g.MAC_A, dst=g.MAC_B) / IP(src=src, dst=dst) / SCTP(sport=3868, dport=3868, tag=0x77)
+        for i, data in enumerate(payloads):
+            pkt = pkt / SCTPChunkData(beginning=1, ending=1, tsn=tsn + i, stream_id=0, stream_seq=tsn + i, proto_id=46, data=data)
+        return bytes(pkt)
+
+    t0 = 1_700_002_000.0
+    frames = [
+        (t0, bundle(g.MME_IP, g.HSS_IP, 10, [air(sid_other, g.IMSI_OTHER, 0x51), air(sid_mine, g.IMSI, 0x52)])),
+        (t0 + 0.02, bundle(g.HSS_IP, g.MME_IP, 20, [aia(sid_other, 0x51), aia(sid_mine, 0x52)])),
+    ]
+    return g._frames_to_pcap(tmp_path / "bundled.pcap", frames)
+
+
+class TestBundledDiameter:
+    def test_imsi_selects_only_its_own_session(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.diameter_sessions(str(_bundled_diameter(tmp_path)), imsi=pcapgen.IMSI)
+        assert [s["session_id"].rsplit(";", 1)[1] for s in result["sessions"]] == ["mine"]
+        assert result["sessions"][0]["answer_codes"] == [318]
+
+    def test_trace_keeps_only_the_subscriber_transactions(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.trace_subscriber(str(_bundled_diameter(tmp_path)), imsi=pcapgen.IMSI)
+        rows = [r for r in result["timeline"] if r["protocol"] == "diameter"]
+        assert len(rows) == 1 and rows[0]["identity"] == pcapgen.IMSI
+        assert result["passes"]["diameter"]["sessions"] == 1
