@@ -922,8 +922,12 @@ def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200, o
 def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500, limit: int = 200, offset: int = 0) -> models.GtpTunnelHealthResult:
     """User-plane health per GTP-U tunnel (TEID), read from the packets inside it: inner
     TCP segments, flows, SYN/SYN-ACK and the MSS values they carry, retransmissions
-    (with the share of data segments), fast retransmissions, duplicate ACKs, lost
-    segments, zero windows and resets; inner ICMP by type, including fragmentation
+    (with the share of data segments) split like tcp_health by where the segment was
+    lost (`lost_before_capture`: it filled a gap in the capture;
+    `retransmitted_after_capture`: the capture had already seen those bytes),
+    `out_of_order` segments (filled a gap but their IP ID, TCP timestamp or arrival
+    shows they were overtaken, not lost), keep-alives, duplicate ACKs, zero windows
+    and resets; inner ICMP by type, including fragmentation
     needed / packet too big with the next-hop MTU; the largest outer and inner IP
     packets, the tunnel overhead and DF-flagged packets above `mtu` (the path MTU to
     check against, default 1500); and whether the reverse direction carries traffic.

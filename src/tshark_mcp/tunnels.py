@@ -14,6 +14,7 @@ from typing import Any
 
 from .copies import CopyTracker, nonzero
 from .fields import compact, iso, parse_time, split_fields_line, to_int
+from .tcpflow import MOD, FlowTracker
 
 FIELDS = [
     "frame.number", "frame.time_epoch", "frame.len", "frame.protocols",
@@ -21,6 +22,7 @@ FIELDS = [
     "gtp.teid",
     "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw", "tcp.len", "tcp.window_size_value",
     "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset", "tcp.options.mss_val",
+    "tcp.options.timestamp.tsval",
     "icmp.type", "icmp.code", "icmp.mtu", "icmpv6.type", "icmpv6.code", "icmpv6.mtu",
 ]
 AGGREGATOR = "|"
@@ -110,6 +112,7 @@ def parse(stdout: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                 "fin": _truthy(_nth(raw["tcp.flags.fin"], 0)),
                 "rst": _truthy(_nth(raw["tcp.flags.reset"], 0)),
                 "mss": to_int(_nth(raw["tcp.options.mss_val"], 0)),
+                "tsval": to_int(_nth(raw["tcp.options.timestamp.tsval"], 0)),
             }
         elif transport in ("icmp", "icmpv6"):
             rec.update(_icmp(raw, layers, 0))
@@ -163,7 +166,7 @@ def summarise(gpdus: list[dict[str, Any]], outer: list[dict[str, Any]], mtu: int
                 "first": rec["time"], "last": rec["time"], "protocols": Counter(), "inner_src": Counter(),
                 "inner_dst": Counter(), "overheads": Counter(), "max_outer": 0, "max_inner": 0, "families": Counter(),
                 "df_large": 0, "tcp": Counter(), "streams": set(), "mss": Counter(), "icmp": Counter(), "frag_mtus": Counter(),
-                "syns_seen": set(), "last_ack": {}, "copy_tracker": CopyTracker(), "flow_end": {}, "last_ip_id": {}, "id_steps": {},
+                "last_ack": {}, "copy_tracker": CopyTracker(), "flows": FlowTracker(),
             }
         if _duplicate_copy(b, rec):
             b["copies"] = b.get("copies", 0) + 1
@@ -227,51 +230,34 @@ def _tcp_stats(b: dict[str, Any], rec: dict[str, Any], tcp: dict[str, Any]) -> N
         t["rst"] += 1
     if tcp["window"] == 0 and not (tcp["rst"] or tcp["syn"] or tcp["fin"]):
         t["zero_window"] += 1
+    # Retransmission versus reordering is decided by the same per-direction sequence
+    # tracker as tcp_health (tcpflow): bytes the capture already saw are a retransmission,
+    # a segment filling a gap is reordered when its IP ID, TCP timestamp or arrival within
+    # a few milliseconds shows it was overtaken, and a retransmission otherwise.
+    # tshark's tcp.analysis flags are not used: they also count copies of the same packet.
+    flows: FlowTracker = b["flows"]
     seq = tcp["seq"]
-    if tcp["syn"] and seq is not None and (flow, seq) not in b["syns_seen"]:
-        b["flow_end"].pop(flow, None)  # a new connection on a reused 4-tuple starts its own sequence space
-    end = b["flow_end"].get(flow)
-    if (tcp["len"] <= 1 and not (tcp["syn"] or tcp["fin"] or tcp["rst"]) and seq is not None
-            and end is not None and seq == (end - 1) % 2**32):
+    before = flows.dirs.get((flow[0], tcp["sport"], flow[1], tcp["dport"]))
+    empty_probe = (tcp["len"] == 0 and not (tcp["syn"] or tcp["fin"] or tcp["rst"]) and seq is not None
+                   and before is not None and before.next is not None and seq == (before.next - 1) % MOD)
+    kind = flows.feed({"src": flow[0], "dst": flow[1], "id": rec.get("inner_id"), "time": rec.get("time"),
+                       "frame": rec.get("frame"), "tcp": tcp})
+    if kind == "keepalive" or empty_probe:
         t["keepalives"] += 1  # one byte (or none) just below the next sequence number: a keep-alive probe
         return
-    inner_id = to_int(rec.get("inner_id") or "", None) if rec.get("inner_id") else None
-    last_id = b["last_ip_id"].get(flow)
-    if inner_id:
-        b["last_ip_id"][flow] = inner_id if last_id is None or 0 < (inner_id - last_id) % 65536 < 32768 else last_id
-        if last_id is not None:
-            steps = b["id_steps"].setdefault(flow, [0, 0])
-            steps[1] += 1
-            if min((inner_id - last_id) % 65536, (last_id - inner_id) % 65536) <= 64:
-                steps[0] += 1  # neighbouring IDs: the sender numbers packets in order, not at random
-    if seq is not None and not tcp["rst"]:
-        nxt = (seq + tcp["len"] + (1 if tcp["syn"] or tcp["fin"] else 0)) % 2**32
-        if end is None or 0 < (nxt - end) % 2**32 < 2**31:
-            b["flow_end"][flow] = nxt
-    if tcp["len"] > 0 or tcp["syn"] or tcp["fin"]:
+    if tcp["len"] > 0:
+        t["data_segments"] += 1
+    if kind == "out_of_order":
+        t["out_of_order"] += 1
+    elif kind in ("lost_before_capture", "retransmitted_after_capture", "syn_retransmission"):
+        t["retrans"] += 1
+        if kind != "syn_retransmission":
+            t[kind] += 1  # where the segment was lost: before the capture point, or after it
         if tcp["len"] > 0:
-            t["data_segments"] += 1
-        # Like tshark: a segment that starts below the highest sequence number already seen
-        # in this flow is a retransmission, unless its IP ID shows it was sent before the
-        # packet seen ahead of it, which makes it a reordered segment.
-        behind = seq is not None and end is not None and 0 < (end - seq) % 2**32 < 2**31
-        if tcp["syn"] and seq is not None and (flow, seq) in b["syns_seen"]:
-            behind = True
-        if behind:
-            steps = b["id_steps"].get(flow, [0, 0])
-            sequential_ids = steps[1] >= 2 and steps[0] >= 0.8 * steps[1]
-            if sequential_ids and inner_id and last_id and 0 < (last_id - inner_id) % 65536 < 32768:
-                t["out_of_order"] += 1
-            else:
-                t["retrans"] += 1
-                if tcp["len"] > 0:
-                    t["data_retrans"] += 1
-                elif tcp["syn"]:
-                    t["syn_retrans"] += 1
-        if tcp["syn"] and seq is not None:
-            b["syns_seen"].add((flow, seq))
-        return
-    if tcp["rst"] or tcp["ack_no"] is None:
+            t["data_retrans"] += 1
+        elif kind == "syn_retransmission":
+            t["syn_retrans"] += 1
+    if tcp["len"] > 0 or tcp["syn"] or tcp["fin"] or tcp["rst"] or tcp["ack_no"] is None:
         return
     previous = b["last_ack"].get(flow)
     if previous == (tcp["ack_no"], tcp["window"]):
@@ -288,6 +274,7 @@ def _row(b: dict[str, Any], mtu: int) -> dict[str, Any]:
             "segments": t["segments"], "data_segments": t["data_segments"], "flows": len(b["streams"]),
             "syn": t["syn"], "syn_ack": t["synack"], "mss_in_syn": {str(k): v for k, v in sorted(b["mss"].items())},
             "retransmissions": t["retrans"], "data_retransmissions": t["data_retrans"],
+            "lost_before_capture": t["lost_before_capture"], "retransmitted_after_capture": t["retransmitted_after_capture"],
             "syn_retransmissions": t["syn_retrans"], "duplicate_acks": t["dup_ack"], "zero_windows": t["zero_window"],
             "resets": t["rst"], "keepalives": t["keepalives"], "out_of_order": t["out_of_order"],
         }
@@ -331,8 +318,9 @@ def _issues(row: dict[str, Any], b: dict[str, Any], overhead: int | None, mtu: i
                       f"({tcp['data_retransmissions']} of {tcp['data_segments']})")
     ooo = tcp.get("out_of_order", 0)
     if tcp.get("data_segments", 0) >= MIN_SEGMENTS_FOR_RATIO and ooo >= RETRANSMISSION_ALERT * tcp["data_segments"]:
-        issues.append(f"{ooo} inner TCP segments arrived out of order (their IP ID shows they were sent before the "
-                      "packet ahead of them); tshark's analysis flags these as retransmissions, they are not")
+        issues.append(f"{ooo} inner TCP segments arrived out of order (they filled a gap and their IP ID, TCP timestamp "
+                      "or arrival shows they were overtaken, not lost); tshark's analysis flags these as retransmissions, "
+                      "they are not")
     if row.get("duplicate_copies"):
         issues.append(f"{row['duplicate_copies']} extra copies of packets already seen (same IP IDs): the capture "
                       "holds the tunnel more than once; they are left out of every count")
