@@ -824,6 +824,80 @@ def write_identity_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# UE addresses that a tool can show bare (as a conversation endpoint) before any tool has
+# named them in a UE-address field; each is named once in one signalling field.
+UE_PAA = "198.51.100.21"       # GTPv2 PDN Address Allocation
+UE_EUA = "198.51.100.22"       # GTPv1 End User Address
+UE_PFCP = "198.51.100.23"      # PFCP UE IP Address IE
+UE_RADIUS = "198.51.100.24"    # RADIUS Framed-IP-Address
+UE_INNER = "198.51.100.25"     # only ever inside a GTP-U tunnel
+UE_REGISTER = "198.51.100.26"  # SIP REGISTER Contact and Via
+UE_INSTANCE = "198.51.100.27"  # SIP Contact with +sip.instance in an INVITE
+UE_ADDRESSES = (UE_PAA, UE_EUA, UE_PFCP, UE_RADIUS, UE_INNER, UE_REGISTER, UE_INSTANCE)
+MSISDN_RADIUS = "15550100777"  # an 11-digit Calling-Station-Id
+SMF_IP, UPF_IP, NAS_IP, AAA_IP = "192.0.2.90", "192.0.2.91", "192.0.2.92", "192.0.2.93"
+
+
+def _radius_accounting(ident: int, attrs: list[tuple[int, bytes]]) -> bytes:
+    body = b"".join(bytes([t, len(v) + 2]) + v for t, v in attrs)
+    return bytes([4, ident]) + struct.pack("!H", 20 + len(body)) + bytes(16) + body
+
+
+def write_ue_first_pcap(path: Path) -> Path:
+    """Every UE address of :data:`UE_ADDRESSES` named once in signalling (GTPv2 PAA,
+    GTPv1 End User Address, PFCP UE IP, RADIUS Framed-IP, a G-PDU's inner header,
+    SIP REGISTER Contact/Via and an INVITE Contact with +sip.instance) and also seen
+    as the outer address of plain SGi/Gm packets, so ``conversations`` lists them
+    bare. The RADIUS request carries :data:`MSISDN_RADIUS` as its Calling-Station-Id."""
+    t = 1_700_020_000.0
+    frames: list[tuple[float, bytes]] = []
+
+    def add(dt: float, raw: bytes) -> None:
+        frames.append((t + dt, raw))
+
+    # GTPv2 Create Session Response assigning the PAA
+    add(0.0, _udp_frame(PGW_IP, SGW_IP, 2123, 2123, _gtpv2(33, 0x0000A201, 31, [
+        _ie(2, bytes([16, 0])), _ie(79, bytes([1]) + _ipv4(UE_PAA))])))
+    # GTPv1 Create PDP Context Response with an End User Address (IPv4)
+    eua = bytes([0xF1, 0x21])  # IETF organisation, IPv4
+    v1_ies = bytes([1, 128]) + bytes([128]) + struct.pack("!H", 2 + 4) + eua + _ipv4(UE_EUA)
+    v1_body = struct.pack("!HBB", 0x51, 0, 0) + v1_ies
+    add(0.1, _udp_frame(PGW_IP, SGW_IP, 2123, 2123, bytes([0x32, 17]) + struct.pack("!HI", len(v1_body), 0x0111) + v1_body))
+    # PFCP Session Establishment Request with a PDR whose PDI names the UE IP
+    pdi = _pfcp_ie(2, _pfcp_ie(20, bytes([0])) + _pfcp_ie(93, bytes([0x02]) + _ipv4(UE_PFCP)))
+    pdr = _pfcp_ie(1, _pfcp_ie(56, struct.pack("!H", 1)) + _pfcp_ie(29, struct.pack("!I", 255)) + pdi)
+    pfcp_body = struct.pack("!Q", 0) + struct.pack("!I", 0x61 << 8) + pdr
+    pfcp = bytes([0x21, 50]) + struct.pack("!H", len(pfcp_body)) + pfcp_body
+    add(0.2, _udp_frame(SMF_IP, UPF_IP, 8805, 8805, pfcp))
+    # RADIUS Accounting-Request (Framed-IP-Address, Calling-Station-Id)
+    add(0.3, _udp_frame(NAS_IP, AAA_IP, 40001, 1813, _radius_accounting(7, [
+        (40, struct.pack("!I", 1)), (8, _ipv4(UE_RADIUS)), (31, MSISDN_RADIUS.encode())])))
+    # One G-PDU whose inner source is a UE address
+    inner = bytes(IP(src=UE_INNER, dst=SERVER_IP) / UDP(sport=40001, dport=9000) / Raw(b"u" * 20))
+    add(0.4, _udp_frame(SGW_IP, PGW_IP, 2152, 2152, _gtpu(0x0000D201, inner)))
+    # SIP REGISTER from a UE and an INVITE whose Contact carries +sip.instance
+    add(0.5, _udp_frame(UE_REGISTER, PCSCF_IP, 5060, 5060, _sip([
+        "REGISTER sip:ims.mnc001.mcc001.3gppnetwork.org SIP/2.0",
+        f"Via: SIP/2.0/UDP {UE_REGISTER}:5060;branch=z9hG4bK31",
+        f"From: <sip:{IMSI_IMPU}@ims.mnc001.mcc001.3gppnetwork.org>;tag=r1",
+        f"To: <sip:{IMSI_IMPU}@ims.mnc001.mcc001.3gppnetwork.org>", "Call-ID: reg-31@ue.example",
+        "CSeq: 1 REGISTER", f"Contact: <sip:{UE_REGISTER}:5060>;expires=600",
+    ])))
+    add(0.6, _udp_frame(PCSCF_IP, UE_INSTANCE, 5060, 5060, _sip([
+        f"INVITE sip:{UE_INSTANCE}:5060 SIP/2.0", f"Via: SIP/2.0/UDP {PCSCF_IP}:5060;branch=z9hG4bK32",
+        "From: <sip:alice@ims.example>;tag=i1", "To: <sip:bob@ims.example>", "Call-ID: inv-32@ims.example",
+        "CSeq: 1 INVITE", f'Contact: <sip:{UE_INSTANCE}:5060>;+sip.instance="<urn:gsma:imei:00123456-000001-0>"',
+    ])))
+    # Plain packets in which each UE address is an outer endpoint
+    for i, ue in enumerate(UE_ADDRESSES):
+        add(1.0 + i * 0.01, _udp_frame(ue, SERVER_IP, 41000 + i, 9000, b"p" * 10))
+    return _frames_to_pcap(path, frames)
+
+
+def _pfcp_ie(ie_type: int, data: bytes) -> bytes:
+    return struct.pack("!HH", ie_type, len(data)) + data
+
+
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     """The voice captures, kept in their own directory so the directory scans of the
     signalling captures are unchanged."""
