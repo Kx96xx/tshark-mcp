@@ -332,7 +332,8 @@ def _nonzero(addr: str | None) -> str | None:
 
 
 # ----------------------------------------------------------------------- GTP-U
-USER_PLANE_FIELDS = ["frame.time_epoch", "frame.len", "ip.src", "ip.dst", "gtp.teid", "gtp.length", "gtp.message"]
+USER_PLANE_FIELDS = ["frame.time_epoch", "frame.len", "ip.src", "ip.dst", "gtp.teid", "gtp.length", "gtp.message",
+                     "frame.number"]
 
 
 def user_plane_filter(teid: int | None) -> str:
@@ -361,7 +362,9 @@ def summarise_user_plane(stdout: str) -> list[dict[str, Any]]:
             b = buckets[teid] = {
                 "teid": teid, "outer_src": srcs[0], "outer_dst": dsts[0], "packets": 0, "frame_bytes": 0,
                 "payload_bytes": 0, "first": ts, "last": ts, "inner_src": defaultdict(int), "inner_dst": defaultdict(int),
+                "first_frame": to_int(cols[7].split(",")[0]),
             }
+        b["last_frame"] = to_int(cols[7].split(",")[0])
         b["packets"] += 1
         b["frame_bytes"] += frame_len
         b["payload_bytes"] += payload
@@ -384,6 +387,8 @@ def summarise_user_plane(stdout: str) -> list[dict[str, Any]]:
             "payload_bytes": b["payload_bytes"],
             "first": iso(b["first"]),
             "last": iso(b["last"]),
+            "first_frame": b["first_frame"],
+            "last_frame": b["last_frame"],
             "duration_s": round(duration, 6) if duration is not None else None,
             "inner_src": _top(b["inner_src"]),
             "inner_dst": _top(b["inner_dst"]),

@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twenty-two narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent twenty-four narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -24,7 +24,8 @@ frames, checksum offload and clocks that run backwards.
 
 ## Install
 
-Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically) and tshark
+Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically;
+CI also runs the suite on the oldest of each) and tshark
 4.0 or newer (tested with 4.2 and 4.6). tshark comes with Wireshark:
 `brew install --cask wireshark` on macOS, `apt-get install tshark` on Debian or Ubuntu,
 `dnf install wireshark-cli` on Fedora.
@@ -78,6 +79,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `tcp_health(path, filter, stream, mtu, limit, offset)` | Per TCP stream, with copies of the same packet dropped first (tshark counts them as retransmissions): handshake with SYN retries, the SYN to SYN-ACK and SYN-ACK to ACK halves of the RTT, MSS, window scale and SACK; per direction data segments and retransmissions split by where the loss happened (`lost_before_capture`, `retransmitted_after_capture`, `missed_by_capture` when the receiver acknowledged bytes the file lacks), reordering told apart by IP ID or TCP timestamp, duplicate ACKs, zero windows, keep-alives; `resets` with `likely_from` endpoint or middlebox from the reset's TTL and source MAC against that side's other packets, and the idle time before it; ICMP errors about the stream; MSS above `mtu`, DF packets above it and the PMTUD black-hole pattern (full-size segments retransmitted and never acknowledged while small ones pass); `issues` in plain words |
 | `conversations(path, layer, filter, limit, offset)` | Top talkers at `ip`, `ipv6`, `tcp`, `udp`, `sctp` or `eth` with frames and bytes per direction, optionally restricted by a display filter |
 | `filter_packets(path, display_filter, fields, limit, offset)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |
+| `packet_detail(path, frame, layers, max_fields)` | One frame's full dissection as tshark decodes it, every layer and field nested as in Wireshark's details pane; `layers` keeps only the protocols named; at most `max_fields` leaf fields (default 300, server cap 2000), the innermost layers first, with `fields_dropped` for the rest; `malformed` when tshark flagged the packet. Use it to verify any row: rows carry `frame`, `request_frame`/`answer_frame` or `first_frame`/`last_frame` |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit, offset)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered and failed counts, worst RTT, and the paired transactions |
 | `diameter_transactions(path, filter, limit, offset)` | Requests paired with answers by Hop-by-Hop/End-to-End id and Session-Id: command name, application, hosts, realms, User-Name, Result-Code or Experimental-Result-Code with name, RTT, `unanswered` |
 | `diameter_avps(path, session_id, imsi, command_code, frame, filter, detail, max_avps, limit, offset)` | The AVPs of paired Diameter transactions. `detail="key"`: Result-Code and Experimental-Result, ULR/ULA/CLR/PUR/PUA/IDR/NOR flags with bit names, Cancellation-Type, RAT-Type, Visited-PLMN-Id, AIR vectors, Gx CC-Request-Type, Event-Trigger, rule reports and QoS, and a Subscription-Data digest (MSISDN, status, ODB, access restrictions, AMBR, one line per APN with PDN type, QCI, ARP, AMBR and PGW). `detail="full"`: every AVP as a nested tree, capped at `max_avps` leaves per message (server cap 2000); enumerated values are named |
@@ -89,6 +91,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `dns_transactions(path, name, filter, limit, offset)` | DNS queries paired with responses by transport, addresses, ports, DNS id and name, unanswered ones included: type, rcode name, answers and addresses, RTT, `unanswered` (`near_capture_end` when the capture may have stopped first), resends with the same id and port, `retry_of` for a new query after an unanswered or failed one, TC answers and the TCP fallback that followed; per-server answered share, rcodes and latency min/p50/p90/p99/max; the names that failed, were retried or were slow; `issues`. Copies of one packet (several interfaces, GTP legs) count once, DNS inside GTP-U is read from the inner packet, and problem transactions come first |
 | `tls_handshakes(path, server_name, filter, limit, offset)` | TLS over TCP and QUIC per connection, from the clear part of the handshake (no decryption, no key material): the client's offer (SNI, ALPN, versions, cipher-suite count without GREASE, fallback SCSV) against the server's choice (version, suite, ALPN when in clear), HelloRetryRequest, SYN-to-ClientHello and ClientHello-to-ServerHello times, alerts with level, name and sender (QUIC CONNECTION_CLOSE too), the leaf certificate for TLS 1.2 and older (subject, issuer, SAN, validity, chain length), and an `outcome`: established, alert, no_server_hello, reset_by_server, closed_by_server, client_gave_up, client_rejected_likely (TLS 1.3 alert-sized record instead of Finished), unreadable, incomplete, or server_hello for QUIC; `issues` names expired certificates, SNI/SAN mismatches, deprecated or unoffered versions and repeated ClientHellos. A connection whose ClientHello is not readable is still listed (`client_hello_missing`) when its ServerHello, certificate or alerts are |
 | `rtp_streams(path, call_id, ssrc, heuristic, filter, limit, offset)` | Per RTP stream (SSRC and source/destination address:port): the SIP Call-ID whose SDP advertised its destination (or source) address and port, payload type and codec from the SDP rtpmap or the static table, packets, expected, lost and lost %, duplicates, sequence errors, out-of-order packets, max/mean interarrival delta, RFC 3550 max/mean jitter, duration, the reverse stream or `one_way`, RTCP reception reports about it (fraction and cumulative lost, jitter, round trip where the LSR matches a captured SR), RTCP XR VoIP metrics as reported, and `mos_estimate`: a simplified ITU-T G.107 E-model score from loss, jitter, delay and the codec's G.113 Ie/Bpl, returned with its method and inputs because it is an estimate, not a measured MOS. `call_id` reads the RTP to or from the call's SDP addresses, so a NATed source is still found; `heuristic` decodes RTP without SDP in the capture. Packets, lost, max delta and max jitter match `tshark -z rtp,streams` |
+| `sip_call_detail(path, call_id)` | One INVITE call by Call-ID, built on the `sip_dialogs` row: the ladder with the messages that carry SDP marked, `outcome`, final response with its reason phrase, post-dial delay (INVITE to the first 180/183, or to the failure response as RFC 6076 defines it), ringing, answer and setup times, early media, call duration from 200 OK to BYE, retransmissions per message, Reason headers with the Q.850 cause named, Warning headers, whether the caller or the callee sent BYE or CANCEL (by From tag), and each SDP with its offer/answer role, address, port, codecs, direction and ptime, plus the codecs offer and answer (or a 488's SDP) have in common |
 | `sip_dialogs(path, call_id, number, method, filter, limit, offset)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit, offset)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit, offset)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -110,6 +113,12 @@ narrow the filter. The output cap (30 KB by default, about 8k tokens) keeps the 
 prefix of rows that fits and moves `next_offset` to the first row it left out; an inner
 list it had to shorten is named in `trimmed` with how many items were kept. In
 `find_identifier` the offset counts files of the directory, not rows.
+
+Rows carry the frame numbers they were built from: `frame` on per-packet rows (including
+`filter_packets` rows when `frame.number` was not one of the fields), `request_frame` and
+`answer_frame` on paired transactions, `first_frame` and `last_frame` on aggregates
+(tunnels, SCTP associations, files found by `find_identifier`, message types and
+subscriber loops in `message_rates`). `packet_detail(path, frame)` opens any of them.
 
 A capture that ends in the middle of a packet (a ring-buffer file copied while it was being
 written) is read up to the damage, and the result carries `"warnings"` saying so. See
@@ -296,9 +305,8 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 403 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
-the tshark that Ubuntu 24.04 ships (4.2), and once more on 3.10 with the oldest supported `mcp`
-and `pydantic`. The tests build their own synthetic captures with
+The suite is 433 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP and RFC 4733 events (loss,
 reordering, jitter, NAT, one-way media, a 488), an SCTP handshake with an

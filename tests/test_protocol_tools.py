@@ -130,7 +130,8 @@ class TestSearchHelpers:
     def test_summarise_hits(self):
         text = "1.0\t1\tDIAMETER\n2.5\t2\tGTPv2\n\n0.5\t3\tDIAMETER\njunk\n"
         out = search.summarise_hits(text, protocol_col=True)
-        assert out == {"hits": 3, "first": 0.5, "last": 2.5, "protocols": {"DIAMETER": 2, "GTPv2": 1}}
+        assert out == {"hits": 3, "first": 0.5, "last": 2.5, "first_frame": 3, "last_frame": 2,
+                       "protocols": {"DIAMETER": 2, "GTPv2": 1}}
         assert search.summarise_hits("1.0\t1\n", protocol_col=False)["protocols"] == {}
 
 
@@ -145,7 +146,7 @@ class TestRegistration:
             "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions",
             "gtp_sessions", "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages",
             "trace_subscriber", "find_identifier", "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates", "gtpv1_sessions",
-            "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health",
+            "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail",
         ])
         by_name = {t.name: t for t in tools}
 
