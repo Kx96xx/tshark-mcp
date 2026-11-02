@@ -578,14 +578,19 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
         flt = base
         if select:
             stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["sip.Call-ID"], st.limits.max_scan_packets)
-            call_ids = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
-            corr = sip.correlation_filter(call_ids)
+            # A TCP segment can carry several SIP messages: keep every Call-ID it has and,
+            # once each message is parsed, drop the dialogs that do not match themselves.
+            alone, shared = sip.selected_call_ids(stdout)
+            corr = sip.correlation_filter(alone | shared)
             if corr is None:
                 return _envelope("dialogs", [], cap, pre, summary={"by_message": {}, "unanswered": 0, "failed": 0},
                                  selection=select)
             flt = f"({base}) && ({corr})"
         stdout, scan = _fields_run(capture, flt, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
         rows = sip.group_dialogs(stdout)
+        if select and shared:
+            keep = sip.matching_call_ids(stdout, cid, num, meth)
+            rows = [r for r in rows if r["call_id"] not in shared or r["call_id"] in keep]
         summary = _summarise(rows, "initial_method", "no_final_response", sip.dialog_failed)
         return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
@@ -840,13 +845,18 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
             flt = sip.identity_filter(imsi_d, msisdn_d)
             if flt:
                 stdout, scan = _fields_run(capture, flt, ["sip.Call-ID"], st.limits.max_scan_packets, timeout=_left(deadline))
-                call_ids = {ln.strip().split(",")[0] for ln in stdout.splitlines() if ln.strip()}
-                notes["sip"] = {"dialogs": len(call_ids), "truncated": scan.truncated}
-                corr = sip.correlation_filter(call_ids)
+                alone, shared = sip.selected_call_ids(stdout)
+                notes["sip"] = {"dialogs": len(alone | shared), "truncated": scan.truncated}
+                corr = sip.correlation_filter(alone | shared)
                 if corr:
                     stdout, scan = _fields_run(capture, corr, sip.FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR,
-                                                  timeout=_left(deadline))
-                    for row in sip.group_dialogs(stdout):
+                                               timeout=_left(deadline))
+                    dialogs = sip.group_dialogs(stdout)
+                    if shared:
+                        keep = sip.matching_call_ids(stdout, number=msisdn_d, imsi=imsi_d)
+                        dialogs = [d for d in dialogs if d["call_id"] not in shared or d["call_id"] in keep]
+                        notes["sip"]["dialogs"] = len(dialogs)
+                    for row in dialogs:
                         final = row.get("outcome_status") or row.get("final_status")
                         timeline.append(_timeline_row("sip", row, message=f'{row.get("initial_method")} -> {final if final else "no final response"}',
                                                       detail=row.get("request_uri"), result=str(final) if final else None,
