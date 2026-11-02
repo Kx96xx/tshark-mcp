@@ -200,6 +200,69 @@ class CaptureQualityResult(ToolResult, total=False):
     verdict: QualityVerdict
 
 
+class TcpHandshake(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    syn: int
+    syn_retransmissions: int
+    syn_ack: int
+    server_side_rtt_ms: float
+    client_side_rtt_ms: float
+    rtt_ms: float
+    client_mss: int
+    server_mss: int
+    client_wscale: int
+    server_wscale: int
+    sack: bool
+
+
+class TcpDirection(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    packets: int
+    data_segments: int
+    bytes: int
+    max_segment: int
+    retransmissions: int
+    retransmission_ratio: float
+    lost_before_capture: int
+    retransmitted_after_capture: int
+    missed_by_capture: int
+    out_of_order: int
+    unresolved_gaps: int
+    keepalives: int
+    duplicate_acks: int
+    zero_windows: int
+    fin: int
+    rst: int
+
+
+class TcpStreamRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    stream: int
+    client: str
+    server: str
+    first: str
+    last: str
+    duration_s: float
+    packets: int
+    copies_dropped: int
+    handshake: TcpHandshake
+    client_to_server: TcpDirection
+    server_to_client: TcpDirection
+    resets: list[dict[str, Any]]
+    icmp: list[dict[str, Any]]
+    df_above_mtu: int
+    df_above_mtu_acknowledged: int
+    loss: str
+    issues: list[str]
+
+
+class TcpHealthResult(RowsResult, total=False):
+    streams: list[TcpStreamRow]
+    path_mtu: int
+    display_filter: str
+    summary: dict[str, int]
+
+
 class ConversationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     a: str

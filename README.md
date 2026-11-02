@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twenty-one narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent twenty-two narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -75,6 +75,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `find_identifier(path, identifier, kind, max_files, offset)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned` |
 | `pcap_info(path)` | Packet count, duration, first/last timestamp, size, link type, top 15 protocol-hierarchy entries, active limits |
 | `capture_quality(path)` | Whether loss and timing conclusions can be drawn from the capture: duplicate copies of the same packet with the likely cause (two VLANs or interfaces, a Linux any capture, tunnelled and decapsulated, rebuilt copies with zeroed TCP headers); TCP bytes the receiver acknowledged that the capture never saw (dropped by the capture, or the file was filtered) versus gaps a retransmission filled (lost on the network before the capture point); frames cut to the snapshot length; packets above 1500 bytes (segmentation offload); bad IP/TCP/UDP checksums and whether they are offload artifacts (one sender, data acknowledged anyway); TCP streams seen in one direction only and unanswered SYNs; timestamps going backwards, identical stamps, resolution, longest silence; a `verdict` (trustworthy, use with care, not trustworthy) with the reasons |
+| `tcp_health(path, filter, stream, mtu, limit, offset)` | Per TCP stream, with copies of the same packet dropped first (tshark counts them as retransmissions): handshake with SYN retries, the SYN to SYN-ACK and SYN-ACK to ACK halves of the RTT, MSS, window scale and SACK; per direction data segments and retransmissions split by where the loss happened (`lost_before_capture`, `retransmitted_after_capture`, `missed_by_capture` when the receiver acknowledged bytes the file lacks), reordering told apart by IP ID or TCP timestamp, duplicate ACKs, zero windows, keep-alives; `resets` with `likely_from` endpoint or middlebox from the reset's TTL and source MAC against that side's other packets, and the idle time before it; ICMP errors about the stream; MSS above `mtu`, DF packets above it and the PMTUD black-hole pattern (full-size segments retransmitted and never acknowledged while small ones pass); `issues` in plain words |
 | `conversations(path, layer, filter, limit, offset)` | Top talkers at `ip`, `ipv6`, `tcp`, `udp`, `sctp` or `eth` with frames and bytes per direction, optionally restricted by a display filter |
 | `filter_packets(path, display_filter, fields, limit, offset)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit, offset)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered and failed counts, worst RTT, and the paired transactions |
@@ -198,6 +199,27 @@ capture_quality(path="/pcaps/span.pcap")
                 "notes": ["bad checksums are checksum offload: ... Not a network fault"]}}
 ```
 
+Why does the upload stall after the handshake?
+
+```
+tcp_health(path="/pcaps/upload.pcap", mtu=1400)
+-> {"streams": [{"stream": 0, "client": "192.0.2.90:40001", "server": "198.51.100.90:443",
+     "handshake": {"server_side_rtt_ms": 30.0, "client_side_rtt_ms": 2.0, "rtt_ms": 32.0, "client_mss": 1460, "server_mss": 1460, ...},
+     "server_to_client": {"data_segments": 7, "max_segment": 1460, "retransmissions": 3, "retransmitted_after_capture": 3, ...},
+     "icmp": [{"from": "203.0.113.1", "error": "fragmentation needed", "mtu": 1400, "count": 1}],
+     "issues": ["the client announced MSS 1460: the server may send packets of 1500 bytes, above the 1400-byte path MTU; an MSS of at most 1360 fits", ...,
+                "server to client: full-size segments (1460 bytes) were retransmitted 3 times and never acknowledged while smaller packets got through: a path MTU black hole ..."]}]}
+```
+
+Who reset the connection?
+
+```
+tcp_health(path="/pcaps/idle.pcap")
+-> {"streams": [{"resets": [{"from": "server", "ttl": 61, "usual_ttl": 50, "mac": "02:00:00:00:00:99", "usual_mac": "02:00:00:00:00:02",
+                             "idle_before_s": 3600.01, "likely_from": "middlebox", ...}, {"from": "client", "likely_from": "middlebox", ...}],
+     "issues": [..., "resets towards both ends that neither end sent: typical of a firewall or IPS tearing the connection down"]}]}
+```
+
 Is this a purge storm, and how fast is it looping?
 
 ```
@@ -274,7 +296,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 391 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 403 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP and RFC 4733 events (loss,
