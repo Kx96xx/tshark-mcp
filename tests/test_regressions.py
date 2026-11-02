@@ -466,3 +466,127 @@ def test_trace_subscriber_within_budget_is_not_truncated(configure, pcap_dir: Pa
     result = srv.trace_subscriber(str(pcap_dir / "all.pcap"), imsi=pcapgen.IMSI, msisdn=pcapgen.MSISDN)
     assert "truncated" not in result
     assert not any(p.get("timed_out") for p in result["passes"].values())
+
+
+# ------------------------------------------- several SIP messages in one TCP segment
+def _sip_over_tcp_bundles(tmp_path: Path) -> Path:
+    """Two MESSAGE requests in one TCP segment (another subscriber's first), their
+    responses in the next (200 and 404), then a segment carrying a response for the
+    other dialog followed by a new INVITE from the subscriber, answered 486."""
+    from scapy.all import IP, TCP, Ether, Raw  # type: ignore
+
+    g = pcapgen
+    dom = "ims.mnc001.mcc001.3gppnetwork.org"
+
+    def msg(first: str, call_id: str, cseq: str, frm: str) -> bytes:
+        return g._sip([first, "Via: SIP/2.0/TCP 198.51.100.9:5060;branch=z9hG4bK1", f"From: <sip:+{frm}@{dom}>;tag=a",
+                       f"To: <sip:+15550100555@{dom}>", f"Call-ID: {call_id}", f"CSeq: {cseq}"])
+
+    req_uri = f"sip:+15550100555@{dom} SIP/2.0"
+    other_req = msg(f"MESSAGE {req_uri}", "other-1@ue.example", "1 MESSAGE", g.MSISDN_OTHER)
+    mine_req = msg(f"MESSAGE {req_uri}", "mine-1@ue.example", "1 MESSAGE", g.MSISDN)
+    other_ok = msg("SIP/2.0 200 OK", "other-1@ue.example", "1 MESSAGE", g.MSISDN_OTHER)
+    mine_404 = msg("SIP/2.0 404 Not Found", "mine-1@ue.example", "1 MESSAGE", g.MSISDN)
+    other2_req = msg(f"MESSAGE {req_uri}", "other-2@ue.example", "1 MESSAGE", g.MSISDN_OTHER)
+    other2_ok = msg("SIP/2.0 202 Accepted", "other-2@ue.example", "1 MESSAGE", g.MSISDN_OTHER)
+    mine_inv = msg(f"INVITE {req_uri}", "mine-2@ue.example", "1 INVITE", g.MSISDN)
+    mine_busy = msg("SIP/2.0 486 Busy Here", "mine-2@ue.example", "1 INVITE", g.MSISDN)
+
+    up_seq, down_seq = 1000, 5000
+    frames: list[tuple[float, bytes]] = []
+
+    def seg(ts: float, up: bool, data: bytes) -> None:
+        nonlocal up_seq, down_seq
+        src, dst, sp, dp = (g.UE_SIP_IP, g.PCSCF_IP, 40000, 5060) if up else (g.PCSCF_IP, g.UE_SIP_IP, 5060, 40000)
+        seq, ack = (up_seq, down_seq) if up else (down_seq, up_seq)
+        pkt = Ether(src=g.MAC_A, dst=g.MAC_B) / IP(src=src, dst=dst) / TCP(sport=sp, dport=dp, flags="PA", seq=seq, ack=ack) / Raw(data)
+        frames.append((ts, bytes(pkt)))
+        if up:
+            up_seq += len(data)
+        else:
+            down_seq += len(data)
+
+    t0 = 1_700_004_000.0
+    seg(t0, True, other_req + mine_req)
+    seg(t0 + 0.05, False, other_ok + mine_404)
+    seg(t0 + 1.0, True, other2_req)
+    seg(t0 + 1.05, False, other2_ok)
+    seg(t0 + 2.0, True, mine_inv)
+    seg(t0 + 2.5, False, mine_busy)
+    return g._frames_to_pcap(tmp_path / "sip_tcp.pcap", frames)
+
+
+def _sip_mixed_bundle(tmp_path: Path) -> Path:
+    """One segment carrying a response for one dialog followed by a request of another."""
+    from scapy.all import IP, TCP, Ether, Raw  # type: ignore
+
+    g = pcapgen
+    dom = "ims.mnc001.mcc001.3gppnetwork.org"
+
+    def msg(first: str, call_id: str, cseq: str, frm: str) -> bytes:
+        return g._sip([first, "Via: SIP/2.0/TCP 192.0.2.50:5060;branch=z9hG4bK2", f"From: <sip:+{frm}@{dom}>;tag=b",
+                       f"To: <sip:+15550100555@{dom}>", f"Call-ID: {call_id}", f"CSeq: {cseq}"])
+
+    req_uri = f"sip:+15550100555@{dom} SIP/2.0"
+    first = msg(f"MESSAGE {req_uri}", "x-1@ue.example", "7 MESSAGE", g.MSISDN_OTHER)
+    bundle = msg("SIP/2.0 200 OK", "x-1@ue.example", "7 MESSAGE", g.MSISDN_OTHER) + msg(f"INVITE {req_uri}", "y-1@ue.example", "3 INVITE", g.MSISDN)
+    t0 = 1_700_004_100.0
+    frames = [
+        (t0, bytes(Ether(src=g.MAC_A, dst=g.MAC_B) / IP(src=g.UE_SIP_IP, dst=g.PCSCF_IP)
+                   / TCP(sport=40001, dport=5060, flags="PA", seq=1, ack=1) / Raw(first))),
+        (t0 + 0.1, bytes(Ether(src=g.MAC_A, dst=g.MAC_B) / IP(src=g.PCSCF_IP, dst=g.UE_SIP_IP)
+                         / TCP(sport=5060, dport=40001, flags="PA", seq=1, ack=1 + len(first)) / Raw(bundle))),
+    ]
+    return g._frames_to_pcap(tmp_path / "sip_mixed.pcap", frames)
+
+
+class TestSipBundledMessages:
+    def test_every_message_of_a_segment_is_kept(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_over_tcp_bundles(tmp_path)))
+        by_id = {d["call_id"]: d for d in result["dialogs"]}
+        assert set(by_id) == {"other-1@ue.example", "mine-1@ue.example", "other-2@ue.example", "mine-2@ue.example"}
+        assert by_id["other-1@ue.example"]["final_status"] == 200
+        assert by_id["mine-1@ue.example"]["final_status"] == 404
+        assert by_id["mine-1@ue.example"]["from"].startswith(f"sip:+{pcapgen.MSISDN}@")
+
+    def test_number_selects_a_dialog_that_is_not_first_in_its_segment(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_over_tcp_bundles(tmp_path)), number=pcapgen.MSISDN)
+        assert [d["call_id"] for d in result["dialogs"]] == ["mine-1@ue.example", "mine-2@ue.example"]
+        assert [d["final_status"] for d in result["dialogs"]] == [404, 486]
+
+    def test_other_subscriber_sharing_the_segment_is_dropped(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_over_tcp_bundles(tmp_path)), number=pcapgen.MSISDN_OTHER)
+        assert [d["call_id"] for d in result["dialogs"]] == ["other-1@ue.example", "other-2@ue.example"]
+
+    def test_trace_finds_the_second_message_of_a_segment(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.trace_subscriber(str(_sip_over_tcp_bundles(tmp_path)), msisdn=pcapgen.MSISDN)
+        rows = [r for r in result["timeline"] if r["protocol"] == "sip"]
+        assert [r["message"] for r in rows] == ["MESSAGE -> 404", "INVITE -> 486"]
+        assert result["passes"]["sip"]["dialogs"] == 2
+
+    def test_a_response_and_a_request_in_one_segment(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.sip_dialogs(str(_sip_mixed_bundle(tmp_path)))
+        by_id = {d["call_id"]: d for d in result["dialogs"]}
+        assert by_id["x-1@ue.example"]["final_status"] == 200
+        assert by_id["x-1@ue.example"]["methods"] == ["MESSAGE"]
+        invite = by_id["y-1@ue.example"]
+        assert invite["initial_method"] == "INVITE" and invite["no_final_response"] is True
+        assert invite["request_uri"].startswith("sip:+15550100555@")
+
+
+def test_bundle_without_protocol_item_text_falls_back_to_counts():
+    from tshark_mcp import sip
+
+    cols = {k: "" for k in sip.FIELDS}
+    cols.update({"frame.number": "1", "frame.time_epoch": "1700000000.0", "ip.src": "192.0.2.1", "ip.dst": "192.0.2.2",
+                 "sip.Call-ID": "a@x|b@x", "sip.Method": "MESSAGE|INVITE", "sip.CSeq.method": "MESSAGE|INVITE",
+                 "sip.CSeq.seq": "1|2", "sip.r-uri": "sip:1@x|sip:2@x", "sip.resend": "False|False"})
+    line = "\t".join(cols[k] for k in sip.FIELDS)
+    recs = sip.parse_messages(line)
+    assert [(r["sip.Call-ID"], r["sip.Method"], r["sip.r-uri"], r["sip.CSeq.seq"]) for r in recs] == [
+        ("a@x", "MESSAGE", "sip:1@x", "1"), ("b@x", "INVITE", "sip:2@x", "2")]

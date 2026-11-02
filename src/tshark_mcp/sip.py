@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import OrderedDict
 from typing import Any
 
@@ -10,7 +11,7 @@ from .fields import compact, iso, parse_time, split_fields_line, to_int
 FIELDS = [
     "frame.number", "frame.time_epoch", "ip.src", "ip.dst", "sip.Call-ID", "sip.Method", "sip.Status-Code",
     "sip.CSeq.method", "sip.CSeq.seq", "sip.from.addr", "sip.to.addr", "sip.r-uri", "sip.P-Asserted-Identity",
-    "sip.Reason", "sip.Contact", "sip.resend",
+    "sip.Reason", "sip.Contact", "sip.resend", "sip", "sip.P-Preferred-Identity", "sip.auth.username",
 ]
 AGGREGATOR = "|"
 
@@ -52,21 +53,117 @@ def correlation_filter(call_ids: set[str]) -> str | None:
     return f"sip.Call-ID in {{{quoted}}}"
 
 
+# Fields a SIP message carries exactly once, so their n-th value belongs to the n-th
+# message of a packet; requests carry one Method and Request-URI, responses one Status-Code.
+_PER_MESSAGE = ("sip.Call-ID", "sip.CSeq.method", "sip.CSeq.seq", "sip.from.addr", "sip.to.addr", "sip.resend")
+_PER_REQUEST = ("sip.Method", "sip.r-uri")
+_PER_RESPONSE = ("sip.Status-Code",)
+_KIND = re.compile(r"\(([^()]*)\)\s*$")
+
+
 def parse_messages(stdout: str) -> list[dict[str, Any]]:
+    """One record per SIP message. A TCP segment can carry several messages; tshark
+    then lists each field's values for all of them, and the protocol item text
+    ("Session Initiation Protocol (INVITE)" or "(200)") says which is a request and
+    which a response, so every value goes back to its own message. Optional headers
+    (P-Asserted-Identity, Reason, Contact, ...) are kept for a message only when every
+    message of the packet has exactly one."""
     out = []
     for line in stdout.splitlines():
         cols = split_fields_line(line)
         if len(cols) < len(FIELDS):
             continue
         rec = dict(zip(FIELDS, cols))
-        # A packet may carry several SIP messages; keep the first of each field.
-        for k, v in rec.items():
-            if AGGREGATOR in v and k not in ("sip.P-Asserted-Identity",):
-                rec[k] = v.split(AGGREGATOR)[0]
-        if not rec["sip.Call-ID"]:
+        call_ids = rec["sip.Call-ID"].split(AGGREGATOR) if rec["sip.Call-ID"] else []
+        if len(call_ids) <= 1:
+            for k, v in rec.items():
+                if AGGREGATOR in v and k not in ("sip.P-Asserted-Identity",):
+                    rec[k] = v.split(AGGREGATOR)[0]
+            if rec["sip.Call-ID"]:
+                out.append(rec)
             continue
-        out.append(rec)
+        out.extend(_split_bundle(rec, len(call_ids)))
     return out
+
+
+def _split_bundle(rec: dict[str, str], n: int) -> list[dict[str, Any]]:
+    values = {k: (v.split(AGGREGATOR) if v else []) for k, v in rec.items()}
+    kinds = [_message_kind(v) for v in values["sip"]]
+    if len(kinds) != n or None in kinds:
+        # No usable protocol item text: tell requests from responses by the counts.
+        if len(values["sip.Method"]) == n:
+            kinds = ["request"] * n
+        elif len(values["sip.Status-Code"]) == n:
+            kinds = ["response"] * n
+        else:
+            kinds = [None] * n
+    counters = {"request": 0, "response": 0}
+    messages = []
+    for i in range(n):
+        msg = {k: "" for k in rec}
+        for k in ("frame.number", "frame.time_epoch", "ip.src", "ip.dst"):
+            msg[k] = values[k][0] if values[k] else ""
+        for k in _PER_MESSAGE:
+            msg[k] = values[k][i] if len(values[k]) == n else ""
+        kind = kinds[i]
+        if kind is not None:
+            j = counters[kind]
+            counters[kind] += 1
+            for k in (_PER_REQUEST if kind == "request" else _PER_RESPONSE):
+                msg[k] = values[k][j] if j < len(values[k]) else ""
+        for k in ("sip.P-Asserted-Identity", "sip.P-Preferred-Identity", "sip.Reason", "sip.Contact", "sip.auth.username"):
+            if len(values[k]) == n:
+                msg[k] = values[k][i]
+        if msg["sip.Call-ID"]:
+            messages.append(msg)
+    return messages
+
+
+def _message_kind(text: str) -> str | None:
+    m = _KIND.search(text)
+    if not m:
+        return None
+    token = m.group(1).strip()
+    if token.isdigit():
+        return "response"
+    return "request" if token else None
+
+
+def matching_call_ids(stdout: str, call_id: str | None = None, number: str | None = None, method: str | None = None,
+                      imsi: str | None = None) -> set[str]:
+    """Call-IDs with at least one message that itself satisfies every given criterion,
+    the per-message counterpart of :func:`selection_filter` and :func:`identity_filter`
+    (``number`` and ``imsi`` alone are ORed, as in a subscriber trace). Used to drop the
+    dialogs that were only selected because their message shared a TCP segment with
+    a matching one."""
+    found = set()
+    for rec in parse_messages(stdout):
+        if call_id and rec["sip.Call-ID"] != call_id:
+            continue
+        if method and method not in (rec["sip.Method"], rec["sip.CSeq.method"]):
+            continue
+        if number or imsi:
+            ids = " ".join(rec[k] for k in ("sip.from.addr", "sip.to.addr", "sip.r-uri", "sip.P-Asserted-Identity",
+                                            "sip.P-Preferred-Identity"))
+            hit = bool(number) and number in ids
+            if not hit and imsi:
+                hit = imsi in rec["sip.from.addr"] or imsi in rec["sip.auth.username"]
+            if not hit:
+                continue
+        found.add(rec["sip.Call-ID"])
+    return found
+
+
+def selected_call_ids(stdout: str) -> tuple[set[str], set[str]]:
+    """Call-IDs from a one-column (``sip.Call-ID``, comma-aggregated) selection pass:
+    (those that were alone in a matching packet, those that shared one with other
+    messages and so may not match themselves)."""
+    alone: set[str] = set()
+    shared: set[str] = set()
+    for ln in stdout.splitlines():
+        ids = [v.strip() for v in ln.strip().split(",") if v.strip()]
+        (alone if len(ids) == 1 else shared).update(ids)
+    return alone, shared - alone
 
 
 def group_dialogs(stdout: str) -> list[dict[str, Any]]:

@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 227 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 233 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -79,7 +79,7 @@ Tests: 227 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `diameter_transactions(path, filter, limit)` | Requests paired with answers by Hop-by-Hop/End-to-End id and Session-Id: command name, application, hosts, realms, User-Name, Result-Code or Experimental-Result-Code with name, RTT, `unanswered` |
 | `gtp_sessions(path, imsi, apn, teid, filter, limit)` | GTPv2-C requests paired with responses by sequence and peer (across a NAT too, with `response_path`): message name, IMSI, MSISDN, APN, F-TEIDs with interface names, cause code and name, PAA, RTT, `unanswered`; the structured filters keep both halves of each transaction, and `apn` given as a network identifier also matches it with the operator identifier appended |
 | `gtp_user_plane(path, teid, limit)` | GTP-U per TEID: packets, bytes, first/last time, outer endpoints, inner IP addresses |
-| `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration |
+| `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
 | `trace_subscriber(path, imsi, msisdn, limit)` | One time-ordered timeline for a subscriber across Diameter, GTPv2-C (following control-plane TEIDs), MAP and SIP, each row with protocol, message, result and pairing; all passes share one time budget and a spent budget returns the partial timeline with `truncated` |
@@ -194,7 +194,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 227 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 233 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
