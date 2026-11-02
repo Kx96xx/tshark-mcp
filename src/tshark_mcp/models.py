@@ -99,6 +99,8 @@ class MessageSummary(TypedDict, total=False):
     by_message: dict[str, int]
     unanswered: int
     failed: int
+    legs_without_response: int
+    duplicates: int
 
 
 class PairedRow(TypedDict, total=False):
@@ -112,6 +114,10 @@ class PairedRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     unmatched_answer: bool
+    leg_without_response: bool
+    duplicate_of_frame: int
+    chain: dict[str, Any]
+    note: str
 
 
 class DiameterTransactionRow(PairedRow, total=False):
@@ -527,6 +533,10 @@ class TimelineRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     failed: bool
+    leg_without_response: bool
+    duplicate_of_frame: int
+    chain: dict[str, Any]
+    note: str
 
 
 class SubscriberIdentity(TypedDict, total=False):
