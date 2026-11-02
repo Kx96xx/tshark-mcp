@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 286 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 292 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -242,7 +242,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 286 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 292 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
