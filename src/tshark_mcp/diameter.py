@@ -196,7 +196,9 @@ def _tbcd_bytes(digits: str) -> str:
     return ":".join(pairs)
 
 
-def extract_messages(packets: list[Json]) -> list[Message]:
+def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Message]:
+    """One Message per Diameter PDU; ``keep_raw`` keeps the dissected PDU under ``raw``
+    for the AVP tools."""
     messages: list[Message] = []
     for packet in packets:
         ts = frame_time(packet)
@@ -228,6 +230,8 @@ def extract_messages(packets: list[Json]) -> list[Message]:
                 "error_flag": first(msg, "diameter.flags.error") == "1",
                 "retransmit_flag": first(msg, "diameter.flags.T") == "1",
             }
+            if keep_raw:
+                fields["raw"] = msg
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=is_request,
                 key=(hbh, e2e), name=command_name(code, is_request), fields=fields,

@@ -204,6 +204,40 @@ class DiameterSessionsResult(RowsResult, total=False):
     selection: str | None
 
 
+class DiameterAvpRow(TypedDict, total=False):
+    """One paired transaction with its AVPs: the key view (``detail="key"``) or the
+    full nested tree (``detail="full"``), where a repeated AVP becomes a list and a
+    grouped AVP a nested object."""
+    __pydantic_config__ = _EXTRA_OK
+    time: str
+    request: str
+    answer: str
+    command: str
+    application: str
+    session_id: str
+    user_name: str
+    origin_host: str
+    destination_host: str
+    answer_origin_host: str
+    request_frame: int
+    answer_frame: int
+    rtt_ms: float
+    result: str
+    success: bool
+    unanswered: bool
+    unmatched_answer: bool
+    request_avps: dict[str, Any]
+    answer_avps: dict[str, Any]
+    request_avps_dropped: int
+    answer_avps_dropped: int
+
+
+class DiameterAvpsResult(RowsResult, total=False):
+    transactions: list[DiameterAvpRow]
+    detail: str
+    selection: str | None
+
+
 # ----------------------------------------------------------------- GTP
 class Fteid(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK

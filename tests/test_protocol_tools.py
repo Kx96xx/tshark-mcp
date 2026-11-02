@@ -137,14 +137,14 @@ class TestSearchHelpers:
 # ----------------------------------------------------------------- tools through tshark
 @requires_tshark
 class TestRegistration:
-    def test_twelve_tools_are_registered(self):
+    def test_every_tool_is_registered(self):
         from tshark_mcp.server import app
         tools = asyncio.run(app.list_tools())
         names = sorted(t.name for t in tools)
         assert names == sorted([
             "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions",
             "gtp_sessions", "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages",
-            "trace_subscriber", "find_identifier",
+            "trace_subscriber", "find_identifier", "diameter_avps",
         ])
         by_name = {t.name: t for t in tools}
 

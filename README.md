@@ -15,7 +15,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twelve narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent thirteen narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply.
 
@@ -67,7 +67,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ## Tools
 
-Tests: 233 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
+Tests: 248 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
@@ -77,6 +77,7 @@ Tests: 233 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `filter_packets(path, display_filter, fields, limit)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered and failed counts, worst RTT, and the paired transactions |
 | `diameter_transactions(path, filter, limit)` | Requests paired with answers by Hop-by-Hop/End-to-End id and Session-Id: command name, application, hosts, realms, User-Name, Result-Code or Experimental-Result-Code with name, RTT, `unanswered` |
+| `diameter_avps(path, session_id, imsi, command_code, frame, filter, detail, max_avps, limit)` | The AVPs of paired Diameter transactions. `detail="key"`: Result-Code and Experimental-Result, ULR/ULA/CLR/PUR/PUA/IDR/NOR flags with bit names, Cancellation-Type, RAT-Type, Visited-PLMN-Id, AIR vectors, Gx CC-Request-Type, Event-Trigger, rule reports and QoS, and a Subscription-Data digest (MSISDN, status, ODB, access restrictions, AMBR, one line per APN with PDN type, QCI, ARP, AMBR and PGW). `detail="full"`: every AVP as a nested tree, capped at `max_avps` leaves per message (server cap 2000); enumerated values are named |
 | `gtp_sessions(path, imsi, apn, teid, filter, limit)` | GTPv2-C requests paired with responses by sequence and peer (across a NAT too, with `response_path`): message name, IMSI, MSISDN, APN, F-TEIDs with interface names, cause code and name, PAA, RTT, `unanswered`; the structured filters keep both halves of each transaction, and `apn` given as a network identifier also matches it with the operator identifier appended |
 | `gtp_user_plane(path, teid, limit)` | GTP-U per TEID: packets, bytes, first/last time, outer endpoints, inner IP addresses |
 | `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
@@ -128,6 +129,16 @@ The REGISTER dialogs, with their final responses kept (a raw `sip.Method == "REG
 sip_dialogs(path="/pcaps/sip.pcap", method="REGISTER")
 -> {"dialogs": [{"call_id": "reg-77@ue.example", "initial_method": "REGISTER", "final_status": 401,
                  "time_to_final_ms": 40.0, "duration_ms": 40.0, "methods": ["REGISTER"]}]}
+```
+
+What the HSS sent back in the Update-Location answer, and why the MME asked:
+
+```
+diameter_avps(path="/pcaps/diameter.pcap", command_code=316)
+-> {"transactions": [{"request": "ULR", "answer": "ULA", "result": "DIAMETER_SUCCESS",
+     "request_avps": {"ULR-Flags": "34 [S6a/S6d-Indicator, Initial-Attach-Indicator]", "RAT-Type": "EUTRAN (1004)", ...},
+     "answer_avps": {"Result-Code": 2001, "subscription": {"MSISDN": "15550100123", "Subscriber-Status": "SERVICE_GRANTED (0)",
+                     "apns": [{"context": 1, "apn": "internet.test", "pdn_type": "IPv4v6 (2)", "qci": 9, ...}]}}}]}
 ```
 
 Top talkers on the Diameter port only:
@@ -194,7 +205,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 233 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
+The suite is 248 tests and runs in about 30 s; CI runs it on Python 3.10 to 3.13 with the
 tshark that Ubuntu 24.04 ships (4.2). Tests build their own synthetic captures with scapy at run time (Diameter ULR/ULA and an
 unanswered AIR, GTPv2-C Create Session with cause 16 and 78, GTP-U, a SIP INVITE dialog,
 an SCTP handshake with an unanswered heartbeat, MAP updateLocation and mo-forwardSM over
