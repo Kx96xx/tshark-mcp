@@ -49,7 +49,8 @@ then drill into diameter_sessions, diameter_transactions, gtp_sessions,
 gtpv1_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
-For voice quality, rtp_streams gives per-stream loss, jitter, RTCP and a
+sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
+up). For voice quality, rtp_streams gives per-stream loss, jitter, RTCP and a
 labelled MOS estimate linked to the SIP Call-ID.
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
@@ -1144,6 +1145,37 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
         return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), offset=offset, summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
                                     "filter": filter, "limit": limit, "offset": offset}, run)
+
+
+@app.tool(title="SIP call detail", annotations=READ_ONLY)
+def sip_call_detail(path: str, call_id: str) -> models.SipCallDetailResult:
+    """Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder
+    (messages carrying SDP are marked), From/To/Request-URI/P-Asserted-Identity, the
+    `outcome` (answered, failed <status>, cancelled, no final response),
+    `final_response` with its reason phrase, `timing`: post-dial delay (INVITE to the
+    first 180/183, or to the failure response when there was none, as RFC 6076 defines
+    Session Request Delay), ringing, answer and setup (ACK) times, early media (SDP in
+    a 18x) and the call duration from 200 OK to BYE; `retransmissions` per message;
+    every Reason header with its Q.850 cause named and every Warning header; who ended
+    the call (`ended_by`: BYE or CANCEL from the caller or callee side, told apart by
+    the From tag); and `media`: each SDP with its offer/answer role, address, port,
+    codecs, direction and ptime, the codecs offer and answer share and the negotiated
+    one. For the RTP itself use rtp_streams with the same call_id."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        cid = lint_quoted_value(call_id, "call_id")
+        stdout, scan = _fields_run(capture, f'sip.Call-ID == "{cid}"', sip.DETAIL_FIELDS, st.limits.max_scan_packets,
+                                   aggregator=sip.AGGREGATOR)
+        detail = sip.call_detail(stdout, cid)
+        out: dict[str, Any] = {"call": detail, "found": detail is not None, "packets_scanned": scan.matched}
+        if detail is None:
+            out.pop("call")
+        if scan.truncated:
+            out["truncated"] = True
+            out["truncated_reason"] = scan.reason()
+        return out
+    return _guarded("sip_call_detail", {"path": path, "call_id": call_id}, run)
 
 
 def _sip_media(capture: Path, cid: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Scan]:

@@ -636,6 +636,37 @@ class SipDialogsResult(RowsResult, total=False):
     selection: str | None
 
 
+class SipCallTiming(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    post_dial_delay_ms: float
+    post_dial_delay_to: int
+    ringing_ms: float
+    answer_ms: float
+    setup_ms: float
+    early_media: str
+    call_duration_s: float
+    call_duration_note: str
+
+
+class SipCallDetail(SipDialogRow, total=False):  # type: ignore[misc]
+    outcome: str
+    caller: str
+    final_response: dict[str, Any]
+    provisional: list[str]
+    timing: SipCallTiming
+    retransmissions: dict[str, int]
+    reasons: list[dict[str, Any]]
+    warnings: list[dict[str, Any]]
+    ended_by: dict[str, Any]
+    media: dict[str, Any]
+
+
+class SipCallDetailResult(ToolResult, total=False):
+    call: SipCallDetail
+    found: bool
+    packets_scanned: int
+
+
 # ----------------------------------------------------------------- RTP / media
 class SdpMedia(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
