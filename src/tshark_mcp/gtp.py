@@ -219,14 +219,28 @@ def extract_messages(packets: list[Json]) -> list[Message]:
             }
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=not is_response,
-                key=(seq, frozenset((src, dst))), name=message_name(mtype), fields=fields,
+                key=seq, name=message_name(mtype), fields=fields,
                 expects_answer=mtype in REQUEST_TO_RESPONSE and mtype not in ONE_WAY_COMMANDS,
             ))
     return messages
 
 
-def _compatible(request: Message, answer: Message) -> bool:
-    return REQUEST_TO_RESPONSE.get(request.fields["message_type"]) == answer.fields["message_type"]
+def _compatible(request: Message, answer: Message) -> int:
+    """Rank a response for a request with the same sequence number.
+
+    2: the expected response type between the same two peers.
+    1: the expected response type sent by the host that received the request
+       (or towards the host that sent it) but seen on another address, which is
+       what a capture on a proxy or NAT boundary shows.
+    0: not a match.
+    """
+    if REQUEST_TO_RESPONSE.get(request.fields["message_type"]) != answer.fields["message_type"]:
+        return 0
+    if request.peers == answer.peers:
+        return 2
+    if request.dst == answer.src or request.src == answer.dst:
+        return 1
+    return 0
 
 
 def pair(messages: list[Message]) -> list[Transaction]:
@@ -264,6 +278,8 @@ def transaction_row(tx: Transaction) -> dict[str, Any]:
             "paa": ans.fields.get("paa_ipv4") or ans.fields.get("paa_ipv6"),
             "response_fteids": ans.fields.get("fteids"),
         })
+        if req is not None and ans.peers != req.peers:
+            row["response_path"] = f"{ans.src} > {ans.dst}"
     return compact(row)
 
 

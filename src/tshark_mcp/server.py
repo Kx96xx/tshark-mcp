@@ -465,7 +465,9 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
 @app.tool(title="GTPv2-C sessions", annotations=READ_ONLY)
 def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, teid: str | int | None = None,
                  filter: str | None = None, limit: int = 200) -> models.GtpSessionsResult:
-    """Pair GTPv2-C requests with responses by sequence number and peer pair. Reports
+    """Pair GTPv2-C requests with responses by sequence number and peer pair. A response
+    sent by the request's target towards another address (a NAT or proxy boundary) is
+    paired too and its path is given as `response_path`. Reports
     message names (Create Session, Modify Bearer, Delete Session, Echo, ...), IMSI, MSISDN,
     APN, F-TEIDs with interface names, cause code and name, allocated UE address (PAA),
     round-trip ms and `unanswered: true`. Narrow with `imsi` (digits), `apn` (exact,

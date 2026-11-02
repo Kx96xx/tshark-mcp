@@ -77,7 +77,7 @@ Tests: 202 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 | `filter_packets(path, display_filter, fields, limit)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered and failed counts, worst RTT, and the paired transactions |
 | `diameter_transactions(path, filter, limit)` | Requests paired with answers by Hop-by-Hop/End-to-End id and Session-Id: command name, application, hosts, realms, User-Name, Result-Code or Experimental-Result-Code with name, RTT, `unanswered` |
-| `gtp_sessions(path, imsi, apn, teid, filter, limit)` | GTPv2-C requests paired with responses by sequence and peer: message name, IMSI, MSISDN, APN, F-TEIDs with interface names, cause code and name, PAA, RTT, `unanswered`; the structured filters keep both halves of each transaction |
+| `gtp_sessions(path, imsi, apn, teid, filter, limit)` | GTPv2-C requests paired with responses by sequence and peer (across a NAT too, with `response_path`): message name, IMSI, MSISDN, APN, F-TEIDs with interface names, cause code and name, PAA, RTT, `unanswered`; the structured filters keep both halves of each transaction |
 | `gtp_user_plane(path, teid, limit)` | GTP-U per TEID: packets, bytes, first/last time, outer endpoints, inner IP addresses |
 | `sip_dialogs(path, call_id, number, method, filter, limit)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, time to final response, dialog duration |
 | `sctp_associations(path, limit)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
@@ -172,8 +172,10 @@ the published schemas and annotations.
 * Large captures are slow. tshark reads the whole file for every call; a 500 MB capture
   with a selective filter takes tens of seconds, so prefer pre-sliced captures.
 * Pairing follows what is in the file. A request whose answer was captured on another
-  interface is reported as unanswered; a sequence-number collision between unrelated
-  GTP peers is disambiguated by peer pair only.
+  interface is reported as unanswered. A GTP response is matched to a request with the
+  same sequence number between the same two hosts first; failing that, one sent by the
+  request's target (or to its sender) on another address, as a NAT or proxy shows it,
+  with `response_path` set. Unrelated hosts that reuse a sequence number are not paired.
 * MAP decoding relies on tshark's dissectors; a segmented XUDT whose other segments are
   missing is reported as segmented, not guessed.
 
