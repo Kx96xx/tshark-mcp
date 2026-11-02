@@ -885,34 +885,39 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
                 notes["gtpv2"] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids),
                                   "truncated": scan.truncated}
                 corr = gtp.correlation_filter(seqs, teids)
-                seen_frames: set[int] = set()
                 # Pass two fetches the paired responses; they reveal the peer's control-plane
                 # TEIDs, which later messages (Modify/Delete Session) carry in their header, so
                 # pass three follows those. Both passes are bounded like any other call.
-                for _pass in range(2):
-                    if not corr:
-                        break
-                    packets, scan = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-                    learnt: set[int] = set()
-                    for tx in gtp.pair(gtp.extract_messages(packets)):
+                collected: dict[tuple, Any] = {}
+                try:
+                    for _pass in range(2):
+                        if not corr:
+                            break
+                        packets, scan = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+                        fetched = gtp.extract_messages(packets)
+                        for m in fetched:
+                            collected.setdefault((m.frame, m.src, m.dst, m.fields.get("seq"), m.fields.get("message_type")), m)
+                        learnt: set[int] = set()
+                        for tx in gtp.pair(fetched):
+                            if _gtp_row_belongs(gtp.transaction_row(tx), imsi_d, msisdn_d, teids, seqs):
+                                learnt |= gtp.control_teids([m for m in (tx.request, tx.answer) if m is not None])
+                        notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or scan.truncated
+                        new_teids = learnt - teids
+                        teids |= new_teids
+                        notes["gtpv2"]["control_teids"] = len(teids)
+                        corr = gtp.correlation_filter(set(), new_teids)
+                finally:
+                    # Pair once over every pass: a request fetched by a TEID learnt in pass three
+                    # still meets the response that pass two fetched by sequence number.
+                    for tx in gtp.pair(list(collected.values())):
                         row = gtp.transaction_row(tx)
                         if not _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
                             continue
-                        anchor = row.get("request_frame") or row.get("answer_frame")
-                        if anchor in seen_frames:
-                            continue
-                        seen_frames.add(anchor)
-                        learnt |= gtp.control_teids([m for m in (tx.request, tx.answer) if m is not None])
                         timeline.append(_timeline_row("gtpv2", row, message=row.get("message"), detail=row.get("response"),
                                                       result=row.get("cause_name"), identity=row.get("imsi") or row.get("msisdn"),
                                                       extra={"apn": row.get("apn"), "paa": row.get("paa"), "teid": row.get("teid"),
                                                              "request_fteids": row.get("request_fteids"),
                                                              "response_fteids": row.get("response_fteids")}))
-                    notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or scan.truncated
-                    new_teids = learnt - teids
-                    teids |= new_teids
-                    notes["gtpv2"]["control_teids"] = len(teids)
-                    corr = gtp.correlation_filter(set(), new_teids)
 
             stage = "map"
             # MAP: components naming the subscriber, then the whole TCAP transactions.

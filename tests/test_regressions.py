@@ -590,3 +590,33 @@ def test_bundle_without_protocol_item_text_falls_back_to_counts():
     recs = sip.parse_messages(line)
     assert [(r["sip.Call-ID"], r["sip.Method"], r["sip.r-uri"], r["sip.CSeq.seq"]) for r in recs] == [
         ("a@x", "MESSAGE", "sip:1@x", "1"), ("b@x", "INVITE", "sip:2@x", "2")]
+
+
+# ------------------------------------------- trace_subscriber pairs GTP messages across its passes
+def _s11_modify_bearer(tmp_path: Path) -> Path:
+    """Create Session on S11 (MME F-TEID 0xa1, SGW F-TEID 0xb1), then a Modify Bearer
+    Request sent to the SGW TEID and its response sent to the MME TEID. The request
+    is only found by following the SGW TEID learnt from the Create Session Response;
+    the response is already found through the MME TEID of the request."""
+    g = pcapgen
+    mme, sgw = g.MME_IP, g.SGW_IP
+    csr = g._gtpv2(32, 0, 0x10, [g._ie(1, g._tbcd(g.IMSI)), g._ie(87, g._fteid(10, 0xA1, mme)), g._apn_ie(g.APN)])
+    csresp = g._gtpv2(33, 0xA1, 0x10, [g._ie(2, bytes([16, 0])), g._ie(87, g._fteid(11, 0xB1, sgw))])
+    mbr = g._gtpv2(34, 0xB1, 0x20, [g._ie(93, g._ie(73, bytes([5])))])
+    mbresp = g._gtpv2(35, 0xA1, 0x20, [g._ie(2, bytes([16, 0]))])
+    t0 = 1_700_008_000.0
+    return g._frames_to_pcap(tmp_path / "s11.pcap", [
+        (t0, g._udp_frame(mme, sgw, 2123, 2123, csr)),
+        (t0 + 0.05, g._udp_frame(sgw, mme, 2123, 2123, csresp)),
+        (t0 + 1.0, g._udp_frame(mme, sgw, 2123, 2123, mbr)),
+        (t0 + 1.03, g._udp_frame(sgw, mme, 2123, 2123, mbresp)),
+    ])
+
+
+def test_trace_pairs_a_request_and_response_found_in_different_passes(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    result = srv.trace_subscriber(str(_s11_modify_bearer(tmp_path)), imsi=pcapgen.IMSI)
+    rows = [(r["message"], r.get("detail"), r.get("unanswered")) for r in result["timeline"]]
+    assert rows == [("Create Session Request", "Create Session Response", None),
+                    ("Modify Bearer Request", "Modify Bearer Response", None)]
+    assert result["failures"] == 0
