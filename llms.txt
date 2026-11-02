@@ -1,6 +1,6 @@
 # tshark-mcp
 
-> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Sixteen tools return compact JSON for Diameter, GTPv2-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Seventeen tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP and SCTP/M3UA/SCCP/TCAP/MAP, pair requests with answers, name result codes and flag what never got a reply. It cannot capture, write, export, resolve names or load code.
 
 ## What it can and cannot do
 
@@ -23,6 +23,7 @@
 - `diameter_transactions(path, filter=None, limit=200)`: every Diameter request paired with its answer by Hop-by-Hop id.
 - `diameter_avps(path, session_id=None, imsi=None, command_code=None, frame=None, filter=None, detail="key", max_avps=200, limit=20)`: the AVPs of paired Diameter transactions. `key` gives result codes, procedure flags with bit names (ULR, CLR, PUR, PUA, IDR, ...), Cancellation-Type, RAT-Type, Gx request type and rule reports, and a Subscription-Data digest with one line per APN; `full` gives the whole AVP tree, capped per message. Use it when a transaction row needs the why (what the HSS sent, why the MME asked).
 - `gtp_sessions(path, imsi=None, apn=None, teid=None, filter=None, limit=200)`: GTPv2-C requests paired with responses by sequence number; IMSI, APN, F-TEIDs, cause, PAA.
+- `gtpv1_sessions(path, imsi=None, apn=None, teid=None, filter=None, limit=200)`: GTPv1-C (Gn/Gp) PDP context signalling paired by sequence number, with APN, NSAPI, TEIDs, GSN addresses, end-user address and cause names.
 - `gtp_user_plane(path, teid=None, limit=200)`: GTP-U packets and bytes per tunnel endpoint id with inner addresses.
 - `gtp_tunnel_health(path, teid=None, mtu=1500, limit=200)`: user-plane health per GTP-U tunnel: inner TCP retransmissions, reordering, resets and the MSS in SYNs against the tunnel overhead and path MTU, inner and outer ICMP errors (fragmentation needed), one-way tunnels, all summed up in `issues`. Use it for slow or stalled data sessions instead of raw tshark; it ignores duplicate copies of packets, which tshark's own analysis counts as retransmissions.
 - `message_rates(path, protocol="auto", interval=1.0, imsi=None, filter=None, burst_min=5, storm_min=5, limit=50)`: messages per second (or per `interval`) by name, bursts against the usual rate, and subscribers looping on one request (purge, attach or registration storms) with the gap between repeats. Relayed and retransmitted copies count once.
@@ -30,7 +31,7 @@
 - `sctp_associations(path, limit=200)`: SCTP handshake state, heartbeats, retransmissions, aborts per endpoint pair.
 - `sigtran_messages(path, filter=None, limit=200)`: M3UA/SCCP/TCAP/MAP messages with global titles, operation names, IMSI and MSISDN.
 - `compare_captures(path_a, path_b, imsi=None, msisdn=None, imsi_b=None, msisdn_b=None, collapse_repeats=True, limit=100)`: a working and a failing capture of the same procedure: aligned message ladders, the first divergence, the AVP/IE differences of each changed step and the timing gaps. Give `imsi_b` when the failing capture is another subscriber; with no identity every transaction is compared.
-- `trace_subscriber(path, imsi=None, msisdn=None, limit=300)`: one time-ordered timeline for a subscriber across Diameter, GTPv2-C, MAP and SIP; all its passes share one time budget. Start here for "why did subscriber X fail".
+- `trace_subscriber(path, imsi=None, msisdn=None, limit=300)`: one time-ordered timeline for a subscriber across Diameter, GTPv2-C, GTPv1-C, MAP and SIP; all its passes share one time budget. Start here for "why did subscriber X fail".
 
 ## How to work with it
 
