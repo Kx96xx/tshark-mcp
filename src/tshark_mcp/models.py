@@ -783,6 +783,8 @@ class RtpStreamRow(TypedDict, total=False):
     first_time: str
     last_time: str
     duration_s: float
+    first_frame: int
+    last_frame: int
     packets: int
     expected: int
     lost: int
@@ -822,6 +824,35 @@ class RtpStreamsResult(RowsResult, total=False):
     mos_method: str
     display_filter: str | None
     notes: list[str]
+
+
+class MediaIssue(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    kind: str
+    detail: str
+
+
+class MediaDirection(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    direction: str
+    expected: str
+    status: str
+    streams: list[dict[str, Any]]
+
+
+class MediaPathCheckResult(ToolResult, total=False):
+    call_id: str
+    found: bool
+    offer: dict[str, Any]
+    answer: dict[str, Any]
+    failure_sdp: dict[str, Any]
+    common_codecs: list[str]
+    directions: list[MediaDirection]
+    issues: list[MediaIssue]
+    verdict: str
+    rtp_streams: int
+    packets_scanned: int
+    display_filter: str
 
 
 # ----------------------------------------------------------------- SCTP / SIGTRAN
