@@ -23,7 +23,7 @@ EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health",
 }
 
 
@@ -57,6 +57,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("gtpv1_sessions", {"path": f"{d}/gtpv2.pcap"}),
         ("capture_quality", {"path": f"{d}/all.pcap"}),
         ("rtp_streams", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
+        ("tcp_health", {"path": f"{d}/sip.pcap"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),

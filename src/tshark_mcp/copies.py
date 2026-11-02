@@ -56,3 +56,19 @@ def nonzero(*ids: str | None) -> bool:
         except ValueError:
             continue
     return False
+
+
+def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
+    """The key a copy of a generic packet record (``packets.record``) shares with the original.
+    Without an IP ID the transport checksum is part of it: it differs with the payload."""
+    if not rec.get("src"):
+        return None
+    tcp, udp = rec.get("tcp"), rec.get("udp")
+    if tcp:
+        transport: tuple = ("tcp", tcp["sport"], tcp["dport"], tcp["seq"], tcp["ack_no"], tcp["len"], tcp["syn"], tcp["fin"],
+                            tcp["rst"], None if has_id else tcp.get("checksum_value"))
+    elif udp:
+        transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"))
+    else:
+        transport = (rec.get("proto"), (rec.get("icmp_error") or rec.get("icmp") or {}).get("type"))
+    return (rec["src"], rec["dst"], rec.get("id"), rec.get("ip_len"), *transport)

@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import packets
-from .copies import CopyTracker, nonzero
+from .copies import CopyTracker, copy_key, nonzero
 from .fields import iso
 from .tcpflow import FlowTracker, ahead
 
@@ -60,20 +60,6 @@ def _copy_key(rec: dict[str, Any]) -> tuple | None:
     packets of the same size can follow each other closely, so the transport checksum is
     added: it differs with the payload and is the same in a copy."""
     return copy_key(rec, nonzero(*rec.get("ids", ())))
-
-
-def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
-    if not rec.get("src"):
-        return None
-    tcp, udp = rec.get("tcp"), rec.get("udp")
-    if tcp:
-        transport: tuple = ("tcp", tcp["sport"], tcp["dport"], tcp["seq"], tcp["ack_no"], tcp["len"], tcp["syn"], tcp["fin"],
-                            tcp["rst"], None if has_id else tcp.get("checksum_value"))
-    elif udp:
-        transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"))
-    else:
-        transport = (rec.get("proto"), (rec.get("icmp_error") or rec.get("icmp") or {}).get("type"))
-    return (rec["src"], rec["dst"], rec.get("id"), rec.get("ip_len"), *transport)
 
 
 def _copy_cause(first: dict[str, Any], rec: dict[str, Any]) -> str:
@@ -403,7 +389,7 @@ def _verdict(out: dict[str, Any]) -> dict[str, Any]:
         cause = next(iter(dup["causes"] or {}), "copies")
         pct = round(dup["share"] * 100, 1)
         text = (f"{dup['copies']} duplicate copies ({pct}% of IP packets; {cause}): raw tshark retransmission and "
-                "duplicate-ACK flags count these copies; gtp_tunnel_health and message_rates count them once")
+                "duplicate-ACK flags count these copies; tcp_health, gtp_tunnel_health and message_rates count them once")
         if dup["share"] >= 0.01:
             severity = max(severity, 1)
             reasons.append(text)

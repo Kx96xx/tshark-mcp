@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, tls, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -56,7 +56,8 @@ their answers and shows unanswered queries, rcodes and slow resolvers;
 tls_handshakes shows why a TLS or QUIC handshake failed, without decrypting.
 Before reading missing packets or retransmissions as network faults,
 capture_quality says whether the capture itself can be trusted (copies,
-capture drops, truncation, clocks).
+capture drops, truncation, clocks); tcp_health tells real TCP loss, resets
+and MTU black holes from capture artifacts.
 Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
 when next_offset is present, call again with offset=next_offset and the same
@@ -502,6 +503,46 @@ def capture_quality(path: str) -> models.CaptureQualityResult:
             out["verdict"]["reasons"].append(f"only the first {scan.read_cap} frames were read")
         return out
     return _guarded("capture_quality", {"path": path}, run)
+
+
+@app.tool(title="TCP stream health", annotations=READ_ONLY)
+def tcp_health(path: str, filter: str | None = None, stream: int | None = None, mtu: int = 1500,
+               limit: int = 100, offset: int = 0) -> models.TcpHealthResult:
+    """Health of every TCP stream, with copies of the same packet (mirror, SPAN,
+    several interfaces) removed first, so they are not counted as retransmissions the
+    way tshark's own analysis counts them. Per stream: the handshake (SYN retries,
+    SYN to SYN-ACK and SYN-ACK to ACK times as seen from the capture point, MSS,
+    window scale, SACK); per direction the data segments and retransmissions split by
+    where the loss happened (`lost_before_capture`: a gap later filled by a
+    retransmission; `retransmitted_after_capture`: the capture saw the original;
+    `missed_by_capture`: acknowledged by the receiver but absent from the file, so
+    not network loss), reordering, duplicate ACKs, zero windows, keep-alives;
+    `resets` with `likely_from` endpoint or middlebox, judged by the reset's TTL and
+    source MAC against that side's other packets, and the idle time before it; ICMP
+    fragmentation-needed / packet-too-big about the stream; and MTU problems against
+    `mtu` (an MSS too large for the path, DF packets above it, full-size segments
+    retransmitted and never acknowledged while small ones pass: a PMTUD black hole).
+    `issues` says it in plain words; streams with issues come first. `stream` is
+    tshark's tcp.stream index; `filter` is a display filter ANDed with tcp."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        path_mtu = to_int(str(mtu))
+        if path_mtu is None or not 576 <= path_mtu <= 65535:
+            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {mtu!r}")
+        stream_no = None
+        if stream is not None and str(stream).strip() != "":
+            stream_no = to_int(str(stream))
+            if stream_no is None or stream_no < 0:
+                raise ToolError("invalid_argument", f"stream must be a tcp.stream number, got {stream!r}")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        flt = _filter(filter, base=tcphealth.display_filter(stream_no))
+        stdout, scan = _fields_run(capture, flt, tcphealth.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=packets.AGGREGATOR)
+        rows, summary = tcphealth.analyse(packets.parse(stdout, tcphealth.FIELDS), path_mtu)
+        return _envelope("streams", rows, cap, scan, offset=offset, path_mtu=path_mtu, display_filter=flt, summary=summary)
+    return _guarded("tcp_health", {"path": path, "filter": filter, "stream": stream, "mtu": mtu, "limit": limit,
+                                   "offset": offset}, run)
 
 
 @app.tool(title="Conversations (top talkers)", annotations=READ_ONLY)
