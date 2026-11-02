@@ -142,8 +142,11 @@ class Runner:
 
     # ---------------------------------------------------------------- public API
     def read_capture(self, capture: Path, args: Sequence[str], *, max_packets: int | None = None,
-                     display_filter: str | None = None) -> RunResult:
-        """Run ``tshark -n -r <capture> [-c N] [-Y filter] <args>``."""
+                     display_filter: str | None = None, timeout: float | None = None) -> RunResult:
+        """Run ``tshark -n -r <capture> [-c N] [-Y filter] <args>``.
+
+        ``timeout`` can only shorten the configured per-run limit (a caller with a
+        shared budget passes what is left of it)."""
         argv: list[str] = ["-n", "-r", str(capture)]
         if max_packets is not None:
             # One more than the frame-read cap so a caller can place a sentinel frame just past it.
@@ -151,7 +154,7 @@ class Runner:
         if display_filter:
             argv += ["-Y", display_filter]
         argv += list(args)
-        return self._execute(self.tshark, argv)
+        return self._execute(self.tshark, argv, timeout=timeout)
 
     def list_fields(self) -> RunResult:
         return self._execute(self.tshark, ["-G", "fields"])
@@ -172,12 +175,13 @@ class Runner:
 
     # ---------------------------------------------------------------- internals
     def _execute(self, program: str, args: Sequence[str], *, stdin: bytes | None = None,
-                 read_only_check: bool = True) -> RunResult:
+                 read_only_check: bool = True, timeout: float | None = None) -> RunResult:
         if read_only_check:
             assert_read_only(args)
         argv = [program, *args]
         started = time.monotonic()
-        deadline = started + self.limits.timeout_seconds
+        limit = self.limits.timeout_seconds if timeout is None else max(0.0, min(timeout, self.limits.timeout_seconds))
+        deadline = started + limit
         try:
             proc = subprocess.Popen(
                 argv,
@@ -210,8 +214,8 @@ class Runner:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    failure = ToolError("timeout", f"tshark exceeded {self.limits.timeout_seconds}s and was killed",
-                                        timeout_seconds=self.limits.timeout_seconds)
+                    failure = ToolError("timeout", f"tshark exceeded {round(limit, 3)}s and was killed",
+                                        timeout_seconds=round(limit, 3))
                     break
                 if not sel.select(timeout=min(remaining, 0.5)):
                     continue
@@ -233,8 +237,8 @@ class Runner:
             returncode = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             _kill(proc)
-            raise ToolError("timeout", f"tshark exceeded {self.limits.timeout_seconds}s and was killed",
-                            timeout_seconds=self.limits.timeout_seconds) from None
+            raise ToolError("timeout", f"tshark exceeded {round(limit, 3)}s and was killed",
+                            timeout_seconds=round(limit, 3)) from None
         stderr_thread.join(timeout=1.0)
         duration_ms = int((time.monotonic() - started) * 1000)
         return RunResult(
