@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent thirty-two narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent thirty-three narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -147,6 +147,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `media_path_check(path, call_id, heuristic)` | One call's SDP offer and answer (the last completed exchange, so a re-INVITE wins) against the RTP captured in each direction: per direction the expected source and destination, the streams seen and a status (as negotiated, arrives from another source, sent elsewhere, missing); `issues` such as no_rtp, one_way_media, source_differs_from_sdp, nat_not_latched (a private SDP address the far end keeps sending to), rtp_to_wrong_address, private_sdp_address, media_direction (hold), media_rejected, payload_type_not_negotiated, codec_mismatch (no codec in common between the offer and the answer or a 488's SDP) and no_answer; `verdict` in one sentence |
 | `dtmf_events(path, call_id, heuristic, limit, offset)` | DTMF digits in time order from RFC 4733/2833 telephone-events (one row per digit however many update and end packets: duration, volume, end packets, payload type, SSRC, call) and SIP INFO (application/dtmf-relay, application/dtmf, KPML) with the INFO's response status; each RTP event is checked against the telephone-event payload type the call's SDP negotiated, and `issues` flag an unnegotiated payload type, a digit without an end packet, or a rejected or unanswered INFO; `calls` gives the digits per call and method and notes calls that use both |
 | `ims_registration(path, impu, imsi, filter, limit, offset)` | IMS registration per public identity from every REGISTER transaction (the legs of one REGISTER through the CSCFs count once; copies are told from retransmissions): each transaction's kind (initial, authenticated after a 401, resync with AUTS, re-registration, de-registration), status, requested and granted expiry, RTT, challenge algorithm; the IMPI, Contact feature tags (`smsip` for +g.3gpp.smsip, `mmtel` for the MMTel ICSI), sec-agree mechanisms, P-Associated-URI (implicit IMPU set), Service-Route and Path; third-party REGISTERs to application servers with their status; when a 401 is never answered in clear, the ESP the UE sent to the P-CSCF afterwards and its SPI against the ones offered in Security-Server; a `verdict` (registered, expired, deregistered, challenge-loop, failed, in_progress near the end of the capture) with `reasons` naming 403, 404, 408, 421, 423, 500, 503 with Retry-After in IMS terms. Nonces, AKA vectors and CK/IK are never returned |
+| `sms_over_ims(path, number, imsi, filter, limit, offset)` | SMS over IMS: one row per SIP MESSAGE carrying RP-DATA or RP-SMMA (application/vnd.3gpp.sms), legs through the CSCFs counted once: MO or MT, RP message reference, SMSC address, the TPDU (SMS-SUBMIT, SMS-DELIVER or SMS-STATUS-REPORT with TP-MR, TP-OA/TP-DA, status report requested, concatenation, TP-Status; never the text), the SIP response with its frame and delay; `ack`: the RP-ACK or RP-ERROR answering it (paired by RP-MR and the UE's identity, including the identities its REGISTER associated) with RP cause named and the SIP response to the MESSAGE that carried it; `status_report` for a submit that asked for one; `ue_registration` with whether the UE registered with +g.3gpp.smsip; a `verdict` (accepted, delivered, rejected, ack_not_delivered, sip_failed, not_registered_for_sms, no_rp_ack, no_response, in_progress, rp_unknown, orphan_ack) with `reasons`, including an RP-ACK coded for the wrong direction |
 | `sip_dialogs(path, call_id, number, method, filter, limit, offset)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit, offset)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit, offset)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -364,12 +365,13 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 618 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 627 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
 reordering, jitter, NAT, one-way media, a 488), IMS REGISTER flows (AKA challenge, challenge loop,
-403, 503, expiry, ESP after a challenge, third-party REGISTER), an SCTP handshake with an
+403, 503, expiry, ESP after a challenge, third-party REGISTER), SMS over IMS (MO and MT with
+RP-ACK, RP-ERROR, status reports, a wrongly coded RP-ACK, a UE without smsip), an SCTP handshake with an
 unanswered heartbeat, MAP updateLocation and mo-forwardSM over M3UA, and test-range IMSI,
 MSISDN, IMEISV and UE address values for the redaction tests), so nothing in the
 repository contains traffic from a real network.
