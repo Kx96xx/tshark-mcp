@@ -273,6 +273,36 @@ class GtpSessionsResult(RowsResult, total=False):
     selection: str | None
 
 
+class Gtpv1TransactionRow(PairedRow, total=False):
+    message: str
+    response: str
+    seq: int
+    teid: str
+    imsi: str
+    msisdn: str
+    apn: str
+    nsapi: int
+    rat_type: str
+    imeisv: str
+    request_teid_cp: str
+    request_teid_data: str
+    request_gsn: str
+    cause: int
+    cause_name: str
+    accepted: bool
+    end_user_address: str
+    response_teid_cp: str
+    response_teid_data: str
+    response_gsn: str
+    response_path: str
+
+
+class Gtpv1SessionsResult(RowsResult, total=False):
+    transactions: list[Gtpv1TransactionRow]
+    summary: MessageSummary
+    selection: str | None
+
+
 class AddressCount(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     addr: str

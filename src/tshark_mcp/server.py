@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, gtp, models, rates, search, sigtran, sip, tunnels
+from . import __version__, avps, compare, diameter, gtp, gtpv1, models, rates, search, sigtran, sip, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -45,7 +45,7 @@ When you do not know which file holds the subscriber, call find_identifier on
 the directory first. Start on a file with pcap_info, then use the protocol
 tools. For "why did subscriber X fail" questions call trace_subscriber first,
 then drill into diameter_sessions, diameter_transactions, gtp_sessions,
-sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
+gtpv1_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 With a working and a failing capture of the same procedure, compare_captures
@@ -628,6 +628,48 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
                                      "limit": limit}, run)
 
 
+@app.tool(title="GTPv1-C PDP contexts", annotations=READ_ONLY)
+def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, teid: str | int | None = None,
+                   filter: str | None = None, limit: int = 200) -> models.Gtpv1SessionsResult:
+    """Pair GTPv1-C (Gn/Gp, TS 29.060) requests with responses by sequence number and
+    peer pair, across a proxy or NAT too (`response_path`): Create, Update and Delete PDP
+    Context, Echo, SGSN Context, Forward Relocation, PDU Notification, ... Each row gives
+    the message, IMSI, MSISDN, APN, NSAPI, RAT type, IMEISV, the TEID-C and TEID-U and GSN
+    address on each side, the end-user address allocated, cause code and name, round-trip
+    ms and `unanswered: true`. Narrow with `imsi`, `apn` (case-insensitive) or `teid` (the
+    header TEID or a TEID-C/TEID-U, decimal or 0x hex): matching requests select sequence
+    numbers and both halves of each transaction are fetched. `filter` is ANDed with
+    GTPv1-C (`gtp && gtp.message != 0xff`)."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        apn_s = lint_apn(apn) if apn else None
+        teid_i = lint_teid(teid) if teid is not None and str(teid).strip() != "" else None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        base = _filter(filter, base=gtpv1.BASE_FILTER)
+        select = gtpv1.selection_filter(imsi_d, apn_s, teid_i)
+        pre: Scan | None = None
+        flt = base
+        if select:
+            stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["gtp.seq_number"], st.limits.max_scan_packets)
+            seqs = {s for ln in stdout.splitlines() for s in (to_int(v) for v in ln.strip().split(",")) if s is not None}
+            corr = gtpv1.correlation_filter(seqs, set())
+            if corr is None:
+                return _envelope("transactions", [], cap, pre,
+                                 summary={"by_message": {}, "unanswered": 0, "failed": 0}, selection=select)
+            flt = f"({base}) && ({corr})"
+        packets, scan = _json_run(capture, flt, gtpv1.JSON_LAYERS, st.limits.max_packets)
+        scan = _merge_scans(pre, scan)
+        rows = [gtpv1.transaction_row(t) for t in gtpv1.pair(gtpv1.extract_messages(packets))]
+        if select:
+            rows = [r for r in rows if gtpv1.row_matches(r, imsi_d, apn_s, teid_i)]
+        summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
+        return _envelope("transactions", rows, cap, scan, summary=summary, selection=select)
+    return _guarded("gtpv1_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
+                                       "limit": limit}, run)
+
+
 @app.tool(title="GTP-U tunnels", annotations=READ_ONLY)
 def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200) -> models.GtpUserPlaneResult:
     """Summarise GTP-U (G-PDU) traffic per tunnel endpoint id: packets, bytes, first and
@@ -913,7 +955,7 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200) -> 
 @app.tool(title="Subscriber trace", annotations=READ_ONLY)
 def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300) -> models.TraceSubscriberResult:
     """Build one time-ordered timeline for a subscriber across Diameter (User-Name),
-    GTPv2-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), MAP (IMSI/MSISDN)
+    GTPv2-C and GTPv1-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), MAP (IMSI/MSISDN)
     and SIP (From/To/P-Asserted-Identity containing the MSISDN). Each row carries the
     protocol, message name, result (Result-Code, GTP cause, SIP final status), peers and
     the request/answer pairing including `unanswered: true`. Give `imsi`, `msisdn` or
@@ -987,43 +1029,11 @@ def _trace_timeline(capture: Path, imsi_d: str | None, msisdn_d: str | None, dea
             notes["diameter"]["truncated"] = notes["diameter"]["truncated"] or scan.truncated
 
         stage = "gtpv2"
-        # GTPv2-C: requests naming the subscriber, then the same sequence numbers and TEIDs.
-        flt = gtp.identity_filter(imsi_d, msisdn_d)
-        if flt:
-            packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-            seed = gtp.extract_messages(packets)
-            seqs, teids = gtp.sequence_numbers(seed), gtp.control_teids(seed)
-            notes["gtpv2"] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids),
-                              "truncated": scan.truncated}
-            corr = gtp.correlation_filter(seqs, teids)
-            # Pass two fetches the paired responses; they reveal the peer's control-plane
-            # TEIDs, which later messages (Modify/Delete Session) carry in their header, so
-            # pass three follows those. Both passes are bounded like any other call.
-            collected: dict[tuple, Any] = {}
-            try:
-                for _pass in range(2):
-                    if not corr:
-                        break
-                    packets, scan = _json_run(capture, corr, gtp.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-                    fetched = gtp.extract_messages(packets)
-                    for m in fetched:
-                        collected.setdefault((m.frame, m.src, m.dst, m.fields.get("seq"), m.fields.get("message_type")), m)
-                    learnt: set[int] = set()
-                    for tx in gtp.pair(fetched):
-                        if _gtp_row_belongs(gtp.transaction_row(tx), imsi_d, msisdn_d, teids, seqs):
-                            learnt |= gtp.control_teids([m for m in (tx.request, tx.answer) if m is not None])
-                    notes["gtpv2"]["truncated"] = notes["gtpv2"]["truncated"] or scan.truncated
-                    new_teids = learnt - teids
-                    teids |= new_teids
-                    notes["gtpv2"]["control_teids"] = len(teids)
-                    corr = gtp.correlation_filter(set(), new_teids)
-            finally:
-                # Pair once over every pass: a request fetched by a TEID learnt in pass three
-                # still meets the response that pass two fetched by sequence number.
-                for tx in gtp.pair(list(collected.values())):
-                    row = gtp.transaction_row(tx)
-                    if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
-                        timeline.append(_gtp_step(row))
+        # GTPv2-C, then GTPv1-C (Gn/Gp): requests naming the subscriber, then the same
+        # sequence numbers and the control-plane TEIDs.
+        _trace_gtp(gtp, "gtpv2", capture, imsi_d, msisdn_d, deadline, notes, timeline)
+        stage = "gtpv1"
+        _trace_gtp(gtpv1, "gtpv1", capture, imsi_d, msisdn_d, deadline, notes, timeline)
 
         stage = "map"
         # MAP: components naming the subscriber, then the whole TCAP transactions.
@@ -1087,6 +1097,12 @@ def _capture_steps(capture: Path, deadline: float) -> tuple[list[dict[str, Any]]
         txs = gtp.pair(gtp.extract_messages(packets))
         steps += [_gtp_step(gtp.transaction_row(tx)) for tx in txs]
         notes["gtpv2"] = {"transactions": len(txs), "truncated": scan.truncated}
+        stage = "gtpv1"
+        packets, scan = _json_run(capture, gtpv1.BASE_FILTER, gtpv1.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+        txs = gtpv1.pair(gtpv1.extract_messages(packets))
+        if txs:
+            steps += [_gtpv1_step(gtpv1.transaction_row(tx)) for tx in txs]
+            notes["gtpv1"] = {"transactions": len(txs), "truncated": scan.truncated}
         stage = "map"
         packets, scan = _json_run(capture, sigtran.MESSAGE_FILTER, sigtran.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
         rows = [r for r in sigtran.extract_rows(packets) if r.get("components") or r.get("tcap")]
@@ -1186,6 +1202,51 @@ def _identity(ident: tuple[str | None, str | None]) -> dict[str, str] | None:
     return out or None
 
 
+def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_d: str | None, deadline: float,
+               notes: dict[str, Any], timeline: list[dict[str, Any]]) -> None:
+    """One GTP version's passes of the subscriber trace (``module`` is gtp or gtpv1)."""
+    st = state()
+    flt = module.identity_filter(imsi_d, msisdn_d)
+    if not flt:
+        return
+    packets, scan = _json_run(capture, flt, module.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+    seed = module.extract_messages(packets)
+    if not seed and key == "gtpv1":
+        return  # most captures carry no GTPv1-C; keep the passes summary short
+    seqs, teids = module.sequence_numbers(seed), module.control_teids(seed)
+    notes[key] = {"seed_messages": len(seed), "sequence_numbers": len(seqs), "control_teids": len(teids),
+                  "truncated": scan.truncated}
+    corr = module.correlation_filter(seqs, teids)
+    # Pass two fetches the paired responses; they reveal the peer's control-plane
+    # TEIDs, which later messages (Modify/Delete Session, Update/Delete PDP Context)
+    # carry in their header, so pass three follows those. Both passes are bounded.
+    collected: dict[tuple, Any] = {}
+    try:
+        for _pass in range(2):
+            if not corr:
+                break
+            packets, scan = _json_run(capture, corr, module.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+            fetched = module.extract_messages(packets)
+            for m in fetched:
+                collected.setdefault((m.frame, m.src, m.dst, m.fields.get("seq"), m.fields.get("message_type")), m)
+            learnt: set[int] = set()
+            for tx in module.pair(fetched):
+                if _gtp_row_belongs(module.transaction_row(tx), imsi_d, msisdn_d, teids, seqs):
+                    learnt |= module.control_teids([m for m in (tx.request, tx.answer) if m is not None])
+            notes[key]["truncated"] = notes[key]["truncated"] or scan.truncated
+            new_teids = learnt - teids
+            teids |= new_teids
+            notes[key]["control_teids"] = len(teids)
+            corr = module.correlation_filter(set(), new_teids)
+    finally:
+        # Pair once over every pass: a request fetched by a TEID learnt in pass three
+        # still meets the response that pass two fetched by sequence number.
+        for tx in module.pair(list(collected.values())):
+            row = module.transaction_row(tx)
+            if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
+                timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
+
+
 def _diameter_step(tx: Any, row: dict[str, Any], with_avps: bool = False) -> dict[str, Any]:
     extra: dict[str, Any] = {"application": row.get("application"), "origin_host": row.get("origin_host"),
                              "destination_host": row.get("destination_host")}
@@ -1203,6 +1264,15 @@ def _gtp_step(row: dict[str, Any]) -> dict[str, Any]:
                          extra={"apn": row.get("apn"), "paa": row.get("paa"), "teid": row.get("teid"),
                                 "rat_type": row.get("rat_type"), "request_fteids": row.get("request_fteids"),
                                 "response_fteids": row.get("response_fteids")})
+
+
+def _gtpv1_step(row: dict[str, Any]) -> dict[str, Any]:
+    return _timeline_row("gtpv1", row, message=row.get("message"), detail=row.get("response"),
+                         result=row.get("cause_name"), identity=row.get("imsi") or row.get("msisdn"),
+                         extra={"apn": row.get("apn"), "paa": row.get("end_user_address"), "teid": row.get("teid"),
+                                "rat_type": row.get("rat_type"), "nsapi": row.get("nsapi"),
+                                "request_gsn": row.get("request_gsn"), "response_gsn": row.get("response_gsn"),
+                                "response_path": row.get("response_path")})
 
 
 def _map_step(row: dict[str, Any]) -> dict[str, Any]:

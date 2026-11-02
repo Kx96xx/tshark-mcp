@@ -17,7 +17,8 @@ from typing import Any
 from .fields import parse_time
 
 # Peer-level keepalives say nothing about the procedure.
-NOISE = frozenset({"diameter:CER", "diameter:DWR", "diameter:DPR", "gtpv2:Echo Request", "gtpv2:Echo Response"})
+NOISE = frozenset({"diameter:CER", "diameter:DWR", "diameter:DPR", "gtpv2:Echo Request", "gtpv2:Echo Response",
+                   "gtpv1:Echo Request", "gtpv1:Echo Response"})
 
 # Identities differ between two subscribers and between two runs; they are not a divergence.
 IDENTITY_KEYS = frozenset({"User-Name", "MSISDN", "A-MSISDN", "IMEI", "IMEISV", "Software-Version", "Session-Id"})
@@ -45,7 +46,7 @@ def details(step: dict[str, Any]) -> dict[str, Any]:
         out["application"] = step.get("application")
         for side in ("request_avps", "answer_avps"):
             _flatten(step.get(side) or {}, side, out)
-    elif protocol == "gtpv2":
+    elif protocol in ("gtpv2", "gtpv1"):
         out["response"] = step.get("detail")
         out["apn"] = step.get("apn")
         out["rat_type"] = step.get("rat_type")
