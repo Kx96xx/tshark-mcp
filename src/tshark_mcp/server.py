@@ -613,6 +613,7 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
         deadline = _now() + st.limits.timeout_seconds
         rows: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        partial: list[str] = []
         scanned = 0
         truncated_reason = None
         for candidate in candidates:
@@ -631,6 +632,9 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
                 continue
             summary = search.summarise_hits(stdout, protocol_col)
             if summary["hits"] == 0:
+                if scan.hit_read_cap:
+                    # No hit in the part that was read says nothing about the rest of the file.
+                    partial.append(str(capture))
                 continue
             row: dict[str, Any] = {
                 "path": str(capture), "hits": summary["hits"], "first": iso(summary["first"]),
@@ -644,6 +648,11 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
         out = _envelope("files", rows, file_cap, None, identifier=identifier.strip(), kind=resolved_kind,
                         display_filter=flt, files_scanned=scanned, files_found=len(candidates),
                         files_with_hits=len(rows), total_hits=sum(r["hits"] for r in rows), errors=errors)
+        if partial:
+            out["partially_scanned"] = partial
+            note = (f"{len(partial)} file(s) without hits were only read up to the frame cap of "
+                    f"{st.limits.max_scan_packets}; see partially_scanned")
+            truncated_reason = f"{truncated_reason}; {note}" if truncated_reason else note
         if truncated_reason:
             out["truncated"] = True
             out["truncated_reason"] = truncated_reason

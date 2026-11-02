@@ -71,7 +71,7 @@ Tests: 202 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 
 | Tool | What it returns |
 | --- | --- |
-| `find_identifier(path, identifier, kind, max_files)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget |
+| `find_identifier(path, identifier, kind, max_files)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned` |
 | `pcap_info(path)` | Packet count, duration, first/last timestamp, size, link type, top 15 protocol-hierarchy entries, active limits |
 | `conversations(path, layer, filter, limit)` | Top talkers at `ip`, `ipv6`, `tcp`, `udp`, `sctp` or `eth` with frames and bytes per direction, optionally restricted by a display filter |
 | `filter_packets(path, display_filter, fields, limit)` | Rows of fields for packets matching a display filter; field names are validated against `tshark -G fields` |

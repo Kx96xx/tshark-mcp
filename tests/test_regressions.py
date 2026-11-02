@@ -334,3 +334,22 @@ class TestBundledDiameter:
         rows = [r for r in result["timeline"] if r["protocol"] == "diameter"]
         assert len(rows) == 1 and rows[0]["identity"] == pcapgen.IMSI
         assert result["passes"]["diameter"]["sessions"] == 1
+
+
+# ------------------------------------------- find_identifier on files longer than the frame cap
+class TestFindIdentifierFrameCap:
+    def test_a_file_read_only_in_part_is_not_reported_as_clean(self, configure, tmp_path: Path):
+        diam = pcapgen.write_diameter_pcap(tmp_path / "d.pcap")
+        padded = _after_filler(tmp_path, diam, 50, "padded.pcap")
+        diam.unlink()
+        srv = configure(allow=[str(tmp_path)], limits=Limits(max_scan_packets=30))
+        result = srv.find_identifier(str(tmp_path), pcapgen.IMSI)
+        assert result["files_with_hits"] == 0
+        assert result["partially_scanned"] == [str(padded.resolve())]
+        assert result["truncated"] is True and "frame cap of 30" in result["truncated_reason"]
+
+    def test_a_file_read_in_full_without_hits_is_not_flagged(self, configure, tmp_path: Path):
+        padded = _after_filler(tmp_path, pcapgen.write_diameter_pcap(tmp_path / "d.pcap"), 50, "padded.pcap")
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.find_identifier(str(padded), "001019999999999")
+        assert "partially_scanned" not in result and "truncated" not in result
