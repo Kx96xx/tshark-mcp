@@ -56,6 +56,9 @@ class Limits:
     timeout_seconds: float = 60.0
     """Wall-clock limit per tshark invocation; tshark is killed when exceeded."""
 
+    max_files: int = 50
+    """Upper bound on capture files one multi-file call (find_identifier) will open."""
+
     def __post_init__(self) -> None:
         for name, value in self.__dict__.items():
             if not isinstance(value, (int, float)) or value <= 0:
@@ -83,6 +86,7 @@ class Limits:
         take("TSHARK_MCP_MAX_OUTPUT_KB", "max_output_bytes", 1024, int)
         take("TSHARK_MCP_MAX_STDOUT_MB", "max_stdout_bytes", 1024 * 1024, int)
         take("TSHARK_MCP_TIMEOUT", "timeout_seconds", 1, float)
+        take("TSHARK_MCP_MAX_FILES", "max_files", 1, int)
         return replace(base, **overrides)
 
     def describe(self) -> dict[str, Any]:
@@ -92,6 +96,7 @@ class Limits:
             "max_scan_packets": self.max_scan_packets,
             "max_output_kb": round(self.max_output_bytes / 1024, 1),
             "timeout_seconds": self.timeout_seconds,
+            "max_files": self.max_files,
         }
 
 
@@ -121,9 +126,8 @@ class Allowlist:
         raw = env.get("TSHARK_MCP_ALLOW_DIRS", "")
         return cls.from_strings([raw]) if raw else cls()
 
-    def resolve(self, path: str, limits: Limits) -> Path:
-        """Resolve ``path`` (following symlinks) and check it is a readable capture
-        inside one of the allowed roots and under the size cap."""
+    def resolve_inside(self, path: str) -> Path:
+        """Resolve ``path`` (following symlinks) and check it lies inside an allowed root."""
         if not self.roots:
             raise ToolError("no_allowed_dirs", "the server was started without any --allow-dir; nothing is readable")
         if not isinstance(path, str) or not path:
@@ -148,6 +152,19 @@ class Allowlist:
             )
         if not resolved.exists():
             raise ToolError("not_found", f"no such file: {path}")
+        return resolved
+
+    def resolve_dir(self, path: str) -> Path:
+        """Resolve ``path`` and check it is a directory inside one of the allowed roots."""
+        resolved = self.resolve_inside(path)
+        if not resolved.is_dir():
+            raise ToolError("not_a_directory", f"{path} is not a directory")
+        return resolved
+
+    def resolve(self, path: str, limits: Limits) -> Path:
+        """Resolve ``path`` (following symlinks) and check it is a readable capture
+        inside one of the allowed roots and under the size cap."""
+        resolved = self.resolve_inside(path)
         if not resolved.is_file():
             raise ToolError("not_a_file", f"{path} is not a regular file")
         size = resolved.stat().st_size
@@ -228,6 +245,58 @@ def lint_digits(value: str, what: str) -> str:
     if not _DIGITS.match(cleaned):
         raise ToolError("invalid_argument", f"{what} must be 5 to 16 digits, got {value!r}")
     return cleaned
+
+
+_QUOTED_VALUE_MAX_LEN = 512
+
+
+def lint_quoted_value(value: str, what: str) -> str:
+    """A model-supplied string that will be embedded as a quoted display-filter literal.
+
+    Diameter Session-Ids and SIP Call-IDs legitimately contain ``;``, ``@`` and
+    ``|``, which are fine inside quotes. Quotes, backslashes and control
+    characters are refused so the value can never close the literal.
+    """
+    if not isinstance(value, str):
+        raise ToolError("invalid_argument", f"{what} must be a string")
+    text = value.strip()
+    if not text:
+        raise ToolError("invalid_argument", f"{what} is empty")
+    if len(text) > _QUOTED_VALUE_MAX_LEN:
+        raise ToolError("invalid_argument", f"{what} longer than {_QUOTED_VALUE_MAX_LEN} characters")
+    if '"' in text or "\\" in text or _CONTROL_CHARS.search(text) or "\t" in text:
+        raise ToolError("invalid_argument", f"{what} must not contain quotes, backslashes or control characters")
+    return text
+
+
+_APN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,99}$")
+
+
+def lint_apn(value: str) -> str:
+    """An APN network identifier: labels of letters, digits and hyphens joined by dots."""
+    if not isinstance(value, str) or not _APN.match(value.strip()):
+        raise ToolError("invalid_argument", f"apn must be a dotted name of letters, digits and hyphens, got {value!r}")
+    return value.strip()
+
+
+_SIP_METHOD = re.compile(r"^[A-Za-z]{2,16}$")
+
+
+def lint_sip_method(value: str) -> str:
+    if not isinstance(value, str) or not _SIP_METHOD.match(value.strip()):
+        raise ToolError("invalid_argument", f"method must be a SIP method token such as INVITE or REGISTER, got {value!r}")
+    return value.strip().upper()
+
+
+def lint_teid(value: Any) -> int:
+    """A 32-bit tunnel endpoint id given as an int, decimal string or 0x-prefixed hex string."""
+    try:
+        teid = int(value) if isinstance(value, int) else int(str(value).strip(), 0)
+    except (TypeError, ValueError):
+        raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {value!r}") from None
+    if teid < 0 or teid > 0xFFFFFFFF:
+        raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {value!r}")
+    return teid
 
 
 def clamp_limit(limit: Any, cap: int, default: int) -> int:
