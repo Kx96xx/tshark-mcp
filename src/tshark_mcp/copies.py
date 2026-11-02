@@ -69,7 +69,9 @@ def has_ip_id(rec: dict[str, Any]) -> bool:
 
 def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
     """The key a copy of a generic packet record (``packets.record``) shares with the original.
-    Without an IP ID the transport checksum is part of it: it differs with the payload."""
+    Without an IP ID the transport (or ICMP) checksum is part of it: it differs with the payload.
+    The ICMP checksum and the quoted echo sequence need ``icmp.checksum``, ``icmpv6.checksum``,
+    ``icmp.seq`` and ``icmpv6.echo.sequence_number`` in the caller's field list."""
     if not rec.get("src"):
         return None
     tcp, udp = rec.get("tcp"), rec.get("udp")
@@ -79,7 +81,17 @@ def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
     elif udp:
         transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"))
     else:
-        transport = (rec.get("proto"), (rec.get("icmp_error") or rec.get("icmp") or {}).get("type"))
+        # ICMP without an IP ID: the checksum tells an echo or other message from the next one. It
+        # cannot tell two errors apart, though: when the quoted packets differ only in fields their
+        # own checksums cover (IP ID, ports, sequence number), those checksums change by the
+        # opposite amount and the ICMP checksum stays the same. So an error also keys on the
+        # packet it quotes (addresses, IP ID, ports or TCP/echo sequence number).
+        icmp = rec.get("icmp_error") or rec.get("icmp") or {}
+        q = rec.get("quoted") or {}
+        quoted = (q.get("src"), q.get("dst"), q.get("id"), q.get("proto"), q.get("sport"), q.get("dport"), q.get("seq")) \
+            if rec.get("icmp_error") and not has_id else None
+        transport = (rec.get("proto") or icmp.get("family"), icmp.get("type"), icmp.get("code"),
+                     None if has_id else icmp.get("checksum"), quoted)
     return (rec["src"], rec["dst"], rec.get("id"), rec.get("ip_len"), *transport)
 
 

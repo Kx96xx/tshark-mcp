@@ -593,7 +593,11 @@ def capture_quality(path: str) -> models.CaptureQualityResult:
     reading retransmissions or missing packets as network faults. One pass over the
     file reports: `duplicates` (the same packet captured more than once: SPAN of
     ingress and egress, two VLANs or interfaces, tunnelled and decapsulated, with the
-    likely cause; tshark counts these copies as retransmissions); `tcp_capture_gaps`
+    likely cause; tshark counts these copies as retransmissions. A copy has the same IP
+    ID, length and transport header; without an IP ID (zero, or IPv6) it must also have
+    the same transport or ICMP checksum and arrive within 5 ms, and an ICMP error must
+    quote the same packet, so two errors from one router about different probes are
+    not copies); `tcp_capture_gaps`
     (bytes the receiver acknowledged that the capture never saw, i.e. dropped by the
     capture, versus gaps a retransmission filled, i.e. lost on the network before the
     capture point); `truncated_frames` (cut to the snapshot length); `oversized_packets`

@@ -167,7 +167,7 @@ def _ip(raw: dict[str, list[str]], family: str, idx: int, outer: str | None) -> 
 
 def _icmp(raw: dict[str, list[str]], key: str) -> dict[str, Any]:
     return {"family": key, "type": to_int(get(raw, f"{key}.type")), "code": to_int(get(raw, f"{key}.code")),
-            "mtu": to_int(get(raw, f"{key}.mtu"))}
+            "mtu": to_int(get(raw, f"{key}.mtu")), "checksum": get(raw, f"{key}.checksum")}
 
 
 def _quoted(raw: dict[str, list[str]], layers: list[str], icmp_at: int) -> dict[str, Any]:
@@ -180,12 +180,20 @@ def _quoted(raw: dict[str, list[str]], layers: list[str], icmp_at: int) -> dict[
         key = "ipv6" if fam == "ipv6" else "ip"
         q["src"], q["dst"] = get(raw, f"{key}.src", idx), get(raw, f"{key}.dst", idx)
         q["len"] = to_int(get(raw, "ip.len", idx)) if fam == "ip" else None
+        q["id"] = get(raw, "ip.id", idx) if fam == "ip" else None
     if "tcp" in inner:
         n = layers.count("tcp") - 1
         q["proto"], q["sport"], q["dport"] = "tcp", get(raw, "tcp.srcport", n), get(raw, "tcp.dstport", n)
+        q["seq"] = get(raw, "tcp.seq_raw", n)
     elif "udp" in inner:
         n = layers.count("udp") - 1
         q["proto"], q["sport"], q["dport"] = "udp", get(raw, "udp.srcport", n), get(raw, "udp.dstport", n)
+    elif "icmp" in inner or "icmpv6" in inner:
+        # A quoted echo request (an ICMP traceroute probe). The error itself carries no
+        # identifier or sequence number, so the last value is the quoted one.
+        key = "icmpv6" if "icmpv6" in inner else "icmp"
+        seqs = raw.get("icmpv6.echo.sequence_number" if key == "icmpv6" else "icmp.seq", [])
+        q["proto"], q["seq"] = key, seqs[-1] if seqs else ""
     return q
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter
-from scapy.all import IP, TCP, UDP, CookedLinux, Dot1Q, Ether, IPv6, Raw  # type: ignore
+from scapy.all import ICMP, IP, TCP, UDP, CookedLinux, Dot1Q, Ether, ICMPv6TimeExceeded, IPv6, Raw  # type: ignore
 
 from tshark_mcp import models
 from tshark_mcp.copies import CopyTracker
@@ -493,3 +493,50 @@ def test_tunnelled_and_decapsulated_copy_with_inner_ip_id_zero(configure, tmp_pa
     dup = out["duplicates"]
     assert dup["copies"] == 4 and dup["causes"] == {"seen tunnelled and decapsulated": 4}
     assert out["tcp_capture_gaps"]["retransmitted_after_capture"] == 0
+
+
+ROUTER, ROUTER6, CLI6, SRV6 = "192.0.2.254", "2001:db8::fe", "2001:db8::80", "2001:db8:1::80"
+
+
+def _time_exceeded(probe: int, ip_id: int = 0):
+    """A router's time-exceeded (IP ID 0, as many routers send it) about one traceroute probe."""
+    quoted = IP(src=CLI, dst=SRV, id=0x3000 + probe, ttl=1) / UDP(sport=50000, dport=33434 + probe) / Raw(b"\x00" * 24)
+    return Ether() / IP(src=ROUTER, dst=CLI, id=ip_id) / ICMP(type=11, code=0) / quoted
+
+
+def test_icmp_errors_about_different_probes_are_not_copies(configure, tmp_path: Path):
+    """Two time-exceeded from one router 2 ms apart, same size and IP ID 0, quoting two probes."""
+    cap = Cap(step=0.002)
+    cap.add(_time_exceeded(1))
+    cap.add(_time_exceeded(2))
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 0
+
+
+def test_icmp_error_seen_twice_is_a_copy(configure, tmp_path: Path):
+    cap = Cap()
+    cap.add(_time_exceeded(1))
+    cap.add(_time_exceeded(1), t=cap.t + 0.00002)
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 1 and out["duplicates"]["examples"][0]["copy_of"] == 1
+
+
+def test_icmpv6_errors_about_different_probes_are_not_copies(configure, tmp_path: Path):
+    """IPv6 has no IP ID: the ICMPv6 checksum tells two errors from one router apart."""
+    cap = Cap(step=0.002)
+    for probe in (1, 2):
+        quoted = IPv6(src=CLI6, dst=SRV6, hlim=1) / UDP(sport=50000, dport=33434 + probe) / Raw(b"\x00" * 24)
+        cap.add(Ether() / IPv6(src=ROUTER6, dst=CLI6) / ICMPv6TimeExceeded() / quoted)
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 0
+
+
+def test_icmp_errors_about_echo_probes_differing_only_in_sequence(configure, tmp_path: Path):
+    """An ICMP traceroute: the probes differ only in the echo sequence number (the quoted IP ID is 0
+    too), so the ICMP checksum of the two errors is the same; the quoted sequence tells them apart."""
+    cap = Cap(step=0.002)
+    for probe in (12, 13):
+        quoted = IP(src=CLI, dst=SRV, id=0, ttl=1) / ICMP(type=8, id=0x77, seq=probe) / Raw(b"\x00" * 24)
+        cap.add(Ether() / IP(src=ROUTER, dst=CLI, id=0) / ICMP(type=11, code=0) / quoted)
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 0
