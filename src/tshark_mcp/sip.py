@@ -304,7 +304,9 @@ def sdp_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     RFC 3264 offer/answer exchange of its Call-ID. SDP in a request is an ``offer``
     (in ACK, or in PRACK after an offer in a reliable 18x, an ``answer``); SDP in a
     response is the ``answer`` to the offer its request carried (same CSeq), or an
-    ``offer`` when the request had none (answered in the ACK). An SDP whose o= session
+    ``offer`` when the request had none (answered in the ACK); SDP in a failure
+    response (a 488 listing what the far end supports) is ``failure_response``, not an
+    answer. An SDP whose o= session
     id and version were already seen in the call is a ``repeat``: the answer sent in
     183 and again in 200, or the same body forwarded by a proxy on its other leg.
     Retransmissions are skipped."""
@@ -330,6 +332,8 @@ def sdp_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         keys = seen.setdefault(call_id, set())
         if parsed.get("origin_version") and key in keys:
             role = "repeat"
+        elif to_int(rec["sip.Status-Code"]) is not None and to_int(rec["sip.Status-Code"]) >= 300:
+            role = "failure_response"
         elif method:
             if method == "ACK" or (method == "PRACK" and response_offer.get(call_id)):
                 role = "answer"
@@ -371,3 +375,169 @@ def media_endpoints(sdps: list[dict[str, Any]]) -> dict[tuple[str, int], list[di
             if media.get("rtcp_port"):
                 out.setdefault((addr, media["rtcp_port"]), []).append({**ref, "rtcp": True})
     return out
+
+
+# ----------------------------------------------------------------- one call in detail
+# MEDIA_FIELDS plus what sip_call_detail needs; group_dialogs reads the leading FIELDS columns.
+DETAIL_FIELDS = [*MEDIA_FIELDS, "sip.from.tag", "sip.Warning", "sip.Status-Line"]
+
+# ITU-T Q.850 cause values most often seen in SIP Reason headers.
+Q850 = {
+    1: "Unallocated (unassigned) number", 3: "No route to destination", 16: "Normal call clearing",
+    17: "User busy", 18: "No user responding", 19: "No answer from user (user alerted)", 20: "Subscriber absent",
+    21: "Call rejected", 22: "Number changed", 27: "Destination out of order", 28: "Invalid number format",
+    31: "Normal, unspecified", 34: "No circuit/channel available", 38: "Network out of order",
+    41: "Temporary failure", 42: "Switching equipment congestion", 44: "Requested circuit/channel not available",
+    47: "Resource unavailable, unspecified", 57: "Bearer capability not authorized",
+    58: "Bearer capability not presently available", 65: "Bearer capability not implemented",
+    79: "Service or option not implemented", 88: "Incompatible destination", 102: "Recovery on timer expiry",
+    111: "Protocol error, unspecified", 127: "Interworking, unspecified",
+}
+_Q850 = re.compile(r"Q\.850\s*;\s*cause\s*=\s*(\d+)", re.I)
+
+
+def reason_detail(reason: str) -> dict[str, Any]:
+    """A Reason header with the Q.850 cause named."""
+    out: dict[str, Any] = {"header": reason}
+    m = _Q850.search(reason)
+    if m:
+        cause = int(m.group(1))
+        out["q850_cause"] = cause
+        if cause in Q850:
+            out["q850_name"] = Q850[cause]
+    return out
+
+
+def _ms(a: float | None, b: float | None) -> float | None:
+    return round((b - a) * 1000.0, 3) if a is not None and b is not None else None
+
+
+def call_detail(stdout: str, call_id: str) -> dict[str, Any] | None:
+    """One INVITE call from ``-T fields`` output of :data:`DETAIL_FIELDS`: the dialog
+    row of :func:`group_dialogs` plus post-dial delay, answer and setup times, early
+    media, retransmissions per message, the final response with its reason phrase,
+    Reason and Warning headers (Q.850 causes named), the SDP offer/answer with the
+    codecs both sides share, who sent BYE or CANCEL, and the call duration."""
+    from . import sdp as sdp_mod
+
+    rows = [r for r in group_dialogs(stdout) if r["call_id"] == call_id]
+    if not rows:
+        return None
+    row = rows[0]
+    msgs = [m for m in parse_messages(stdout, DETAIL_FIELDS) if m["sip.Call-ID"] == call_id]
+    if not msgs:
+        return None
+    first = msgs[0]
+    invite = next((m for m in msgs if m["sip.Method"] == "INVITE"), None)
+    caller_tag = (invite or first)["sip.from.tag"] or None
+    caller_ip = (invite or first)["ip.src"]
+    t_invite = parse_time(invite["frame.time_epoch"]) if invite else None
+    invite_cseq = invite["sip.CSeq.seq"] if invite else None
+
+    def side(m: dict[str, Any]) -> str:
+        tag = m["sip.from.tag"]
+        if caller_tag and tag:
+            return "caller" if tag == caller_tag else "callee"
+        return "caller" if m["ip.src"] == caller_ip else "callee"
+
+    retrans: dict[str, int] = {}
+    provisional: list[tuple[int, float | None, bool]] = []
+    final = None
+    answer_time = ack_time = end_time = None
+    ended_by = None
+    reasons: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for m in msgs:
+        status = to_int(m["sip.Status-Code"])
+        method = m["sip.Method"]
+        label = method or f'{status} {m["sip.CSeq.method"]}'
+        ts = parse_time(m["frame.time_epoch"])
+        frame = to_int(m["frame.number"])
+        if m["sip.resend"] in ("1", "True"):
+            retrans[label] = retrans.get(label, 0) + 1
+            continue
+        is_invite_tx = m["sip.CSeq.method"] == "INVITE" and m["sip.CSeq.seq"] == invite_cseq
+        has_sdp = bool(sdp_mod.extract(sdp_mod.body_text(m.get("sip.msg_body"))))
+        if status is not None and is_invite_tx:
+            if 100 < status < 200:
+                provisional.append((status, ts, has_sdp))
+            elif status >= 200 and final is None:
+                line = m.get("sip.Status-Line") or ""
+                phrase = line.split(" ", 2)[2] if line.count(" ") >= 2 else None
+                final = {"status": status, "reason_phrase": phrase, "frame": frame, "time": ts}
+                if status < 300:
+                    answer_time = ts
+        if method == "ACK" and m["sip.CSeq.seq"] == invite_cseq and ack_time is None:
+            ack_time = ts
+        if method in ("BYE", "CANCEL") and ended_by is None:
+            ended_by = {"method": method, "by": side(m), "src": m["ip.src"], "frame": frame, "time": iso(ts)}
+            end_time = ts
+        if m.get("sip.Reason"):
+            reasons.append({"frame": frame, "message": label, **reason_detail(m["sip.Reason"])})
+        if m.get("sip.Warning"):
+            warnings.append({"frame": frame, "message": label, "header": m["sip.Warning"]})
+
+    timing: dict[str, Any] = {}
+    if t_invite is not None:
+        first_18x = next(((s, t, e) for s, t, e in provisional if s in (180, 183)), None)
+        if first_18x:
+            timing["post_dial_delay_ms"] = _ms(t_invite, first_18x[1])
+            timing["post_dial_delay_to"] = first_18x[0]
+        elif final is not None and final["status"] >= 300:
+            # RFC 6076 Session Request Delay for a failed call ends at the failure response.
+            timing["post_dial_delay_ms"] = _ms(t_invite, final["time"])
+            timing["post_dial_delay_to"] = final["status"]
+        ring = next((t for s, t, _ in provisional if s == 180), None)
+        timing["ringing_ms"] = _ms(t_invite, ring)
+        timing["answer_ms"] = _ms(t_invite, answer_time)
+        if answer_time is not None:
+            timing["setup_ms"] = _ms(t_invite, ack_time)
+    early = [s for s, _, e in provisional if e]
+    if early:
+        timing["early_media"] = f"SDP in {early[0]}"
+    if answer_time is not None:
+        timing["call_duration_s"] = round(end_time - answer_time, 3) if end_time is not None else None
+        if end_time is None:
+            timing["call_duration_note"] = "no BYE in the capture"
+
+    sdps = sdp_messages(msgs)
+    offer = next((e for e in sdps if e["role"] == "offer"), None)
+    answer = next((e for e in sdps if e["role"] == "answer"), None)
+    refusal = next((e for e in sdps if e["role"] == "failure_response"), None)
+    media: dict[str, Any] = {"sdp": [
+        {"frame": e["frame"], "time": iso(e["time"]), "message": e["message"], "role": e["role"], "from": e["src"],
+         "media": [sdp_mod.summary(x) for x in e["sdp"]["media"]]} for e in sdps]}
+    if offer and answer and offer["sdp"]["media"] and answer["sdp"]["media"]:
+        o, a = offer["sdp"]["media"][0], answer["sdp"]["media"][0]
+        media["common_codecs"] = sdp_mod.common_codecs(o, a)
+        chosen = sdp_mod.voice_codecs(a)
+        media["negotiated_codec"] = sdp_mod.codec_label(chosen[0]) if chosen else None
+    elif offer and refusal and offer["sdp"]["media"] and refusal["sdp"]["media"]:
+        common = sdp_mod.common_codecs(offer["sdp"]["media"][0], refusal["sdp"]["media"][0])
+        media["common_codecs"] = common
+        if not common:
+            media["note"] = f"no codec in common between the offer and the SDP in the {refusal['message'].split()[0]}"
+    elif offer and final is not None and final["status"] >= 300:
+        media["note"] = "the offer was not answered (call failed)"
+
+    outcome = "answered" if answer_time is not None else (
+        "cancelled" if ended_by and ended_by["method"] == "CANCEL" else (
+            f"failed {final['status']}" if final else "no final response"))
+    out = {
+        **row,
+        "outcome": outcome,
+        "caller": caller_ip,
+        "final_response": compact({k: v for k, v in (final or {}).items() if k != "time"}) or None,
+        "provisional": [f"{s}{' with SDP' if e else ''}" for s, _, e in provisional] or None,
+        "timing": compact(timing),
+        "retransmissions": retrans or None,
+        "reasons": reasons or None,
+        "warnings": warnings or None,
+        "ended_by": ended_by,
+        "media": media,
+    }
+    out.pop("methods", None)
+    sdp_frames = {e["frame"] for e in sdps}
+    out["messages"] = [{**e, "sdp": True} if e.get("frame") in sdp_frames and not e.get("resend") else e
+                       for e in row.get("messages", [])]
+    return compact(out)
