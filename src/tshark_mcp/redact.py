@@ -29,12 +29,23 @@ Values are found in two passes over the result:
    address is replaced as well; in ``ids`` mode only the addresses found under
    UE-address keys. The unassigned addresses 0.0.0.0 and :: are kept.
 
+Before the first result from a capture leaves the server, one bounded *pre-scan*
+(``tshark -r -T fields``, the same frame, time and output caps as any tool run)
+reads the capture's UE addresses (GTPv2 PAA, GTPv1 end user address, PFCP UE IP
+address, RADIUS and Diameter Framed-IP, GTP-U inner source and destination, the
+Contact and bottom Via hosts of SIP REGISTER transactions and of contacts that
+carry ``+sip.instance``) and the numbers in the identifier fields above, and
+seeds the table with them (:meth:`Redactor.seed`). So a tool that shows a bare
+address or a short number before any other tool has named it (``conversations``
+first, say) still hides it. When the pre-scan stops at a cap, the result says
+``complete: false``.
+
 What it cannot do: free text written by people (SIP display names, SMS text)
 is not searched for names; a number shorter than 14 digits is only replaced
-when the first pass saw it in a known field or URI (in this call or an earlier
-one); identifiers in encodings other than the ones above (for example inside
-compressed or encrypted payloads, or split across fields) are not found; host
-names, realms and MAC addresses are kept.
+when the pre-scan or the first pass saw it in a known field or URI; identifiers
+in encodings other than the ones above (for example inside compressed or
+encrypted payloads, or split across fields) are not found; host names, realms
+and MAC addresses are kept.
 """
 
 from __future__ import annotations
@@ -45,7 +56,7 @@ import ipaddress
 import re
 import secrets
 import threading
-from typing import Any
+from typing import Any, Iterable
 
 MODES = ("off", "ids", "ids+ips")
 _RANK = {mode: i for i, mode in enumerate(MODES)}
@@ -324,6 +335,45 @@ class Redactor:
             return note(exact)
         return _SCAN.sub(swap, text)
 
+    # -------------------------------------------------------------- pre-scan
+    def seed(self, pairs: Iterable[tuple[str, str]]) -> tuple[int, int]:
+        """Learn the values a pre-scan found, as ``(field, value)`` pairs.
+
+        IMSIs and IMEIs are learnt before the other numbers, so a value that is
+        both an IMSI and a Subscription-Id-Data keeps the ``imsi`` hint. Numbers
+        of fewer than 6 digits are skipped (a whole string equal to one, such as a
+        frame number, would be replaced everywhere). Returns (values learnt,
+        values that did not fit in the table)."""
+        learnt = dropped = 0
+        local: dict[str, str] = {}
+        keyed = [(_SEED_ORDER.get(kind, 9), kind, value) for key, value in pairs
+                 if (kind := kind_for_key(key)) is not None]
+        for _, kind, value in sorted(keyed, key=lambda item: item[0]):
+            canonical: str | None = None
+            token_kind = kind
+            text = value.strip()
+            if kind == "ip":
+                canonical = _ip(text.split("/")[0])
+                if canonical in ("0.0.0.0", "::"):
+                    canonical = None
+            elif text:
+                user = text.split("@")[0]
+                bare = _VISUAL.sub("", user) if kind == "sip_user" else user
+                digits = bare.lstrip("+")
+                if digits.isdigit() and 6 <= len(digits) <= 20:
+                    canonical = digits
+                    token_kind = _digit_kind("subscriber" if kind == "sip_user" else kind, digits, bare.startswith("+"))
+            if canonical is None:
+                continue
+            if canonical in self._token:
+                continue
+            self._learn(token_kind, canonical, local)
+            if canonical in self._token:
+                learnt += 1
+            else:
+                dropped += 1
+        return learnt, dropped
+
     def describe(self, mode: str) -> dict[str, Any]:
         return {
             "mode": mode,
@@ -349,6 +399,98 @@ def _digit_kind(kind: str, digits: str, plus: bool) -> str:
 
 def _ip(text: str) -> str | None:
     try:
-        return ipaddress.ip_address(text.strip("[]")).compressed
+        return ipaddress.ip_address(text.strip().strip("[]")).compressed
     except ValueError:
         return None
+
+
+# ------------------------------------------------------------------ pre-scan
+_SEED_ORDER = {"imsi": 0, "imei": 1, "ip": 2}
+
+PRESCAN_PROTOCOLS = ("gtp", "gtpv2", "pfcp", "radius", "diameter", "sip", "sccp", "gsm_map", "gsm_sms", "gsm_a",
+                     "e212", "e164")
+"""The pre-scan's display filter: only frames carrying one of these are printed."""
+
+PRESCAN_VALUE_FIELDS = (
+    # UE addresses
+    "gtpv2.pdn_addr_and_prefix.ipv4", "gtpv2.pdn_addr_and_prefix.ipv6", "gtp.user_ipv4", "gtp.user_ipv6",
+    "pfcp.ue_ip_addr_ipv4", "pfcp.ue_ip_addr_ipv6", "radius.Framed-IP-Address", "radius.Framed_IP_Address",
+    "radius.Framed_IPv6_Address", "diameter.Framed-IP-Address.IPv4", "diameter.Served-Party-IP-Address.IPv4",
+    "diameter.Served-Party-IP-Address.IPv6",
+    # subscriber numbers
+    "e212.imsi", "e212.assoc.imsi", "gtpv2.mei", "gtp.ext_imeisv", "gsm_a.imeisv", "gsm_a.imei", "diameter.IMEI",
+    "e164.msisdn", "e164.calling_party_number.digits", "e164.called_party_number.digits",
+    "diameter.Subscription-Id-Data", "diameter.User-Name", "diameter.Calling-Station-Id", "radius.Calling_Station_Id",
+    "radius.User_Name", "gsm_sms.tp-oa", "gsm_sms.tp-da", "gsm_sms.tp-ra", "sccp.calling.digits", "sccp.called.digits",
+    "gsm_map.address.digits", "sip.from.user", "sip.to.user", "sip.r-uri.user", "sip.contact.user", "sip.pai.user",
+    "sip.ppi.user",
+)
+"""Fields whose values are identifiers in their own right (named so that
+:func:`kind_for_key` classifies them). Fields this tshark does not know are left out."""
+
+PRESCAN_LAYOUT_FIELDS = ("frame.protocols", "ip.src", "ip.dst", "ipv6.src", "ipv6.dst", "sip.CSeq.method",
+                         "sip.Contact", "sip.contact.host", "sip.Via.sent-by.address", "sip.Via.received")
+"""Fields read to find UE addresses by position: the IP header inside a GTP-U tunnel
+and the SIP hosts of a registering UE."""
+
+PRESCAN_AGGREGATOR = "\x1f"
+"""Between the occurrences of one field: a byte no header value contains (SIP
+Contact headers contain commas)."""
+
+_PRESCAN_SKIP_LAYERS = ("eth", "ethertype", "sll", "vlan", "frame")
+
+
+def prescan_pairs(lines: Iterable[str], fields: list[str]) -> list[tuple[str, str]]:
+    """``(field, value)`` pairs for :meth:`Redactor.seed` from ``-T fields`` lines whose
+    columns are ``fields`` (occurrences joined by :data:`PRESCAN_AGGREGATOR`)."""
+    pairs: list[tuple[str, str]] = []
+    agg = PRESCAN_AGGREGATOR
+    for line in lines:
+        cols = line.rstrip("\n").split("\t")
+        row = {f: (cols[i].split(agg) if i < len(cols) and cols[i] else []) for i, f in enumerate(fields)}
+        for f in fields:
+            if f not in PRESCAN_LAYOUT_FIELDS:
+                pairs.extend((f, v) for v in row[f] if v)
+        pairs.extend(("inner_src", v) for v in _gtpu_inner(row) if v)
+        pairs.extend(("ue_ip", v) for v in _sip_ue_hosts(row) if v)
+    return pairs
+
+
+def _nth(values: list[str], n: int) -> str:
+    return values[n] if 0 <= n < len(values) else ""
+
+
+def _gtpu_inner(row: dict[str, list[str]]) -> list[str]:
+    """The inner source and destination of a G-PDU (one of them is the UE)."""
+    protocols = _nth(row.get("frame.protocols", []), 0)
+    layers = [p for p in protocols.split(":") if p and p not in _PRESCAN_SKIP_LAYERS]
+    if "gtp" not in layers:
+        return []
+    gtp_at = layers.index("gtp")
+    if any(p in ("icmp", "icmpv6") for p in layers[:gtp_at]):
+        return []  # an ICMP error quoting a G-PDU: the quoted tunnel is not this packet's
+    inner = layers[gtp_at + 1] if gtp_at + 1 < len(layers) else None
+    if inner == "ip":
+        n = layers[: gtp_at + 1].count("ip")
+        return [_nth(row.get("ip.src", []), n), _nth(row.get("ip.dst", []), n)]
+    if inner == "ipv6":
+        n = layers[: gtp_at + 1].count("ipv6")
+        return [_nth(row.get("ipv6.src", []), n), _nth(row.get("ipv6.dst", []), n)]
+    return []
+
+
+def _sip_ue_hosts(row: dict[str, list[str]]) -> list[str]:
+    """Hosts that belong to a UE: in a REGISTER transaction (request or response) the
+    Contact hosts, the bottom Via's sent-by and every Via ``received``; elsewhere the
+    hosts of contacts carrying ``+sip.instance`` (a UA instance, RFC 5626)."""
+    hosts = row.get("sip.contact.host", [])
+    if "REGISTER" in row.get("sip.CSeq.method", []):
+        vias = row.get("sip.Via.sent-by.address", [])
+        return [*hosts, *vias[-1:], *row.get("sip.Via.received", [])]
+    contacts = row.get("sip.Contact", [])
+    marked = [i for i, c in enumerate(contacts) if "+sip.instance" in c.lower()]
+    if not marked:
+        return []
+    if len(contacts) == len(hosts):
+        return [hosts[i] for i in marked]
+    return list(hosts)
