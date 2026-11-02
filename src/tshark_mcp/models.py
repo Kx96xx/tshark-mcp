@@ -327,6 +327,41 @@ class ExpertInfoResult(RowsResult, total=False):
     summary: ExpertSummary
 
 
+class FieldRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    field: str
+    name: str
+    type: str
+    protocol: str
+    display: str
+    description: str
+
+
+class FindFieldsResult(RowsResult, total=False):
+    fields: list[FieldRow]
+    query: str
+    protocol: str | None
+
+
+class FilterSpan(TypedDict, total=False):
+    offset: int
+    length: int
+
+
+class CheckFilterResult(ToolResult, total=False):
+    """``valid`` is tshark's verdict; ``errors`` its messages, ``error_at`` the span it
+    points at, ``rejected_by`` "server lint" or "tshark". ``filter_warnings`` come from
+    dftest when ``warnings_checked``. ``fields`` are the fields the filter names."""
+    filter: str
+    valid: bool
+    errors: list[str]
+    error_at: FilterSpan
+    rejected_by: str
+    filter_warnings: list[str]
+    warnings_checked: bool
+    fields: list[FieldRow]
+
+
 class FilterPacketsResult(RowsResult, total=False):
     packets: list[dict[str, str]]
     fields: list[str]

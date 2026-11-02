@@ -19,12 +19,14 @@ from .conftest import TSHARK, requires_tshark
 
 pytestmark = requires_tshark
 
+CAPTURE_FREE_TOOLS = {"find_fields", "check_filter"}  # they read tshark's glossary, never a capture
+
 EXPECTED_TOOLS = {
     "pfcp_sessions",
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "find_fields", "check_filter",
 }
 
 
@@ -65,6 +67,8 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("expert_info", {"path": f"{d}/all.pcap", "severity": "note"}),
         ("media_path_check", {"path": f"{d}/voice/voice_problems.pcap", "call_id": pcapgen.CALL_ID_NAT}),
         ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
+        ("find_fields", {"query": "result code", "protocol": "diameter", "limit": 5}),
+        ("check_filter", {"filter": "gtp.teid == 0x100000000"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
@@ -116,7 +120,8 @@ def test_list_tools_names_and_schemas(client_run):
         input_schema = _attr(tool, "input_schema", "inputSchema")
         output_schema = _attr(tool, "output_schema", "outputSchema")
         assert input_schema["type"] == "object", name
-        assert "path" in input_schema["properties"] or {"path_a", "path_b"} <= set(input_schema["properties"]), name
+        assert ("path" in input_schema["properties"] or {"path_a", "path_b"} <= set(input_schema["properties"])
+                or name in CAPTURE_FREE_TOOLS), name
         assert output_schema is not None and output_schema["type"] == "object", name
         assert "error" in output_schema["properties"], name
         assert tool.title, name

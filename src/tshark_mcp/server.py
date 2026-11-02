@@ -20,11 +20,12 @@ from typing import Any, Callable
 
 from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
 from .fields import (
-    compact, dicts_with, field_catalogue, iso, parse_packets, parse_time, split_fields_line, to_int, validate_fields,
+    compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
+    to_int, validate_fields,
 )
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
-    lint_hostname, lint_quoted_value, lint_sip_method, lint_teid,
+    lint_hostname, lint_quoted_value, lint_sip_method, lint_teid, outside_quotes,
 )
 from .pairing import annotate_legs
 from . import pfcp
@@ -75,6 +76,8 @@ narrow the filter instead of paging. Rows carry frame numbers (frame,
 request_frame, answer_frame, first_frame, ...): cite them, and open one with
 packet_detail to check a claim against the full dissection. expert_info lists
 tshark's own warnings and malformed packets: check it when a decode looks wrong.
+To write a display filter, find field names with find_fields and check the filter
+with check_filter; neither reads a capture.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -762,6 +765,106 @@ def expert_info(path: str, severity: str = "warn", filter: str | None = None, li
                          summary=expert.summarise(rows, frames))
     return _guarded("expert_info", {"path": path, "severity": severity, "filter": filter, "limit": limit,
                                     "offset": offset}, run)
+
+
+FIND_FIELDS_MAX_QUERY = 100
+_KEYWORDS = frozenset({"and", "or", "not", "xor", "in", "contains", "matches", "eq", "ne", "gt", "lt", "ge", "le",
+                       "any", "all", "true", "false"})
+_FILTER_TOKEN = re.compile(r"(?<![\w.\-])[A-Za-z_][A-Za-z0-9_\-]*(?:\.[A-Za-z0-9_\-]+)*")
+
+
+@app.tool(title="Find tshark fields", annotations=READ_ONLY)
+def find_fields(query: str, protocol: str | None = None, limit: int = 50, offset: int = 0) -> models.FindFieldsResult:
+    """Search the fields and protocols this tshark knows (`tshark -G fields`) to build a
+    display filter or a `fields` list for filter_packets. Every word of `query` must
+    appear in the field's abbreviation, name or description (case-insensitive), e.g.
+    "result code", "teid", "Session-Id" or "retransmission". `protocol` keeps only the
+    fields of one protocol (its abbreviation, e.g. "diameter", "gtpv2", "tcp"). Rows give
+    the field abbreviation, its name, type (FT_UINT32, FT_STRING, ... or "protocol"), its
+    protocol and description; the exact abbreviation comes first, then abbreviations
+    that start with or contain the query, then names, then descriptions. No capture is
+    read."""
+    def run() -> dict[str, Any]:
+        st = state()
+        if not isinstance(query, str) or not query.strip():
+            raise ToolError("invalid_argument", "query must be a non-empty string")
+        text = query.strip()
+        if len(text) > FIND_FIELDS_MAX_QUERY or _CONTROL.search(text):
+            raise ToolError("invalid_argument", f"query must be at most {FIND_FIELDS_MAX_QUERY} printable characters")
+        words = text.split()[:5]
+        proto = lint_field_name(protocol.strip()) if protocol else None
+        cap = clamp_limit(limit, st.limits.max_packets, 50)
+        rows = search_fields(st.runner, words, proto)
+        return _envelope("fields", rows, cap, None, offset=offset, query=text, protocol=proto)
+    return _guarded("find_fields", {"query": query, "protocol": protocol, "limit": limit, "offset": offset}, run)
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+@app.tool(title="Check a display filter", annotations=READ_ONLY)
+def check_filter(filter: str) -> models.CheckFilterResult:
+    """Check a Wireshark display filter without reading any capture: tshark compiles it
+    against an empty capture and its own error comes back in `errors`, with `error_at`
+    giving the offset and length of the part it points at (e.g. `"nosuch.field" is not a
+    valid protocol or protocol field`, `"0x100000000" too big for this field`). When
+    dftest is installed beside tshark, its warnings (deprecated names such as "ssl" or
+    "bootp") come back in `filter_warnings`; `warnings_checked` says whether it ran.
+    `fields` lists the fields and protocols the filter names, with their types. The
+    server's own lint (no `;`, backquote or `$` outside quotes, `||`/`&&` rather than a
+    single `|`/`&`, no control characters) is applied first. Use it before passing a
+    filter to another tool."""
+    def run() -> dict[str, Any]:
+        st = state()
+        if not isinstance(filter, str):
+            raise ToolError("invalid_argument", "filter must be a string")
+        out: dict[str, Any] = {"filter": filter}
+        try:
+            text = lint_display_filter(filter)
+        except ToolError as exc:
+            out.update({"valid": False, "errors": [exc.message], "rejected_by": "server lint"})
+            return out
+        out["filter"] = text
+        compiled = st.runner.compile_filter(text)
+        errors, at = _filter_errors(compiled.stderr)
+        out["valid"] = compiled.returncode == 0
+        if not out["valid"]:
+            out["errors"] = errors or [f"tshark exited with {compiled.returncode}"]
+            out["rejected_by"] = "tshark"
+            if at:
+                out["error_at"] = at
+        tested = st.runner.dftest_filter(text)
+        out["warnings_checked"] = tested is not None
+        if tested is not None:
+            warnings = [ln.split(":", 1)[1].strip() for ln in tested.stdout.splitlines() + tested.stderr.splitlines()
+                        if ln.startswith("Warning:")]
+            if warnings:
+                out["filter_warnings"] = list(dict.fromkeys(warnings))[:20]
+        seen: list[dict[str, Any]] = []
+        for token in dict.fromkeys(_FILTER_TOKEN.findall(outside_quotes(text))):
+            if token.lower() in _KEYWORDS or len(seen) >= 20:
+                continue
+            row = lookup_field(st.runner, token)
+            if row is not None:
+                seen.append(row)
+        out["fields"] = seen
+        return out
+    return _guarded("check_filter", {"filter": filter}, run)
+
+
+def _filter_errors(stderr: str) -> tuple[list[str], dict[str, int] | None]:
+    """tshark's filter error lines and the span its caret line points at."""
+    errors: list[str] = []
+    at = None
+    lines = stderr.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("tshark: "):
+            errors.append(line[len("tshark: "):].strip())
+        stripped = line.strip()
+        if stripped.startswith("^") and set(stripped) <= {"^", "~"} and i > 0 and at is None:
+            indent = len(lines[i - 1]) - len(lines[i - 1].lstrip())
+            at = {"offset": line.index("^") - indent, "length": len(stripped)}
+    return errors, at
 
 
 DEFAULT_FIELDS = ["frame.number", "frame.time_epoch", "ip.src", "ip.dst", "_ws.col.protocol", "_ws.col.info"]
