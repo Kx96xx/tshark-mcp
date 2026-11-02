@@ -753,6 +753,55 @@ def write_rtp_without_sdp_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+IMEISV = "0012345600000101"   # test TAC 00123456
+MSISDN_SHORT = "5550100"     # a seven-digit number, too short to be guessed from its length
+IMSI_IMPU = "001010555000111"
+
+
+def write_identity_pcap(path: Path) -> Path:
+    """Identifiers in the places redaction has to find them: a GTPv2 Create Session
+    with IMSI, MSISDN, MEI (IMEISV) and the UE address in the PAA; a Diameter request
+    whose User-Name is the IMSI and which also carries it in an AVP tshark cannot decode
+    (shown as raw bytes); and a SIP MESSAGE from an IMSI-based IMPU to a short number."""
+    t0 = 1_700_000_900.0
+    frames: list[tuple[float, bytes]] = []
+    csr = _gtpv2(32, 0, 21, [
+        _ie(1, _tbcd(IMSI)),
+        _ie(76, _tbcd(MSISDN)),
+        _ie(75, _tbcd(IMEISV)),
+        _ie(82, bytes([6])),
+        _ie(87, _fteid(6, 0x0000A101, SGW_IP)),
+        _apn_ie(APN),
+        _ie(99, bytes([1])),
+        _ie(93, _ie(73, bytes([5])) + _ie(87, _fteid(4, 0x0000B101, SGW_IP), instance=2)),
+    ])
+    csresp = _gtpv2(33, 0x0000A101, 21, [
+        _ie(2, bytes([16, 0])),
+        _ie(87, _fteid(7, 0x0000C101, PGW_IP), instance=1),
+        _ie(79, bytes([1]) + _ipv4(UE_IP)),
+        _ie(93, _ie(73, bytes([5])) + _ie(2, bytes([16, 0])) + _ie(87, _fteid(5, 0x0000D101, PGW_IP), instance=2)),
+    ])
+    frames.append((t0, _udp_frame(SGW_IP, PGW_IP, 2123, 2123, csr)))
+    frames.append((t0 + 0.05, _udp_frame(PGW_IP, SGW_IP, 2123, 2123, csresp)))
+    mme = "mme01.epc.mnc001.mcc001.3gppnetwork.org"
+    realm = "epc.mnc001.mcc001.3gppnetwork.org"
+    air = _diameter(318, S6A, 0x2001, 0xB001, True, [
+        *_diam_common(f"{mme};1700000900;9", mme, realm, realm),
+        _avp(1, IMSI.encode()),
+        _avp(64999, IMSI.encode(), mandatory=False, vendor=64999),  # an AVP no dictionary knows
+    ])
+    frames.append((t0 + 1.0, _sctp_data(MME_IP, HSS_IP, 3868, 3868, 0x51, 1, 46, air)))
+    msg = _sip([
+        f"MESSAGE sip:{MSISDN_SHORT}@ims.mnc001.mcc001.3gppnetwork.org SIP/2.0",
+        "Via: SIP/2.0/UDP 198.51.100.9:5060;branch=z9hG4bK901",
+        f"From: <sip:{IMSI_IMPU}@ims.mnc001.mcc001.3gppnetwork.org>;tag=m1",
+        f"To: <sip:{MSISDN_SHORT}@ims.mnc001.mcc001.3gppnetwork.org>",
+        "Call-ID: msg-1@ue.example", "CSeq: 1 MESSAGE", "Max-Forwards: 70",
+    ])
+    frames.append((t0 + 2.0, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, msg)))
+    return _frames_to_pcap(path, frames)
+
+
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     """The voice captures, kept in their own directory so the directory scans of the
     signalling captures are unchanged."""
