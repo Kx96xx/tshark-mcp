@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -134,6 +135,20 @@ def identity_filter(imsi: str | None, msisdn: str | None) -> str | None:
     return " || ".join(parts) if parts else None
 
 
+_OPERATOR_ID = re.compile(r"\.mnc[0-9]{3}\.mcc[0-9]{3}\.gprs$")
+
+
+def apn_matches(seen: str | None, wanted: str) -> bool:
+    """``wanted`` equals the APN seen, or is its network identifier when the APN seen
+    carries the operator identifier (``.mncNNN.mccNNN.gprs``)."""
+    if not seen:
+        return False
+    seen, wanted = seen.lower(), wanted.lower()
+    if seen == wanted:
+        return True
+    return not _OPERATOR_ID.search(wanted) and _OPERATOR_ID.sub("", seen) == wanted
+
+
 def selection_filter(imsi: str | None, apn: str | None, teid: int | None) -> str | None:
     """First-pass filter for ``gtp_sessions``: messages that name the subscriber, APN
     or tunnel. Arguments must already be linted. Responses repeat none of these, so
@@ -144,7 +159,14 @@ def selection_filter(imsi: str | None, apn: str | None, teid: int | None) -> str
         parts.append(f'e212.imsi == "{imsi}"')
     if apn:
         # APNs are case-insensitive (TS 23.003); lower() has been a display filter function since Wireshark 1.x.
-        parts.append(f'lower(gtpv2.apn) == "{apn.lower()}"')
+        # A roaming SGW sends the network identifier with the operator identifier appended
+        # (internet.mnc001.mcc001.gprs), so the bare network identifier matches that too.
+        ni = apn.lower()
+        if _OPERATOR_ID.search(ni):
+            parts.append(f'lower(gtpv2.apn) == "{ni}"')
+        else:
+            pattern = "^" + ni.replace(".", "[.]") + "([.]mnc[0-9]{3}[.]mcc[0-9]{3}[.]gprs)?$"
+            parts.append(f'lower(gtpv2.apn) matches "{pattern}"')
     if teid is not None:
         parts.append(f"(gtpv2.teid == 0x{teid:08x} || gtpv2.f_teid_gre_key == 0x{teid:08x})")
     return " && ".join(parts) if parts else None
@@ -154,7 +176,7 @@ def row_matches(row: dict[str, Any], imsi: str | None, apn: str | None, teid: in
     """Whether a transaction row satisfies every structured filter that was given."""
     if imsi and row.get("imsi") != imsi:
         return False
-    if apn and (row.get("apn") or "").lower() != apn.lower():
+    if apn and not apn_matches(row.get("apn"), apn):
         return False
     if teid is not None:
         wanted = f"0x{teid:08x}"

@@ -388,3 +388,33 @@ def test_find_identifier_does_not_overrun_the_shared_time_budget(tmp_path: Path)
     assert result["files_scanned"] == 2
     assert [e["error"] for e in result["errors"]] == ["timeout"]
     assert result["truncated"] is True and "time budget" in result["truncated_reason"]
+
+
+# ------------------------------------------- APN with the operator identifier appended
+def _roaming_apn(tmp_path: Path) -> Path:
+    g = pcapgen
+    csr = g._gtpv2(32, 0, 0x31, [g._ie(1, g._tbcd(g.IMSI)), g._apn_ie("Internet.Test.mnc001.mcc001.gprs"),
+                                  g._ie(87, g._fteid(6, 0xA1, g.SGW_IP))])
+    resp = g._gtpv2(33, 0xA1, 0x31, [g._ie(2, bytes([16, 0]))])
+    other = g._gtpv2(32, 0, 0x32, [g._ie(1, g._tbcd(g.IMSI_OTHER)), g._apn_ie("internet.test.example"),
+                                    g._ie(87, g._fteid(6, 0xA2, g.SGW_IP))])
+    t0 = 1_700_003_000.0
+    return g._frames_to_pcap(tmp_path / "apn.pcap", [
+        (t0, g._udp_frame(g.SGW_IP, g.PGW_IP, 2123, 2123, csr)),
+        (t0 + 0.01, g._udp_frame(g.PGW_IP, g.SGW_IP, 2123, 2123, resp)),
+        (t0 + 1.0, g._udp_frame(g.SGW_IP, g.PGW_IP, 2123, 2123, other)),
+    ])
+
+
+class TestApnOperatorIdentifier:
+    def test_network_identifier_matches_an_apn_with_operator_identifier(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.gtp_sessions(str(_roaming_apn(tmp_path)), apn="internet.test")
+        assert [r["seq"] for r in result["transactions"]] == [0x31]
+        assert result["transactions"][0]["response"] == "Create Session Response"
+
+    def test_full_apn_still_matches_exactly(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        path = str(_roaming_apn(tmp_path))
+        assert [r["seq"] for r in srv.gtp_sessions(path, apn="internet.test.mnc001.mcc001.gprs")["transactions"]] == [0x31]
+        assert srv.gtp_sessions(path, apn="internet")["transactions"] == []

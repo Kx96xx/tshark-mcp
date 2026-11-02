@@ -478,8 +478,8 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
     paired too and its path is given as `response_path`. Reports
     message names (Create Session, Modify Bearer, Delete Session, Echo, ...), IMSI, MSISDN,
     APN, F-TEIDs with interface names, cause code and name, allocated UE address (PAA),
-    round-trip ms and `unanswered: true`. Narrow with `imsi` (digits), `apn` (exact,
-    case-insensitive) or `teid` (decimal or 0x hex; matches the header TEID or any F-TEID):
+    round-trip ms and `unanswered: true`. Narrow with `imsi` (digits), `apn` (case-insensitive; a network
+    identifier such as `internet` also matches `internet.mnc001.mcc001.gprs`) or `teid` (decimal or 0x hex; matches the header TEID or any F-TEID):
     the matching requests select sequence numbers, then both halves of each transaction
     are fetched so responses are kept. `filter` is a raw display filter ANDed with `gtpv2`,
     e.g. `gtpv2.message_type == 32`; it applies literally to each packet."""
