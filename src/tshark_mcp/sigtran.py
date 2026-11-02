@@ -107,7 +107,9 @@ def _components(tcap_layer: Any, map_layer: Any) -> list[dict[str, Any]]:
                     "error": MAP_ERRORS.get(err, f"err-{err}") if err is not None else None,
                     "problem": first(body, "gsm_old.invokeProblem") or first(body, "gsm_old.returnResultProblem"),
                 })
-                if kind == "returnError" and opcode is not None and err is None:
+                # In a returnError, gsm_old.errorCode is the index of the ERROR CHOICE
+                # (0 = localValue); the error code itself is the localValue below it.
+                if kind == "returnError" and opcode is not None:
                     entry["error_code"] = opcode
                     entry["error"] = MAP_ERRORS.get(opcode, f"err-{opcode}")
                     entry.pop("opcode", None)
