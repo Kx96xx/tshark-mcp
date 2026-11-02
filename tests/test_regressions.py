@@ -151,3 +151,49 @@ class TestGtpAcrossNat:
         assert second["unanswered"] is True
         assert any(r.get("unmatched_answer") for r in result["transactions"])
         assert result["summary"]["unanswered"] == 1
+
+
+# ------------------------------------------- MAP results and errors
+def _map_replies(tmp_path: Path) -> Path:
+    """sendAuthenticationInfo answered by a returnError (unknownSubscriber), and
+    mo-forwardSM answered by a returnResultLast that carries only the invoke id,
+    as SMSCs commonly send it."""
+    g = pcapgen
+    vlr, hlr, smsc = "15550109001", "15550109002", "15550109003"
+    frames: list[tuple[float, bytes]] = []
+    t0 = 1_700_000_950.0
+
+    def send(ts: float, a_to_b: bool, payload: bytes) -> None:
+        src, dst = (g.STP_A, g.STP_B) if a_to_b else (g.STP_B, g.STP_A)
+        frames.append((ts, g._sctp_data(src, dst, 2905, 2905, 0x5555, 900 + len(frames), 3, payload)))
+
+    def m3ua(called: bytes, calling: bytes, tcap: bytes) -> bytes:
+        return g._m3ua_data(100, 200, g._sccp_udt(called, calling, tcap))
+
+    sai_arg = g._ber(0x30, g._ber(0x80, g._tbcd(g.IMSI)) + g._ber(0x02, b"\x01"))
+    send(t0, True, m3ua(g._sccp_gt(hlr, 6), g._sccp_gt(vlr, 7),
+                        g._tcap_begin(b"\x00\x00\x00\x10", g._invoke(1, 56, sai_arg))))
+    error = g._ber(0xA3, g._ber(0x02, b"\x01") + g._ber(0x02, b"\x01"))  # returnError unknownSubscriber
+    send(t0 + 0.05, False, m3ua(g._sccp_gt(vlr, 7), g._sccp_gt(hlr, 6), g._tcap_end(b"\x00\x00\x00\x10", error)))
+
+    tpdu = bytes.fromhex("01000B915155101055F500000AE8329BFD4697D9EC37")
+    mo_arg = g._ber(0x30, g._ber(0x84, g._addr_string(smsc)) + g._ber(0x82, g._addr_string(g.MSISDN)) + g._ber(0x04, tpdu))
+    send(t0 + 1.0, True, m3ua(g._sccp_gt(smsc, 8), g._sccp_gt(vlr, 8),
+                              g._tcap_begin(b"\x00\x00\x00\x11", g._invoke(1, 46, mo_arg))))
+    bare_result = g._ber(0xA2, g._ber(0x02, b"\x01"))  # returnResultLast, invoke id only
+    send(t0 + 1.2, False, m3ua(g._sccp_gt(vlr, 8), g._sccp_gt(smsc, 8), g._tcap_end(b"\x00\x00\x00\x11", bare_result)))
+    return g._frames_to_pcap(tmp_path / "map_replies.pcap", frames)
+
+
+def _components_by_frame(result: dict) -> dict[int, list[dict]]:
+    return {r["frame"]: r.get("components", []) for r in result["messages"]}
+
+
+class TestMapReplies:
+    def test_return_error_reports_the_error_code_not_the_choice_index(self, configure, tmp_path: Path):
+        srv = configure(allow=[str(tmp_path)])
+        comps = _components_by_frame(srv.sigtran_messages(str(_map_replies(tmp_path))))
+        error = comps[2][0]
+        assert error["type"] == "returnError"
+        assert error["error_code"] == 1 and error["error"] == "unknownSubscriber"
+        assert error.get("opcode") != 1
