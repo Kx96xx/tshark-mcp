@@ -282,3 +282,59 @@ def test_stream_and_filter_arguments(configure, tmp_path: Path):
     nxt = run(configure, tmp_path, cap, limit=1, offset=limited["next_offset"])
     assert nxt["returned"] == 1 and nxt["streams"][0]["stream"] != limited["streams"][0]["stream"]
     assert "next_offset" not in nxt
+
+
+
+class ZeroIdConn(Conn):
+    """Every inner packet has IP ID 0 (DF set), as many UEs send."""
+
+    def pkt(self, *a, **kw):
+        return super().pkt(*a, **{**kw, "ip_id": 0})
+
+
+class TunnelCap(Cap):
+    """Every packet added is sent in GTP-U, each with a new outer IP ID."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.outer_id = 500
+
+    def add(self, pkt, t=None, orig_len=None) -> None:
+        self.outer_id += 1
+        super().add(gtpu(pkt, self.outer_id), t, orig_len)
+
+
+def gtpu(pkt, outer_id: int):
+    return (Ether() / IP(src="192.0.2.71", dst="192.0.2.70", id=outer_id) / UDP(sport=2152, dport=2152)
+            / Raw(g._gtpu(0x2002, bytes(pkt[IP]))))
+
+
+def test_tunnelled_retransmission_with_inner_ip_id_zero_is_not_a_copy(configure, tmp_path: Path):
+    """Inner IP ID 0 and a new outer ID per packet: a retransmission 200 ms later repeats the inner header
+    and checksum. The outer ID is not in the copy key, so it must not choose the 1 s IP-ID window."""
+    cap = TunnelCap()
+    c = ZeroIdConn(cap)
+    c.handshake()
+    sent = c.down(3, ack=False)
+    cap.add(sent[-1], t=round(cap.t + 0.2, 6))
+    cap.t = round(cap.t + 0.2, 6)
+    c.ack()
+    out = run(configure, tmp_path, cap)
+    s = only(out)
+    assert out["summary"]["copies_dropped"] == 0
+    assert s["server_to_client"]["retransmissions"] == 1
+
+
+def test_tunnelled_and_decapsulated_copy_with_inner_ip_id_zero(configure, tmp_path: Path):
+    """The same inner packet (IP ID 0) seen decapsulated and, 100 us later, in GTP-U is one packet."""
+    cap = Cap()
+    c = ZeroIdConn(cap)
+    c.handshake()
+    for i in range(4):
+        p = c.down(1, ack=False)[0]
+        cap.add(gtpu(p, 700 + i), t=round(cap.t + 0.0001, 6))
+    c.ack()
+    out = run(configure, tmp_path, cap)
+    s = only(out)
+    assert out["summary"]["copies_dropped"] == 4
+    assert s["server_to_client"]["retransmissions"] == 0 and s["server_to_client"]["data_segments"] == 4

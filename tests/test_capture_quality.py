@@ -453,3 +453,43 @@ class TestCopyTracker:
         t = CopyTracker()
         t.check("k", True, 1.0)
         assert t.check("k", True, 1000.0)[0] is True
+
+
+def _in_gtpu(pkt, outer_id: int):
+    return (Ether() / IP(src="192.0.2.71", dst="192.0.2.70", id=outer_id) / UDP(sport=2152, dport=2152)
+            / Raw(g._gtpu(0x2003, bytes(pkt[IP]))))
+
+
+def test_tunnelled_retransmission_with_inner_ip_id_zero_is_not_a_copy(configure, tmp_path: Path):
+    """Inner IP ID 0 and a new outer ID per packet: a retransmission 300 ms later has the same inner header
+    and checksum. Only the inner ID is in the copy key, so only the inner ID chooses the window."""
+    cap = Cap()
+    c = Conv(cap)
+    c._c = c._s = lambda: 0  # every inner packet has IP ID 0
+    outer = iter(range(900, 1000))
+    add = cap.add
+    cap.add = lambda pkt, t=None, orig_len=None: add(_in_gtpu(pkt, next(outer)), t, orig_len)
+    c.handshake()
+    sent = c.data(3, ack=False)
+    cap.add(sent[-1], t=round(cap.t + 0.3, 6))
+    cap.t = round(cap.t + 0.3, 6)
+    c.ack()
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 0
+    assert out["tcp_capture_gaps"]["retransmitted_after_capture"] == 1
+
+
+def test_tunnelled_and_decapsulated_copy_with_inner_ip_id_zero(configure, tmp_path: Path):
+    """The same inner packet (IP ID 0) seen decapsulated and, 50 us later, in GTP-U is one packet."""
+    cap = Cap()
+    c = Conv(cap)
+    c._c = c._s = lambda: 0
+    c.handshake()
+    for i in range(4):
+        pkt = c.data(1, ack=False)[0]
+        cap.add(_in_gtpu(pkt, 800 + i), t=round(cap.t + 0.00005, 6))
+    c.ack()
+    out = run(configure, tmp_path, cap)
+    dup = out["duplicates"]
+    assert dup["copies"] == 4 and dup["causes"] == {"seen tunnelled and decapsulated": 4}
+    assert out["tcp_capture_gaps"]["retransmitted_after_capture"] == 0
