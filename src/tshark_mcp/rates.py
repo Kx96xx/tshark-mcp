@@ -68,19 +68,27 @@ def events(stdout: str, protocol: str) -> list[dict[str, Any]]:
         ts = parse_time(rec["frame.time_epoch"].split(AGGREGATOR)[0])
         if ts is None:
             continue
-        if rec["diameter.cmd.code"] and protocol in ("auto", "diameter"):
-            out.extend(_diameter(rec, ts))
-        elif rec["gtpv2.message_type"] and protocol in ("auto", "gtpv2"):
-            out.extend(_gtpv2(rec, ts))
-        elif rec["gtp.message"] and protocol in ("auto", "gtpv1"):
-            out.extend(_gtpv1(rec, ts))
-        elif rec["gsm_map.old.Component"] and protocol in ("auto", "map"):
-            out.extend(_map(rec, ts))
-        elif rec["sip.Call-ID"] and protocol in ("auto", "sip"):
-            out.extend(_sip(rec, ts))
+        before = len(out)
+        _add_events(out, rec, ts, protocol)
+        frame = to_int(rec["frame.number"].split(AGGREGATOR)[0])
+        for e in out[before:]:
+            e["frame"] = frame
     _gtp_response_subscribers(out)
     _map_dialogue_subscribers(out)
     return out
+
+
+def _add_events(out: list[dict[str, Any]], rec: dict[str, str], ts: float, protocol: str) -> None:
+    if rec["diameter.cmd.code"] and protocol in ("auto", "diameter"):
+        out.extend(_diameter(rec, ts))
+    elif rec["gtpv2.message_type"] and protocol in ("auto", "gtpv2"):
+        out.extend(_gtpv2(rec, ts))
+    elif rec["gtp.message"] and protocol in ("auto", "gtpv1"):
+        out.extend(_gtpv1(rec, ts))
+    elif rec["gsm_map.old.Component"] and protocol in ("auto", "map"):
+        out.extend(_map(rec, ts))
+    elif rec["sip.Call-ID"] and protocol in ("auto", "sip"):
+        out.extend(_sip(rec, ts))
 
 
 def _split(value: str) -> list[str]:
@@ -302,7 +310,7 @@ def summarise(evts: list[dict[str, Any]], interval: float, burst_min: int, storm
     for e in evts:
         key = (e["protocol"], e["message"])
         per_name[key][int((e["t"] - t0) // interval)] += 1
-        meta.setdefault(key, {"request": e["request"]})
+        meta.setdefault(key, {"request": e["request"], "first_frame": e.get("frame")})
     rows, bursts = [], []
     for key, bins in per_name.items():
         counts = [bins.get(i, 0) for i in range(n_bins)]
@@ -311,6 +319,7 @@ def summarise(evts: list[dict[str, Any]], interval: float, burst_min: int, storm
         baseline = statistics.median(counts)
         row = {
             "protocol": key[0], "message": key[1], "request": meta[key]["request"], "total": totals[key], "distinct": total,
+            "first_frame": meta[key]["first_frame"],
             "peak": bins[peak_bin], "peak_at": iso(t0 + peak_bin * interval),
             "mean_per_s": round(total / max(t1 - t0, interval), 4),
             "active_intervals": len(bins),
@@ -357,11 +366,14 @@ def _bursts(counts: list[int], baseline: float, burst_min: int) -> list[tuple[in
 def _loops(evts: list[dict[str, Any]], storm_min: int) -> list[dict[str, Any]]:
     """Subscribers repeating one request: count, rate and how regular the repeats are."""
     times: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    frames: dict[tuple[str, str, str], list[int | None]] = defaultdict(list)
     for e in evts:
         if e["request"] and e["subscriber"]:
             times[(e["subscriber"], e["protocol"], e["message"])].append(e["t"])
+            frames[(e["subscriber"], e["protocol"], e["message"])].append(e.get("frame"))
     rows = []
     for (who, proto, msg), ts in times.items():
+        fr = frames[(who, proto, msg)]
         if len(ts) < storm_min:
             continue
         gaps = [b - a for a, b in zip(ts, ts[1:])]
@@ -371,6 +383,7 @@ def _loops(evts: list[dict[str, Any]], storm_min: int) -> list[dict[str, Any]]:
             "subscriber": who, "protocol": proto, "message": msg, "count": len(ts), "first": iso(ts[0]),
             "last": iso(ts[-1]), "span_s": round(ts[-1] - ts[0], 3), "median_gap_s": round(median, 3),
             "min_gap_s": round(min(gaps), 3), "max_gap_s": round(max(gaps), 3), "regular": spread < 0.5,
+            "first_frame": fr[0], "last_frame": fr[-1],
         })
     rows.sort(key=lambda r: (-r["count"], r["subscriber"], r["message"]))
     return rows

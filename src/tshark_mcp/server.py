@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, tls, tunnels
-from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
+from .fields import (
+    compact, dicts_with, field_catalogue, iso, parse_packets, parse_time, split_fields_line, to_int, validate_fields,
+)
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid,
@@ -65,7 +67,9 @@ this page from offset, dropped after it;
 when next_offset is present, call again with offset=next_offset and the same
 arguments for the next page. "truncated": true always says why and how to get
 the rest; total_is_lower_bound means a packet or frame cap stopped the scan, so
-narrow the filter instead of paging.
+narrow the filter instead of paging. Rows carry frame numbers (frame,
+request_frame, answer_frame, first_frame, ...): cite them, and open one with
+packet_detail to check a claim against the full dissection.
 """
 
 app = _Server("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -591,19 +595,133 @@ def filter_packets(path: str, display_filter: str, fields: list[str] | None = No
             raise ToolError("invalid_argument", f"offset must be below max_scan_packets ({st.limits.max_scan_packets})")
         # One row per matching packet in frame order, so packets up to offset + limit are
         # read and the page is the tail of them; a match beyond that means more pages.
-        stdout, scan = _fields_run(capture, flt, names, min(start + cap, st.limits.max_scan_packets))
+        kept, scan = _fields_core(capture, flt, names, min(start + cap, st.limits.max_scan_packets), ",")
         # Every match under the frame cap was counted, so the total is exact unless that cap was hit.
         total = scan.seen
         scan.hit_match_cap = False
         rows = []
-        for line in stdout.splitlines():
+        for frame, line in kept:
             cols = split_fields_line(line)
             if len(cols) != len(names):
                 continue
-            rows.append({k: v for k, v in zip(names, cols) if v != ""})
+            row = {k: v for k, v in zip(names, cols) if v != ""}
+            if "frame.number" not in names and frame is not None:
+                row["frame"] = frame  # so every row can be opened with packet_detail
+            rows.append(row)
         return _envelope("packets", rows, cap, scan, offset=start, total=total + len(rows) - scan.matched,
                          fields=names, display_filter=flt)
     return _guarded("filter_packets", {"path": path, "display_filter": display_filter, "fields": fields, "limit": limit, "offset": offset}, run)
+
+
+DETAIL_MAX_FIELDS = 2000
+DETAIL_VALUE_MAX = 512
+
+
+@app.tool(title="One packet in detail", annotations=READ_ONLY)
+def packet_detail(path: str, frame: int, layers: list[str] | None = None, max_fields: int = 300) -> models.PacketDetailResult:
+    """The full dissection of one frame as tshark decodes it: every protocol layer with
+    its fields, nested as in Wireshark's packet details pane, with tshark's names for
+    enumerated values. Use it to check a row from another tool against the packet: rows
+    carry frame numbers (`frame`, `request_frame`, `answer_frame`, `first_frame`, ...).
+    `layers` keeps only these protocols, e.g. ["diameter"] or ["ip", "gtpv2"] (the frame
+    layer is always kept). At most `max_fields` leaf fields are returned (default 300,
+    server cap 2000); when the cap bites, the innermost layers are kept first and
+    `fields_dropped` counts the rest. Values longer than 512 characters are cut."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        n = to_int(str(frame))
+        if n is None or n < 1:
+            raise ToolError("invalid_argument", f"frame must be a positive frame number, got {frame!r}")
+        if n > st.limits.max_scan_packets:
+            raise ToolError("invalid_argument", f"frame {n} is past the frame cap of {st.limits.max_scan_packets}; "
+                            "slice the capture or raise max_scan_packets")
+        cap = clamp_limit(max_fields, DETAIL_MAX_FIELDS, 300)
+        names = [lint_field_name(name) for name in (layers or [])]
+        if names:
+            validate_fields(st.runner, names)
+        args = ["-T", "json", "--no-duplicate-keys"]
+        if names:
+            args += ["-J", " ".join(dict.fromkeys(["frame", *names]))]
+        result = check_result(st.runner.read_capture(capture, args, max_packets=n, display_filter=f"frame.number == {n}"))
+        packets = parse_packets(result.stdout)
+        if not packets:
+            raise ToolError("not_found", f"frame {n} is not in the capture (it has fewer frames)")
+        tree = packets[0].get("_source", {}).get("layers", {})
+        # -J leaves {"filtered": "<proto>"} stubs for the layers it left out.
+        tree = {k: v for k, v in tree.items() if v != {"filtered": k}}
+        frame_layer = tree.get("frame") if isinstance(tree.get("frame"), dict) else {}
+        bounded, kept, dropped, shortened = _bounded_layers(tree, cap)
+        out: dict[str, Any] = {
+            "path": str(capture), "frame": n,
+            "time": iso(parse_time(frame_layer.get("frame.time_epoch"))),
+            "length": to_int(frame_layer.get("frame.len")),
+            "protocols": frame_layer.get("frame.protocols"),
+            "layers": bounded, "fields_returned": kept,
+        }
+        if any(True for _ in dicts_with(tree, "_ws.malformed")):
+            out["malformed"] = True
+        if dropped:
+            out["fields_dropped"] = dropped
+            _note(out, f"{dropped} fields past max_fields={cap}; raise max_fields (server cap {DETAIL_MAX_FIELDS}) "
+                       "or pass layers=[...] for the protocols you need")
+        if shortened:
+            out["values_shortened"] = shortened
+        return compact(out)
+    return _guarded("packet_detail", {"path": path, "frame": frame, "layers": layers, "max_fields": max_fields}, run)
+
+
+def _leaves(node: Any) -> int:
+    if isinstance(node, dict):
+        return sum(_leaves(v) for v in node.values())
+    if isinstance(node, list):
+        return sum(_leaves(v) for v in node)
+    return 1
+
+
+def _bounded_layers(tree: dict[str, Any], cap: int) -> tuple[dict[str, Any], int, int, int]:
+    """Copy the layer tree keeping at most ``cap`` leaf values. The budget is handed out
+    from the innermost layer outwards (the application layer is what a row describes),
+    while the output keeps the packet's own layer order. Returns (tree, kept, dropped,
+    values shortened)."""
+    budgets: dict[str, int] = {}
+    left = cap
+    for name in reversed(list(tree)):
+        budgets[name] = min(_leaves(tree[name]), left)
+        left -= budgets[name]
+    counter = {"kept": 0, "dropped": 0, "shortened": 0}
+
+    def copy(node: Any, budget: list[int]) -> Any:
+        if isinstance(node, dict):
+            out: dict[str, Any] = {}
+            for key, value in node.items():
+                if budget[0] <= 0:
+                    counter["dropped"] += _leaves(value)
+                    continue
+                out[key] = copy(value, budget)
+            return out
+        if isinstance(node, list):
+            items = []
+            for value in node:
+                if budget[0] <= 0:
+                    counter["dropped"] += _leaves(value)
+                    continue
+                items.append(copy(value, budget))
+            return items
+        budget[0] -= 1
+        counter["kept"] += 1
+        if isinstance(node, str) and len(node) > DETAIL_VALUE_MAX:
+            counter["shortened"] += 1
+            return node[:DETAIL_VALUE_MAX] + "..."
+        return node
+
+    out = {}
+    for name, value in tree.items():
+        if budgets.get(name, 0) <= 0:
+            counter["dropped"] += _leaves(value)
+            continue
+        out[name] = copy(value, [budgets[name]])
+    return out, counter["kept"], counter["dropped"], counter["shortened"]
 
 
 DEFAULT_FIELDS = ["frame.number", "frame.time_epoch", "ip.src", "ip.dst", "_ws.col.protocol", "_ws.col.info"]
@@ -1376,7 +1494,8 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
                 continue
             row: dict[str, Any] = {
                 "path": str(capture), "hits": summary["hits"], "first": iso(summary["first"]),
-                "last": iso(summary["last"]), "protocols": summary["protocols"],
+                "last": iso(summary["last"]), "first_frame": summary["first_frame"], "last_frame": summary["last_frame"],
+                "protocols": summary["protocols"],
             }
             if scan.truncated:
                 row["truncated"] = True
@@ -1795,7 +1914,8 @@ def _sip_step(row: dict[str, Any]) -> dict[str, Any]:
     return _timeline_row("sip", row, message=f'{row.get("initial_method")} -> {final if final else "no final response"}',
                          detail=row.get("request_uri"), result=str(final) if final else None,
                          identity=row.get("p_asserted_identity") or row.get("from"),
-                         extra={"call_id": row.get("call_id"), "from": row.get("from"), "to": row.get("to"),
+                         extra={"frame": next((m.get("frame") for m in row.get("messages", []) if m.get("frame")), None),
+                                "call_id": row.get("call_id"), "from": row.get("from"), "to": row.get("to"),
                                 "time_to_final_ms": row.get("time_to_final_ms"), "methods": row.get("methods")})
 
 
