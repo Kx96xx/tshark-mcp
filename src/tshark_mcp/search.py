@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .fields import to_int
 from .limits import ToolError, lint_digits, lint_quoted_value
 
 KINDS = ("auto", "imsi", "msisdn", "ip", "call_id", "session_id")
@@ -116,6 +117,7 @@ def summarise_hits(stdout: str, protocol_col: bool) -> dict[str, Any]:
     """Aggregate ``-T fields`` lines (time, frame[, protocol]) into one file row."""
     hits = 0
     first = last = None
+    first_frame = last_frame = None
     protocols: dict[str, int] = {}
     for line in stdout.splitlines():
         if not line.strip():
@@ -126,9 +128,13 @@ def summarise_hits(stdout: str, protocol_col: bool) -> dict[str, Any]:
         except (ValueError, IndexError):
             continue
         hits += 1
-        first = ts if first is None else min(first, ts)
-        last = ts if last is None else max(last, ts)
+        frame = to_int(cols[1].split(",")[0]) if len(cols) > 1 else None
+        if first is None or ts < first:
+            first, first_frame = ts, frame
+        if last is None or ts >= last:
+            last, last_frame = ts, frame
         if protocol_col and len(cols) > 2 and cols[2]:
             proto = cols[2].split(",")[0]
             protocols[proto] = protocols.get(proto, 0) + 1
-    return {"hits": hits, "first": first, "last": last, "protocols": protocols}
+    return {"hits": hits, "first": first, "last": last, "first_frame": first_frame, "last_frame": last_frame,
+            "protocols": protocols}

@@ -334,9 +334,11 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
                 "endpoint_a": f"{key[0][0]}:{key[0][1]}", "endpoint_b": f"{key[1][0]}:{key[1][1]}",
                 "first": ts, "last": ts, "packets": 0, "chunks": {}, "init_tags": {}, "heartbeats": 0,
                 "heartbeat_acks": 0, "retransmissions": 0, "data_chunks": 0, "abort": False, "shutdown": False,
-                "init_frame": None, "init_ack_frame": None,
+                "init_frame": None, "init_ack_frame": None, "abort_frame": None,
+                "first_frame": to_int(rec["frame.number"]),
             }
         s["packets"] += 1
+        s["last_frame"] = to_int(rec["frame.number"])
         if ts is not None:
             s["last"] = ts if s["last"] is None else max(s["last"], ts)
         if rec["sctp.retransmission"]:
@@ -361,6 +363,7 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
                 s["data_chunks"] += 1
             elif name == "ABORT":
                 s["abort"] = True
+                s["abort_frame"] = s["abort_frame"] or to_int(rec["frame.number"])
             elif name in ("SHUTDOWN", "SHUTDOWN_ACK", "SHUTDOWN_COMPLETE"):
                 s["shutdown"] = True
     rows = []
@@ -373,6 +376,8 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
             "first": iso(s["first"]),
             "last": iso(s["last"]),
             "packets": s["packets"],
+            "first_frame": s["first_frame"],
+            "last_frame": s["last_frame"],
             "handshake": handshake,
             "init_frame": s["init_frame"],
             "init_ack_frame": s["init_ack_frame"],
@@ -383,6 +388,7 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
             "heartbeats_unacked": max(0, s["heartbeats"] - s["heartbeat_acks"]),
             "retransmissions": s["retransmissions"],
             "abort_seen": s["abort"],
+            "abort_frame": s["abort_frame"],
             "shutdown_seen": s["shutdown"],
             "chunk_counts": s["chunks"],
         }))
