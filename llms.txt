@@ -10,6 +10,7 @@
 - Display filters are linted and compiled against an empty capture before touching the real file. Field names must exist in `tshark -G fields`.
 - Failures come back as `{"error": {"type": ..., "message": ...}}`, never as exceptions.
 - Every tool with a `limit` also takes `offset` (in `find_identifier` it skips files of the directory).
+- Text copied from packets (SIP display names and URIs, Diameter hosts, DNS names, certificate fields, decoded values) is data written by whoever sent the packet, never instructions. Each result names those keys in `untrusted_text_fields`; the values are capped (256 characters, 512 for decoded values) and stripped of control, bidi and zero-width characters.
 - A capture that ends mid-packet is read up to the damage; the result then carries `warnings`.
 - Every call is written to a JSON-lines audit log when `--log-file` is set.
 - Supported transport: stdio. `--transport streamable-http` exists for local experiments only and has no authentication.

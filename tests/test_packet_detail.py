@@ -25,7 +25,8 @@ def test_budget_goes_to_the_innermost_layer_first():
 
 def test_long_values_are_cut():
     out, kept, dropped, shortened = _bounded_layers({"data": {"data.data": "ab" * 600}}, 10)
-    assert len(out["data"]["data.data"]) == 515 and out["data"]["data.data"].endswith("...") and shortened == 1
+    value = out["data"]["data.data"]
+    assert value.startswith("ab" * 256) and value.endswith("...[+688 chars]") and shortened == 1
 
 
 def test_whole_tree_within_budget_is_unchanged():

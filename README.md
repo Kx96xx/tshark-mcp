@@ -276,6 +276,7 @@ configurable, and none can be switched off.
 | Display filters | linted for control characters and shell metacharacters outside quoted strings, then compiled by tshark against an empty capture before touching the real file. `check_filter` also runs `dftest -- <filter>` when dftest sits beside tshark: it compiles the filter and reads no file | `limits.lint_display_filter`, `runner.validate_display_filter`, `runner.dftest_filter` |
 | Field names | must exist in `tshark -G fields` (cached once) | `fields.validate_fields` |
 | Structured arguments (`session_id`, `call_id`, `imsi`, `apn`, `teid`, `method`, `identifier`) | linted to the shape of that identifier before being embedded in a display filter; quotes and backslashes are refused | `limits.lint_*`, `search.build_filter` |
+| Text copied from packets | every string in a result loses control characters, bidirectional overrides and zero-width characters; SIP names and URIs, Diameter hosts, realms and Session-Ids, DNS names, TLS certificate fields, APNs, expert summaries and other free text are capped at 256 characters, and decoded values (`packet_detail` layers, `filter_packets` values, AVP trees) at 512, with a `...[+N chars]` marker; `untrusted_text_fields` names the keys in each result that hold packet text, which is data from the network, never instructions | `untrusted.apply` |
 | Audit log | one JSON line per call: tool, arguments, duration, status, bytes returned (`--log-file`, `TSHARK_MCP_LOG`) | `server._audit` |
 
 The test-suite covers each of these, including the timeout and output cap against a fake
@@ -312,7 +313,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 513 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 526 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
