@@ -136,15 +136,27 @@ class Conn:
         self.cap, self.port = cap, port
         self.seq = {"c": 1000, "s": 9000}
 
-    def send(self, side: str, payload: bytes = b"", flags: str = "PA", dt: float = 0.005, copy: bool = False) -> None:
+    def send(self, side: str, payload: bytes = b"", flags: str = "PA", dt: float = 0.005, copy: bool = False,
+             ip_id: int = 1, copy_dt: float = 0.0001, copy_id: int | None = None, resend: float | None = None,
+             resend_id: int | None = None) -> None:
+        """``copy``: the same packet again ``copy_dt`` later (with ``copy_id`` as its IP ID when given, as a tap
+        that rewrites the ID does). ``resend``: the sender transmits the same segment again that much later,
+        as a new packet with IP ID ``resend_id``."""
         other = "s" if side == "c" else "c"
         src, dst, sport, dport = (CLIENT, SERVER, self.port, 443) if side == "c" else (SERVER, CLIENT, 443, self.port)
-        pkt = Ether(src=g.MAC_A, dst=g.MAC_B) / IP(src=src, dst=dst) / TCP(
-            sport=sport, dport=dport, flags=flags, seq=self.seq[side], ack=self.seq[other]) / (Raw(payload) if payload else b"")
+
+        def build(ident: int) -> bytes:
+            return bytes(Ether(src=g.MAC_A, dst=g.MAC_B) / IP(src=src, dst=dst, id=ident) / TCP(
+                sport=sport, dport=dport, flags=flags, seq=self.seq[side], ack=self.seq[other])
+                / (Raw(payload) if payload else b""))
+
         self.cap.t += dt
-        self.cap.frames.append((self.cap.t, bytes(pkt)))
+        self.cap.frames.append((self.cap.t, build(ip_id)))
         if copy:
-            self.cap.frames.append((self.cap.t + 0.0001, bytes(pkt)))
+            self.cap.frames.append((self.cap.t + copy_dt, build(ip_id if copy_id is None else copy_id)))
+        if resend is not None:
+            self.cap.frames.append((self.cap.t + resend, build(ip_id + 1 if resend_id is None else resend_id)))
+            self.cap.t += resend
         self.seq[side] += len(payload) + (1 if "S" in flags or "F" in flags else 0)
 
     def open(self) -> "Conn":
@@ -310,3 +322,65 @@ def test_pages(configure, tmp_path: Path):
     page = srv.tls_handshakes(path, limit=2, offset=2)
     assert page["connections"] == full["connections"][2:4]
     assert page["total_matched"] == 7 and page["dropped"] == 3 and page["next_offset"] == 4
+
+
+# ----------------------------------------------------------------- capture copies (shared ``copies`` detector)
+def copies_scenario(path: Path) -> Path:
+    cap = Capture()
+    # A mirror delivers each ClientHello segment twice, 300 ms apart, with the same non-zero IP ID.
+    c = cap.conn().open()
+    c.send("c", client_hello("late-copy.example.com"), ip_id=0x2001, copy=True, copy_dt=0.3)
+    c.send("s", server_hello() + CCS + app_data(1200), dt=0.4)
+    c.send("c", CCS + app_data(53), ip_id=0x2002)
+    c.send("s", app_data(400), dt=0.02)
+    # The client resends its ClientHello 20 ms later with a new IP ID: a retransmission, not a copy.
+    c = cap.conn().open()
+    c.send("c", client_hello("resent.example.com"), ip_id=0x3001, resend=0.02, resend_id=0x3002)
+    c.send("s", server_hello() + CCS + app_data(1200), dt=0.03)
+    c.send("c", CCS + app_data(53), ip_id=0x3003)
+    c.send("s", app_data(400), dt=0.02)
+    # IP ID 0 (DF set): a copy 0.1 ms later is a copy; the same segment again 20 ms later is a retransmission.
+    c = cap.conn().open()
+    c.send("c", client_hello("zero-id.example.com"), ip_id=0, copy=True)
+    c.send("s", server_hello() + CCS + app_data(1200), dt=0.03, ip_id=0)
+    c.send("c", CCS + app_data(53), ip_id=0, resend=0.02, resend_id=0)
+    c.send("s", app_data(400), dt=0.02, ip_id=0)
+    # A tap writes its copy of every client segment with the IP ID set to 0; the original keeps its own.
+    c = cap.conn().open()
+    c.send("c", client_hello("tap.example.com"), ip_id=0x4001, copy=True, copy_id=0)
+    c.send("s", server_hello() + CCS + app_data(1200), dt=0.03, ip_id=0x5001)
+    c.send("c", CCS + app_data(53), ip_id=0x4002, copy=True, copy_id=0)
+    c.send("s", app_data(400), dt=0.02, ip_id=0x5002)
+    return cap.write(path)
+
+
+def test_copies_use_the_shared_detector(configure, tmp_path: Path):
+    srv = configure(allow=[str(tmp_path)])
+    rows = srv.tls_handshakes(str(copies_scenario(tmp_path / "copies.pcap")))["connections"]
+    late = _row(rows, "late-copy.example.com")
+    # Same IP ID 300 ms later: a copy (the old 50 ms window missed it), and the ClientHello counts once.
+    assert late["duplicate_copies"] == 1 and "client_hellos" not in late and late["outcome"] == "established"
+    resent = _row(rows, "resent.example.com")
+    # A new IP ID is a new packet: no copy, and the resent ClientHello is still one ClientHello.
+    assert "duplicate_copies" not in resent and "client_hellos" not in resent and resent["outcome"] == "established"
+    zero = _row(rows, "zero-id.example.com")
+    # IP ID 0: only the copy within a few milliseconds counts; the resend 20 ms later is traffic.
+    assert zero["duplicate_copies"] == 1 and "client_hellos" not in zero and zero["outcome"] == "established"
+    tap = _row(rows, "tap.example.com")
+    assert tap["duplicate_copies"] == 2 and "client_hellos" not in tap and tap["outcome"] == "established"
+
+
+def test_zeroed_id_tracker_needs_one_zero_id():
+    from tshark_mcp.copies import ZeroedIdTracker
+
+    def rec(ident: str) -> dict:
+        return {"src": CLIENT, "dst": SERVER, "id": ident, "ip_len": 100, "proto": "udp",
+                "udp": {"sport": "50000", "dport": "443", "len": 80, "checksum_value": "0x1234"}}
+
+    t = ZeroedIdTracker()
+    assert not t.check(rec("0x1a2b"), 1.0)
+    assert t.check(rec("0x0000"), 1.0001)  # the tap's copy with its ID set to 0
+    assert not t.check(rec("0x0000"), 1.5)  # too late to be a copy
+    t = ZeroedIdTracker()
+    assert not t.check(rec("0x1a2b"), 2.0)
+    assert not t.check(rec("0x1a2c"), 2.0001)  # two real IDs: two packets, however alike
