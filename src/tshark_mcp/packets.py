@@ -162,7 +162,6 @@ def _ip(raw: dict[str, list[str]], family: str, idx: int, outer: str | None) -> 
     elif outer == "ip":
         ip["outer_len"] = to_int(get(raw, "ip.len", 0))
         ip["outer_src"] = get(raw, "ip.src", 0)
-    ip["ids"] = tuple(raw.get("ip.id", []))
     return ip
 
 
