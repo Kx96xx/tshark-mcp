@@ -22,7 +22,7 @@ pytestmark = requires_tshark
 EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
-    "diameter_avps",
+    "diameter_avps", "compare_captures",
 }
 
 
@@ -51,6 +51,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("trace_subscriber", {"path": f"{d}/all.pcap", "imsi": pcapgen.IMSI, "msisdn": pcapgen.MSISDN}),
         ("find_identifier", {"path": d, "identifier": pcapgen.IMSI, "max_files": 3}),
         ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
+        ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
         ("gtp_sessions", {"path": f"{d}/gtpv2.pcap", "apn": "bad;apn"}),
@@ -100,7 +101,8 @@ def test_list_tools_names_and_schemas(client_run):
     for name, tool in tools.items():
         input_schema = _attr(tool, "input_schema", "inputSchema")
         output_schema = _attr(tool, "output_schema", "outputSchema")
-        assert input_schema["type"] == "object" and "path" in input_schema["properties"], name
+        assert input_schema["type"] == "object", name
+        assert "path" in input_schema["properties"] or {"path_a", "path_b"} <= set(input_schema["properties"]), name
         assert output_schema is not None and output_schema["type"] == "object", name
         assert "error" in output_schema["properties"], name
         assert tool.title, name
@@ -162,6 +164,9 @@ def test_every_tool_call_returns_structured_content(client_run):
 
     avp = by_name[("diameter_avps", ("command_code", "path"))]
     assert avp["transactions"][0]["request_avps"]["ULR-Flags"].startswith("34 [")
+
+    diff = by_name[("compare_captures", ("imsi", "path_a", "path_b"))]
+    assert diff["a"]["steps"] > diff["b"]["steps"] and diff["first_divergence"]["op"] == "only_a"
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")
