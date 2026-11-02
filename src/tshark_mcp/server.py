@@ -24,6 +24,7 @@ from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid,
 )
+from .pairing import annotate_legs
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 
 from mcp.types import ToolAnnotations
@@ -820,7 +821,14 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
     identifier such as `internet` also matches `internet.mnc001.mcc001.gprs`) or `teid` (decimal or 0x hex; matches the header TEID or any F-TEID):
     the matching requests select sequence numbers, then both halves of each transaction
     are fetched so responses are kept. `filter` is a raw display filter ANDed with `gtpv2`,
-    e.g. `gtpv2.message_type == 32`; it applies literally to each packet."""
+    e.g. `gtpv2.message_type == 32`; it applies literally to each packet.
+    Proxy chains: legs of one procedure (same IMSI, message and APN within 1 s) where
+    some leg has no response get `chain` (leg k of n, answered legs and their frames);
+    a leg without a response while another leg was answered gets
+    `leg_without_response` and a `note` (not `unanswered`), saying whether the
+    response was not relayed back or the relaying node answered on its own. A request
+    captured twice within 50 ms gets `duplicate_of_frame`. `summary` counts
+    `legs_without_response` and `duplicates`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -844,9 +852,11 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         scan = _merge_scans(pre, scan)
         txs = gtp.pair(gtp.extract_messages(packets))
         rows = [gtp.transaction_row(t) for t in txs]
+        annotate_legs(txs, rows, _gtp_identity)
         if select:
             rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
+        summary.update(_leg_summary(rows))
         return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("gtp_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
                                      "limit": limit, "offset": offset}, run)
@@ -863,7 +873,14 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
     ms and `unanswered: true`. Narrow with `imsi`, `apn` (case-insensitive) or `teid` (the
     header TEID or a TEID-C/TEID-U, decimal or 0x hex): matching requests select sequence
     numbers and both halves of each transaction are fetched. `filter` is ANDed with
-    GTPv1-C (`gtp && gtp.message != 0xff`)."""
+    GTPv1-C (`gtp && gtp.message != 0xff`).
+    Proxy chains: legs of one procedure (same IMSI, message and APN within 1 s) where
+    some leg has no response get `chain` (leg k of n, answered legs and their frames);
+    a leg without a response while another leg was answered gets
+    `leg_without_response` and a `note` (not `unanswered`), saying whether the
+    response was not relayed back or the relaying node answered on its own. A request
+    captured twice within 50 ms gets `duplicate_of_frame`. `summary` counts
+    `legs_without_response` and `duplicates`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -885,10 +902,13 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
             flt = f"({base}) && ({corr})"
         packets, scan = _json_run(capture, flt, gtpv1.JSON_LAYERS, st.limits.max_packets)
         scan = _merge_scans(pre, scan)
-        rows = [gtpv1.transaction_row(t) for t in gtpv1.pair(gtpv1.extract_messages(packets))]
+        txs = gtpv1.pair(gtpv1.extract_messages(packets))
+        rows = [gtpv1.transaction_row(t) for t in txs]
+        annotate_legs(txs, rows, _gtp_identity)
         if select:
             rows = [r for r in rows if gtpv1.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
+        summary.update(_leg_summary(rows))
         return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("gtpv1_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
                                        "limit": limit, "offset": offset}, run)
@@ -1405,7 +1425,9 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
     the request/answer pairing including `unanswered: true`. Give `imsi`, `msisdn` or
     both as digit strings. The whole call shares one time budget (the per-run timeout);
     when it runs out the timeline found so far is returned with `truncated` and the pass
-    that stopped marked `timed_out`. Start here for "why did subscriber X fail" questions."""
+    that stopped marked `timed_out`. GTP rows carry the proxy-chain fields of
+    gtp_sessions (`chain`, `leg_without_response`, `duplicate_of_frame`, `note`).
+    Start here for "why did subscriber X fail" questions."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1685,8 +1707,10 @@ def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_
     finally:
         # Pair once over every pass: a request fetched by a TEID learnt in pass three
         # still meets the response that pass two fetched by sequence number.
-        for tx in module.pair(list(collected.values())):
-            row = module.transaction_row(tx)
+        txs = module.pair(list(collected.values()))
+        rows = [module.transaction_row(tx) for tx in txs]
+        annotate_legs(txs, rows, _gtp_identity)
+        for row in rows:
             if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
                 timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
 
@@ -1752,6 +1776,11 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
     }
     if row.get("unanswered") or row.get("no_final_response"):
         out["unanswered"] = True
+    for key in ("leg_without_response", "duplicate_of_frame", "chain"):
+        if row.get(key):
+            out[key] = row[key]
+    if row.get("leg_without_response") or row.get("duplicate_of_frame"):
+        out["note"] = row.get("note")
     failed = (row.get("success") is False or row.get("accepted") is False
               or (protocol == "sip" and sip.dialog_failed(row))
               or (protocol == "map" and any(c.get("type") == "returnError" for c in row.get("components", []))))
@@ -1759,6 +1788,20 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
         out["failed"] = True
     out.update({k: v for k, v in extra.items() if v not in (None, "", [], {})})
     return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+
+def _gtp_identity(msg: Any) -> tuple | None:
+    """Legs of one GTP procedure relayed through proxies: same IMSI, message and APN."""
+    f = msg.fields
+    if not f.get("imsi"):
+        return None
+    return (f["imsi"], f.get("message_type"), (f.get("apn") or "").lower())
+
+
+def _leg_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    out = {"legs_without_response": sum(1 for r in rows if r.get("leg_without_response")),
+           "duplicates": sum(1 for r in rows if r.get("duplicate_of_frame"))}
+    return {k: v for k, v in out.items() if v}
 
 
 def _gtp_row_belongs(row: dict[str, Any], imsi: str | None, msisdn: str | None, teids: set[int], seqs: set[int]) -> bool:
