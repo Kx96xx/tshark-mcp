@@ -31,6 +31,9 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({
     "name", "cnames", "answers", "sni", "san", "subject_cn", "subject_o", "issuer_cn", "issuer_o", "alpn",
     # GTP, trace rows, expert info
     "apn", "identity", "detail", "summary",
+    # IMS registration and SMS over IMS
+    "impu", "impi", "associated_uris", "service_route", "path_header", "contact", "application_server", "warning",
+    "feature_tags", "sec_agree", "reason_phrase",
 })
 """Keys whose string values are copied from packets (anywhere in a result)."""
 

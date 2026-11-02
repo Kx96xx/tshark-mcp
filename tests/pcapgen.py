@@ -898,6 +898,164 @@ def _pfcp_ie(ie_type: int, data: bytes) -> bytes:
     return struct.pack("!HH", ie_type, len(data)) + data
 
 
+# --------------------------------------------------------------------------- IMS
+IMS_DOMAIN = "ims.mnc001.mcc001.3gppnetwork.org"
+SCSCF_IP = "192.0.2.51"
+AS_IP = "192.0.2.52"
+AS2_IP = "192.0.2.53"
+# Test IMSIs (PLMN 001/01), one per registration scenario.
+IMS_OK = "001010000000101"         # registered: 401, 200, third-party REGISTERs, a refresh
+IMS_LOOP = "001010000000102"       # challenge loop with AUTS
+IMS_403 = "001010000000103"
+IMS_503 = "001010000000104"
+IMS_EXPIRED = "001010000000105"    # 200 for 60 s, no refresh, no smsip or MMTel
+IMS_ESP = "001010000000106"        # 401, then ESP that never yields a protected REGISTER
+IMS_DEREG = "001010000000107"
+IMS_SILENT = "001010000000108"     # REGISTER never answered
+IMS_MSISDN = "15550100123"         # IMS_OK's implicit tel URI
+UE_IMS = {IMS_OK: "198.51.100.41", IMS_LOOP: "198.51.100.42", IMS_403: "198.51.100.43", IMS_503: "198.51.100.44",
+          IMS_EXPIRED: "198.51.100.45", IMS_ESP: "198.51.100.46", IMS_DEREG: "198.51.100.47", IMS_SILENT: "198.51.100.48"}
+PCSCF_SPI_C, PCSCF_SPI_S = 3333, 4444
+MMTEL_TAG = '+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"'
+
+
+def _register(imsi: str, cseq: int, expires: int, *, call_id: str | None = None, response: str = "",
+              auts: str | None = None, tags: str | None = None, frm: str | None = None, ruri: str | None = None,
+              ue: str | None = None, via: str | None = None) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    ue = ue or UE_IMS.get(imsi, UE_SIP_IP)
+    tags = f";+g.3gpp.smsip;{MMTEL_TAG}" if tags is None else tags
+    auth = (f'Authorization: Digest username="{imsi}@{IMS_DOMAIN}", realm="{IMS_DOMAIN}", nonce="", '
+            f'uri="sip:{IMS_DOMAIN}", response="{response}", algorithm=AKAv1-MD5')
+    if auts:
+        auth += f', auts="{auts}"'
+    lines = [
+        f"REGISTER {ruri or 'sip:' + IMS_DOMAIN} SIP/2.0",
+        via or f"Via: SIP/2.0/UDP {ue}:5060;branch=z9hG4bK{imsi[-3:]}{cseq}",
+        f"From: <{frm or impu}>;tag=r{cseq}", f"To: <{impu}>", f"Call-ID: {call_id or 'reg-' + imsi[-3:]}@ue.example",
+        f"CSeq: {cseq} REGISTER", "Max-Forwards: 70",
+        f'Contact: <sip:{ue}:5060>{tags};+sip.instance="<urn:gsma:imei:00123456-000001-0>"',
+        f"Expires: {expires}", auth,
+        "Security-Client: ipsec-3gpp; alg=hmac-sha-1-96; ealg=null; spi-c=1111; spi-s=2222; port-c=5100; port-s=5101",
+        "Require: sec-agree", "Proxy-Require: sec-agree", "Supported: path, sec-agree",
+        "User-Agent: test-ue/1.0",
+    ]
+    return _sip(lines)
+
+
+def _reg_response(imsi: str, cseq: int, code: int, reason: str, extra: list[str] | None = None,
+                  call_id: str | None = None, frm: str | None = None, ue: str | None = None) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    ue = ue or UE_IMS.get(imsi, UE_SIP_IP)
+    return _sip([
+        f"SIP/2.0 {code} {reason}", f"Via: SIP/2.0/UDP {ue}:5060;branch=z9hG4bK{imsi[-3:]}{cseq}",
+        f"From: <{frm or impu}>;tag=r{cseq}", f"To: <{impu}>;tag=s{cseq}",
+        f"Call-ID: {call_id or 'reg-' + imsi[-3:]}@ue.example", f"CSeq: {cseq} REGISTER", *(extra or []),
+    ])
+
+
+def _challenge(imsi: str) -> list[str]:
+    return [
+        f'WWW-Authenticate: Digest realm="{IMS_DOMAIN}", nonce="cmFuZGF1dG4=", algorithm=AKAv1-MD5, '
+        'ck="00112233445566778899aabbccddeeff", ik="ffeeddccbbaa99887766554433221100", qop="auth"',
+        f"Security-Server: ipsec-3gpp; q=0.1; alg=hmac-sha-1-96; ealg=null; spi-c={PCSCF_SPI_C}; "
+        f"spi-s={PCSCF_SPI_S}; port-c=6100; port-s=6101",
+    ]
+
+
+def _ok(imsi: str, expires: int, tags: str | None = None) -> list[str]:
+    ue = UE_IMS[imsi]
+    tags = f";+g.3gpp.smsip;{MMTEL_TAG}" if tags is None else tags
+    return [
+        f"Contact: <sip:{ue}:5060>;expires={expires}{tags}",
+        f"P-Associated-URI: <sip:+{IMS_MSISDN}@{IMS_DOMAIN}>, <tel:+{IMS_MSISDN}>" if imsi == IMS_OK
+        else f"P-Associated-URI: <sip:{imsi}@{IMS_DOMAIN}>",
+        f"Service-Route: <sip:orig@scscf.{IMS_DOMAIN};lr>", f"Path: <sip:term@pcscf.{IMS_DOMAIN};lr>",
+    ]
+
+
+def write_ims_register_pcap(path: Path) -> Path:
+    """IMS registrations of eight test subscribers (see the ``IMS_*`` IMSIs) through a
+    P-CSCF (``PCSCF_IP``) and S-CSCF (``SCSCF_IP``): a full AKA registration with a
+    copied and a retransmitted REGISTER, third-party REGISTERs to two application
+    servers (one refused with 500) and a refresh; a challenge loop ending in AUTS; 403;
+    503 with Retry-After; a 60 s registration never refreshed, without smsip or MMTel;
+    a challenge followed only by ESP to the P-CSCF's SPI; a de-registration; and a
+    REGISTER nobody answers. The capture runs past every expiry."""
+    t0 = 1_700_030_000.0
+    frames: list[tuple[float, bytes]] = []
+
+    def add(dt: float, src: str, dst: str, msg: bytes) -> None:
+        frames.append((t0 + dt, _udp_frame(src, dst, 5060, 5060, msg)))
+
+    p, s = PCSCF_IP, SCSCF_IP
+    # 1. Full registration of IMS_OK.
+    ue = UE_IMS[IMS_OK]
+    add(0.000, ue, p, _register(IMS_OK, 1, 600000))
+    add(0.0004, ue, p, _register(IMS_OK, 1, 600000))  # the same packet captured twice
+    add(0.010, p, s, _register(IMS_OK, 1, 600000))
+    add(0.050, s, p, _reg_response(IMS_OK, 1, 401, "Unauthorized", _challenge(IMS_OK)))
+    add(0.060, p, ue, _reg_response(IMS_OK, 1, 401, "Unauthorized", _challenge(IMS_OK)))
+    add(1.000, p, s, _register(IMS_OK, 2, 600000, response="0f1e2d3c4b5a69788796a5b4c3d2e1f0"))
+    add(1.500, p, s, _register(IMS_OK, 2, 600000, response="0f1e2d3c4b5a69788796a5b4c3d2e1f0"))  # retransmission
+    add(1.600, s, p, _reg_response(IMS_OK, 2, 200, "OK", _ok(IMS_OK, 3600)))
+    scscf = f"sip:scscf.{IMS_DOMAIN}"
+    add(1.700, s, AS_IP, _register(IMS_OK, 10, 3600, call_id="3pr-1", frm=scscf, ruri=f"sip:as1.{IMS_DOMAIN}",
+                                   tags="", ue=s, via=f"Via: SIP/2.0/UDP {s}:5060;branch=z9hG4bK3p1"))
+    add(1.720, AS_IP, s, _reg_response(IMS_OK, 10, 200, "OK", call_id="3pr-1", frm=scscf, ue=s))
+    add(1.750, s, AS2_IP, _register(IMS_OK, 11, 3600, call_id="3pr-2", frm=scscf, ruri=f"sip:as2.{IMS_DOMAIN}",
+                                    tags="", ue=s, via=f"Via: SIP/2.0/UDP {s}:5060;branch=z9hG4bK3p2"))
+    add(1.790, AS2_IP, s, _reg_response(IMS_OK, 11, 500, "Server Internal Error", call_id="3pr-2", frm=scscf, ue=s))
+    add(300.0, p, s, _register(IMS_OK, 3, 600000, response="1f1e2d3c4b5a69788796a5b4c3d2e1f0"))
+    add(300.040, s, p, _reg_response(IMS_OK, 3, 200, "OK", _ok(IMS_OK, 3600)))
+    # 2. Challenge loop: every answer is challenged again; the last carries AUTS.
+    ue = UE_IMS[IMS_LOOP]
+    add(10.0, ue, p, _register(IMS_LOOP, 1, 600000))
+    add(10.05, p, ue, _reg_response(IMS_LOOP, 1, 401, "Unauthorized", _challenge(IMS_LOOP)))
+    add(11.0, ue, p, _register(IMS_LOOP, 2, 600000, response="aa"))
+    add(11.05, p, ue, _reg_response(IMS_LOOP, 2, 401, "Unauthorized", _challenge(IMS_LOOP)))
+    add(12.0, ue, p, _register(IMS_LOOP, 3, 600000, response="bb", auts="QVVUU1RPS0VO"))
+    add(12.05, p, ue, _reg_response(IMS_LOOP, 3, 401, "Unauthorized", _challenge(IMS_LOOP)))
+    # 3. 403 and 4. 503 with Retry-After.
+    add(20.0, UE_IMS[IMS_403], p, _register(IMS_403, 1, 600000))
+    add(20.03, p, UE_IMS[IMS_403], _reg_response(IMS_403, 1, 403, "Forbidden"))
+    add(25.0, UE_IMS[IMS_503], p, _register(IMS_503, 1, 600000))
+    add(25.02, p, UE_IMS[IMS_503], _reg_response(IMS_503, 1, 503, "Service Unavailable", ["Retry-After: 120"]))
+    # 5. Registered for 60 s and never refreshed; no smsip, no MMTel.
+    ue = UE_IMS[IMS_EXPIRED]
+    add(30.0, ue, p, _register(IMS_EXPIRED, 1, 60, tags=""))
+    add(30.05, p, ue, _reg_response(IMS_EXPIRED, 1, 401, "Unauthorized", _challenge(IMS_EXPIRED)))
+    add(31.0, p, s, _register(IMS_EXPIRED, 2, 60, response="cc", tags=""))
+    add(31.05, s, p, _reg_response(IMS_EXPIRED, 2, 200, "OK", _ok(IMS_EXPIRED, 60, tags="")))
+    # 6. Challenged, then ESP to the P-CSCF's spi-s with no protected REGISTER behind it.
+    ue = UE_IMS[IMS_ESP]
+    add(40.0, ue, p, _register(IMS_ESP, 1, 600000))
+    add(40.05, p, ue, _reg_response(IMS_ESP, 1, 401, "Unauthorized", _challenge(IMS_ESP)))
+    for i, dt in enumerate((40.5, 41.5, 43.5)):
+        esp = struct.pack("!II", PCSCF_SPI_S, i + 1) + bytes(40)
+        frames.append((t0 + dt, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=ue, dst=p, proto=50) / Raw(esp))))
+    # 7. Registered, then de-registered.
+    ue = UE_IMS[IMS_DEREG]
+    add(50.0, p, s, _register(IMS_DEREG, 5, 600000, response="dd"))
+    add(50.04, s, p, _reg_response(IMS_DEREG, 5, 200, "OK", _ok(IMS_DEREG, 3600)))
+    add(60.0, p, s, _register(IMS_DEREG, 6, 0, response="ee"))
+    add(60.04, s, p, _reg_response(IMS_DEREG, 6, 200, "OK", [f"Contact: <sip:{ue}:5060>;expires=0"]))
+    # 8. Never answered (two retransmissions).
+    ue = UE_IMS[IMS_SILENT]
+    for dt in (70.0, 70.5, 71.5):
+        add(dt, ue, p, _register(IMS_SILENT, 1, 600000))
+    # Something unrelated at the end, so the capture outlives every expiry above.
+    add(400.0, SERVER_IP, p, b"keepalive")
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
+def write_ims_pcaps(directory: Path) -> dict[str, Path]:
+    """The IMS captures, in their own directory like the voice ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {"ims_register": write_ims_register_pcap(directory / "ims_register.pcap")}
+
+
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     """The voice captures, kept in their own directory so the directory scans of the
     signalling captures are unchanged."""
@@ -938,5 +1096,5 @@ if __name__ == "__main__":  # pragma: no cover
     import sys
 
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
-    for name, p in {**write_all(out), **write_voice_pcaps(out / "voice")}.items():
+    for name, p in {**write_all(out), **write_voice_pcaps(out / "voice"), **write_ims_pcaps(out / "ims")}.items():
         print(name, p)

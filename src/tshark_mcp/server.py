@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -63,7 +63,9 @@ sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
 up). media_path_check explains one-way audio and 488s. For voice quality,
 rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
 linked to the SIP Call-ID; dtmf_events lists the digits sent in RTP or SIP
-INFO.
+INFO. ims_registration gives each UE's IMS registration (challenge, 200 OK,
+refreshes, implicit IMPUs, smsip/MMTel feature tags, third-party REGISTERs)
+with a verdict: call it before blaming voice or SMS on a UE.
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
@@ -1928,6 +1930,79 @@ def dtmf_events(path: str, call_id: str | None = None, heuristic: bool = False, 
         return _envelope("events", rows, cap, scan, offset=offset, summary=summary, calls=dtmf.summarise(rows, sdps))
     return _guarded("dtmf_events", {"path": path, "call_id": call_id, "heuristic": heuristic, "limit": limit,
                                     "offset": offset}, run)
+
+
+@_tool(title="IMS registration", annotations=READ_ONLY)
+def ims_registration(path: str, impu: str | None = None, imsi: str | None = None, filter: str | None = None,
+                     limit: int = 50, offset: int = 0) -> models.ImsRegistrationResult:
+    """IMS registration per UE (public identity in the To header), built from every
+    SIP REGISTER transaction in the capture; the legs of one REGISTER through the
+    CSCFs (same Call-ID and CSeq) count once, copies of a packet are told apart from
+    retransmissions. Each row gives the `transactions` in order with their `kind`
+    (initial, authenticated after a 401, resync when the UE sent AUTS,
+    re-registration, de-registration), status, requested and granted expiry, RTT and
+    the challenge algorithm; the IMPI; the Contact `feature_tags` (+g.3gpp.smsip,
+    the MMTel ICSI, +sip.instance named without its value) with `smsip` and `mmtel`;
+    sec-agree mechanisms; the implicit IMPU set from P-Associated-URI, Service-Route
+    and Path of the last 200 OK; `third_party` REGISTERs the S-CSCF sent to
+    application servers for this user with their status; and a `verdict`:
+    registered, expired (not refreshed before the granted expiry, while the capture
+    goes on), deregistered, challenge-loop (authenticated REGISTERs challenged again,
+    AUTS resync), failed (403, 404, 408, 421, 423, 500, 503 with Retry-After and the
+    rest named in IMS terms, a 401 never answered, no final response), in_progress
+    (a challenge or request within 32 s of the end of the capture) or unknown, with
+    `reasons`. When a 401 is never answered in clear, `esp_after_challenge` counts the
+    ESP the UE sent to the P-CSCF afterwards and checks its SPI against the ones the
+    P-CSCF offered in Security-Server. Authentication material (nonce, AKA vectors, CK/IK) is never
+    returned. `impu` keeps users whose IMPU, IMPI or P-Associated-URI contain it (or
+    have the same user part); `imsi` keeps IMSI-based identities; `filter` is a raw
+    display filter ANDed with the REGISTER filter."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        want_impu = lint_quoted_value(impu, "impu") if impu else None
+        want_imsi = lint_digits(imsi, "imsi") if imsi else None
+        cap = clamp_limit(limit, st.limits.max_packets, 50)
+        known = field_catalogue(st.runner)
+        fields = [*sip.FIELDS, *(f for f in ims.EXTRA_FIELDS if f in known)]
+        stdout, scan = _fields_run(capture, _filter(filter, base=ims.FILTER), fields, st.limits.max_scan_packets,
+                                   aggregator=sip.AGGREGATOR)
+        end, end_source = _last_packet_time(capture, stdout)
+        rows = ims.registrations(stdout, fields, end)
+        if want_impu or want_imsi:
+            rows = [r for r in rows if ims.matches(r, want_impu, want_imsi)]
+        esp_out = None
+        addresses = ims.esp_probes(rows)
+        if addresses:
+            esp_out, esp_scan = _fields_run(capture, ims.esp_filter(addresses), ims.ESP_FIELDS, st.limits.max_scan_packets)
+            scan.hit_match_cap = scan.hit_match_cap or esp_scan.hit_match_cap
+            scan.hit_read_cap = scan.hit_read_cap or esp_scan.hit_read_cap
+        ims.attach_esp(rows, esp_out)
+        by_verdict: dict[str, int] = {}
+        for r in rows:
+            by_verdict[r["verdict"]] = by_verdict.get(r["verdict"], 0) + 1
+        summary = {"users": len(rows), "by_verdict": by_verdict,
+                   "third_party_registers": sum(len(r.get("third_party") or []) for r in rows)}
+        extra: dict[str, Any] = {"summary": summary}
+        if end is not None:
+            extra["capture_end"] = iso(end)
+            if end_source != "capinfos":
+                extra["capture_end_source"] = end_source
+        return _envelope("registrations", rows, cap, scan, offset=offset, **extra)
+    return _guarded("ims_registration", {"path": path, "impu": impu, "imsi": imsi, "filter": filter, "limit": limit,
+                                         "offset": offset}, run)
+
+
+def _last_packet_time(capture: Path, stdout: str) -> tuple[float | None, str]:
+    """Time of the capture's last packet (capinfos), else of the last message read."""
+    summary = state().runner.capinfos_summary(capture)
+    if summary is not None and summary.returncode == 0:
+        end = _parse_capinfos(summary.stdout).get("last_packet_epoch")
+        if isinstance(end, float):
+            return end, "capinfos"
+    times = [parse_time(split_fields_line(ln)[1]) for ln in stdout.splitlines() if ln.count("\t") >= 1]
+    times = [t for t in times if t is not None]
+    return (max(times), "last message read") if times else (None, "unknown")
 
 
 def _calls_media(sdps: list[dict[str, Any]]) -> list[dict[str, Any]]:
