@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any
 
 from .fields import (
-    Json,    compact, dicts_with, endpoints, first, frame_number, frame_time, iso, parse_time,
+    Json,    compact, dicts_with, endpoints, first, frame_interface, frame_number, frame_time, iso, parse_time,
     protocol_messages, split_fields_line, to_int,
 )
 from .pairing import Message, Transaction, base_row, pair_messages
@@ -216,6 +216,7 @@ def extract_messages(packets: list[Json]) -> list[Message]:
     for packet in packets:
         ts = frame_time(packet)
         frame = frame_number(packet)
+        iface = frame_interface(packet)
         src, dst = endpoints(packet)
         for msg in protocol_messages(packet, LAYER):
             mtype = to_int(first(msg, "gtpv2.message_type"))
@@ -241,7 +242,7 @@ def extract_messages(packets: list[Json]) -> list[Message]:
             }
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=not is_response,
-                key=seq, name=message_name(mtype), fields=fields,
+                key=seq, name=message_name(mtype), fields=fields, interface=iface,
                 expects_answer=mtype in REQUEST_TO_RESPONSE and mtype not in ONE_WAY_COMMANDS,
             ))
     return messages

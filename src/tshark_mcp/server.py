@@ -30,7 +30,7 @@ from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid, outside_quotes,
 )
-from .pairing import annotate_legs, session_identity
+from .pairing import Message, annotate_legs, session_identity
 from . import redact as redaction
 from . import pfcp
 from .runner import Runner, begin_warnings, check_result, collect_warnings
@@ -1197,9 +1197,12 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
     TEID on both legs (a proxy that keeps both);
     a leg without a response while another leg was answered gets
     `leg_without_response` and a `note` (not `unanswered`), saying whether the
-    response was not relayed back or the relaying node answered on its own. A request
+    response was not relayed back or the relaying node answered on its own. A leg whose
+    response would only have come after the capture on its interface stopped (the
+    last packet on that side came before the answer on the next leg plus 0.2 s) gets
+    `near_capture_end` and a `note` instead: the capture says nothing about it. A request
     captured twice within 50 ms gets `duplicate_of_frame`. `summary` counts
-    `legs_without_response` and `duplicates`."""
+    `legs_without_response`, `legs_near_capture_end` and `duplicates`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1223,7 +1226,7 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         scan = _merge_scans(pre, scan)
         txs = gtp.pair(gtp.extract_messages(packets))
         rows = [gtp.transaction_row(t) for t in txs]
-        annotate_legs(txs, rows, session_identity(txs, gtp.announced_teids))
+        annotate_legs(txs, rows, session_identity(txs, gtp.announced_teids), _capture_end(capture))
         if select:
             rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
@@ -1254,9 +1257,12 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
     TEID on both legs (a proxy that keeps both);
     a leg without a response while another leg was answered gets
     `leg_without_response` and a `note` (not `unanswered`), saying whether the
-    response was not relayed back or the relaying node answered on its own. A request
+    response was not relayed back or the relaying node answered on its own. A leg whose
+    response would only have come after the capture on its interface stopped (the
+    last packet on that side came before the answer on the next leg plus 0.2 s) gets
+    `near_capture_end` and a `note` instead: the capture says nothing about it. A request
     captured twice within 50 ms gets `duplicate_of_frame`. `summary` counts
-    `legs_without_response` and `duplicates`."""
+    `legs_without_response`, `legs_near_capture_end` and `duplicates`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1280,7 +1286,7 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
         scan = _merge_scans(pre, scan)
         txs = gtpv1.pair(gtpv1.extract_messages(packets))
         rows = [gtpv1.transaction_row(t) for t in txs]
-        annotate_legs(txs, rows, session_identity(txs, gtpv1.announced_teids))
+        annotate_legs(txs, rows, session_identity(txs, gtpv1.announced_teids), _capture_end(capture))
         if select:
             rows = [r for r in rows if gtpv1.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
@@ -2049,7 +2055,7 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
     both as digit strings. The whole call shares one time budget (the per-run timeout);
     when it runs out the timeline found so far is returned with `truncated` and the pass
     that stopped marked `timed_out`. GTP rows carry the proxy-chain fields of
-    gtp_sessions (`chain`, `leg_without_response`, `duplicate_of_frame`, `note`).
+    gtp_sessions (`chain`, `leg_without_response`, `near_capture_end`, `duplicate_of_frame`, `note`).
     Start here for "why did subscriber X fail" questions."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
@@ -2336,7 +2342,7 @@ def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_
         # still meets the response that pass two fetched by sequence number.
         txs = module.pair(list(collected.values()))
         rows = [module.transaction_row(tx) for tx in txs]
-        annotate_legs(txs, rows, session_identity(txs, module.announced_teids))
+        annotate_legs(txs, rows, session_identity(txs, module.announced_teids), _capture_end(capture, deadline))
         for row in rows:
             if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
                 timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
@@ -2457,10 +2463,10 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
     }
     if row.get("unanswered") or row.get("no_final_response"):
         out["unanswered"] = True
-    for key in ("leg_without_response", "duplicate_of_frame", "chain"):
+    for key in ("leg_without_response", "near_capture_end", "duplicate_of_frame", "chain"):
         if row.get(key):
             out[key] = row[key]
-    if row.get("leg_without_response") or row.get("duplicate_of_frame"):
+    if row.get("leg_without_response") or row.get("near_capture_end") or row.get("duplicate_of_frame"):
         out["note"] = row.get("note")
     failed = (row.get("success") is False or row.get("accepted") is False
               or (protocol == "sip" and sip.dialog_failed(row))
@@ -2473,8 +2479,50 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
 
 def _leg_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
     out = {"legs_without_response": sum(1 for r in rows if r.get("leg_without_response")),
+           "legs_near_capture_end": sum(1 for r in rows if r.get("near_capture_end")),
            "duplicates": sum(1 for r in rows if r.get("duplicate_of_frame"))}
     return {k: v for k, v in out.items() if v}
+
+
+def _capture_end(capture: Path, deadline: float | None = None) -> Callable[[Message], float | None]:
+    """Time of the last packet read on a message's capture interface, for :func:`annotate_legs`.
+
+    One extra pass over the whole capture (every protocol, under the frame-read cap, with
+    dissection off: only the interface and timestamp are read), made the first time a
+    leg without a response asks. Interfaces are told apart by name when they have one,
+    so a merged capture that lists one interface once per input file still has one end
+    for it. A message without an interface gets the end of the whole capture. When the
+    pass fails, no end is known and the legs stay as they are.
+    """
+    ends: dict[Any, float] = {}
+    names: dict[int, Any] = {}
+    done = False
+
+    def lookup(msg: Message) -> float | None:
+        nonlocal done
+        if not done:
+            done = True
+            try:
+                stdout, _scan = _fields_run(capture, None,
+                                            ["frame.time_epoch", "frame.interface_id", "frame.interface_name"],
+                                            state().limits.max_scan_packets, timeout=_left(deadline),
+                                            extra_args=("--disable-all-protocols",))
+            except ToolError:
+                return None
+            for line in stdout.splitlines():
+                cols = line.split("\t") + ["", ""]
+                ts, iface = parse_time(cols[0]), to_int(cols[1])
+                if ts is None:
+                    continue
+                side = cols[2] or iface
+                if iface is not None:
+                    names[iface] = side
+                for key in (side, None):
+                    if ts > ends.get(key, float("-inf")):
+                        ends[key] = ts
+        side = names.get(msg.interface) if msg.interface is not None else None
+        return ends.get(side, ends.get(None))
+    return lookup
 
 
 def _gtp_row_belongs(row: dict[str, Any], imsi: str | None, msisdn: str | None, teids: set[int], seqs: set[int]) -> bool:

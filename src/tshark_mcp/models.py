@@ -383,6 +383,7 @@ class MessageSummary(TypedDict, total=False):
     unanswered: int
     failed: int
     legs_without_response: int
+    legs_near_capture_end: int
     duplicates: int
 
 
@@ -398,6 +399,7 @@ class PairedRow(TypedDict, total=False):
     unanswered: bool
     unmatched_answer: bool
     leg_without_response: bool
+    near_capture_end: bool
     duplicate_of_frame: int
     chain: dict[str, Any]
     note: str
@@ -1111,6 +1113,7 @@ class TimelineRow(TypedDict, total=False):
     unanswered: bool
     failed: bool
     leg_without_response: bool
+    near_capture_end: bool
     duplicate_of_frame: int
     chain: dict[str, Any]
     note: str

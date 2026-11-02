@@ -61,6 +61,28 @@ def _frames_to_pcap(path: Path, frames: list[tuple[float, bytes]]) -> Path:
     return path
 
 
+def _pcapng_block(block_type: int, body: bytes) -> bytes:
+    body += b"\0" * (-len(body) % 4)
+    total = len(body) + 12
+    return struct.pack("<II", block_type, total) + body + struct.pack("<I", total)
+
+
+def frames_to_pcapng(path: Path, frames: list[tuple[float, bytes, int]], interfaces: list[str]) -> Path:
+    """A pcapng file with one Ethernet interface per name in ``interfaces`` (nanosecond
+    timestamps); each frame is ``(time, raw Ethernet bytes, interface index)``."""
+    out = [_pcapng_block(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1))]
+    for name in interfaces:
+        raw = name.encode()
+        opts = struct.pack("<HH", 2, len(raw)) + raw + b"\0" * (-len(raw) % 4)
+        opts += struct.pack("<HHB3x", 9, 1, 9) + struct.pack("<HH", 0, 0)  # if_tsresol = 10^-9
+        out.append(_pcapng_block(1, struct.pack("<HHI", 1, 0, 0xFFFF) + opts))
+    for ts, raw, iface in sorted(frames, key=lambda f: f[0]):
+        ns = round(ts * 1e9)
+        out.append(_pcapng_block(6, struct.pack("<IIIII", iface, ns >> 32, ns & 0xFFFFFFFF, len(raw), len(raw)) + raw))
+    path.write_bytes(b"".join(out))
+    return path
+
+
 def _tbcd(digits: str) -> bytes:
     if len(digits) % 2:
         digits += "F"
