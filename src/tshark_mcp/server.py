@@ -24,7 +24,7 @@ from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_quoted_value, lint_sip_method, lint_teid,
 )
-from .runner import Runner, check_result
+from .runner import Runner, begin_warnings, check_result, collect_warnings
 
 from mcp.types import ToolAnnotations
 
@@ -90,6 +90,7 @@ def state() -> ServerState:
 def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     started = time.monotonic()
     status = "ok"
+    token = begin_warnings()
     try:
         result = fn()
     except ToolError as exc:
@@ -98,6 +99,9 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     except Exception as exc:  # noqa: BLE001 - never leak a traceback to the client
         status = "internal_error"
         result = ToolError("internal_error", f"{type(exc).__name__}: {exc}").to_dict()
+    warnings = collect_warnings(token)
+    if warnings and "error" not in result:
+        result["warnings"] = warnings
     try:
         limits = state().limits
         result = _fit(result, limits.max_output_bytes)

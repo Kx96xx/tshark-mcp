@@ -87,7 +87,9 @@ Tests: 202 (pytest, Python 3.10, 3.11, 3.12 and 3.13 in CI).
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
 annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false`. Failures come back
 as `{"error": {"type": ..., "message": ...}}` rather than exceptions, and `"truncated": true`
-tells the agent a cap was reached and the filter should be narrowed. See
+tells the agent a cap was reached and the filter should be narrowed. A capture that ends in the middle of a
+packet (a ring-buffer file copied while it was being written) is read up to the damage and
+the result carries `"warnings"` saying so. See
 [docs/EXAMPLE.md](docs/EXAMPLE.md) for a worked investigation with the real output shapes,
 and [llms.txt](llms.txt) for a one-page description aimed at agents.
 
