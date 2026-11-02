@@ -24,21 +24,43 @@ class ErrorInfo(TypedDict, total=False):
     message: str
 
 
+class TrimmedList(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    path: str
+    kept: int
+    of: int
+
+
 class ToolResult(TypedDict, total=False):
-    """Keys every tool may return: the structured error and the truncation flags."""
+    """Keys every tool may return: the structured error and the truncation flags.
+    ``trimmed`` lists the inner lists the output cap shortened (path, items kept, items there were)."""
     __pydantic_config__ = _EXTRA_OK
     error: ErrorInfo
     truncated: bool
     truncated_reason: str
     warnings: list[str]
+    trimmed: list[TrimmedList]
 
 
 class RowsResult(ToolResult, total=False):
-    """A capped list of rows: ``count`` rows returned out of ``total_found``.
-    ``packets_scanned`` is the number of matching packets the call dissected."""
+    """One page of rows. ``total_matched`` rows were found; ``returned`` of them are in
+    this page, starting at ``offset``; ``dropped`` come after it and ``next_offset``
+    (present when more rows exist) fetches the next page with the same arguments.
+    ``total_is_lower_bound`` means a packet or frame cap stopped the scan, so more rows
+    exist than were counted and paging cannot reach them: narrow the filter.
+    ``count`` and ``total_found`` are the older names of ``returned`` and ``total_matched``.
+    ``packets_scanned`` is the number of matching packets the call dissected and
+    ``packets_matched`` (when the packet cap stopped it) how many matched in all."""
     count: int
     total_found: int
+    total_matched: int
+    returned: int
+    dropped: int
+    offset: int
+    next_offset: int
+    total_is_lower_bound: bool
     packets_scanned: int
+    packets_matched: int
 
 
 # ----------------------------------------------------------------- generic tools
@@ -63,6 +85,182 @@ class PcapInfoResult(ToolResult, total=False):
     capinfos: str
     protocol_hierarchy: list[ProtocolHierarchyEntry]
     limits: dict[str, Any]
+
+
+class CopyExample(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    copy_of: int
+    cause: str
+
+
+class Duplicates(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    copies: int
+    share: float
+    causes: dict[str, int]
+    examples: list[CopyExample]
+
+
+class CaptureGaps(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    tcp_data_segments: int
+    missed_by_capture: int
+    missed_bytes: int
+    directions_with_missed: int
+    lost_before_capture: int
+    retransmitted_after_capture: int
+    out_of_order: int
+    unresolved_gaps: int
+
+
+class TruncatedFrames(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frames: int
+    share: float
+    snaplen: int
+    protocols: dict[str, int]
+
+
+class OversizedPackets(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    packets: int
+    max_ip_len: int
+    link_mtu: int
+
+
+class ChecksumSender(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    sender: str
+    bad: int
+    packets_sent: int
+    layers: dict[str, int]
+
+
+class Checksums(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    validated: dict[str, int]
+    bad: dict[str, int]
+    bad_by_sender: list[ChecksumSender]
+    bad_tcp_data_segments: int
+    bad_tcp_segments_acknowledged: int
+    likely_offload: bool
+    explanation: str
+
+
+class OneSided(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    tcp_streams: int
+    tcp_one_direction: int
+    tcp_one_direction_short: int
+    tcp_syn_unanswered: int
+    udp_flows: int
+    udp_one_way_flows: int
+    examples: list[dict[str, Any]]
+
+
+class TimestampQuality(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    backwards_jumps: int
+    max_backwards_s: float
+    first_backwards_frame: int
+    identical_to_previous: int
+    identical_share: float
+    resolution: str
+    largest_gap_s: float
+    largest_gap_after_frame: int
+    before_year_2000: int
+
+
+class QualityVerdict(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    loss_conclusions: str
+    summary: str
+    reasons: list[str]
+    notes: list[str]
+
+
+class CaptureQualityResult(ToolResult, total=False):
+    path: str
+    frames: int
+    ip_packets: int
+    first: str
+    last: str
+    duration_s: float
+    link_types: dict[str, int]
+    interfaces: int
+    encapsulations: dict[str, int]
+    duplicates: Duplicates
+    tcp_capture_gaps: CaptureGaps
+    truncated_frames: TruncatedFrames
+    oversized_packets: OversizedPackets
+    checksums: Checksums
+    one_sided: OneSided
+    timestamps: TimestampQuality
+    verdict: QualityVerdict
+
+
+class TcpHandshake(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    syn: int
+    syn_retransmissions: int
+    syn_ack: int
+    server_side_rtt_ms: float
+    client_side_rtt_ms: float
+    rtt_ms: float
+    client_mss: int
+    server_mss: int
+    client_wscale: int
+    server_wscale: int
+    sack: bool
+
+
+class TcpDirection(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    packets: int
+    data_segments: int
+    bytes: int
+    max_segment: int
+    retransmissions: int
+    retransmission_ratio: float
+    lost_before_capture: int
+    retransmitted_after_capture: int
+    missed_by_capture: int
+    out_of_order: int
+    unresolved_gaps: int
+    keepalives: int
+    duplicate_acks: int
+    zero_windows: int
+    fin: int
+    rst: int
+
+
+class TcpStreamRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    stream: int
+    client: str
+    server: str
+    first: str
+    last: str
+    duration_s: float
+    packets: int
+    copies_dropped: int
+    handshake: TcpHandshake
+    client_to_server: TcpDirection
+    server_to_client: TcpDirection
+    resets: list[dict[str, Any]]
+    icmp: list[dict[str, Any]]
+    df_above_mtu: int
+    df_above_mtu_acknowledged: int
+    loss: str
+    issues: list[str]
+
+
+class TcpHealthResult(RowsResult, total=False):
+    streams: list[TcpStreamRow]
+    path_mtu: int
+    display_filter: str
+    summary: dict[str, int]
 
 
 class ConversationRow(TypedDict, total=False):
@@ -99,6 +297,8 @@ class MessageSummary(TypedDict, total=False):
     by_message: dict[str, int]
     unanswered: int
     failed: int
+    legs_without_response: int
+    duplicates: int
 
 
 class PairedRow(TypedDict, total=False):
@@ -112,6 +312,10 @@ class PairedRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     unmatched_answer: bool
+    leg_without_response: bool
+    duplicate_of_frame: int
+    chain: dict[str, Any]
+    note: str
 
 
 class DiameterTransactionRow(PairedRow, total=False):
@@ -432,6 +636,117 @@ class SipDialogsResult(RowsResult, total=False):
     selection: str | None
 
 
+# ----------------------------------------------------------------- RTP / media
+class SdpMedia(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    media: str
+    address: str
+    port: int
+    proto: str
+    codecs: list[str]
+    direction: str
+    ptime_ms: int
+    srtp: bool
+    rejected: bool
+    private_address: bool
+
+
+# "from" is a keyword, so this one uses the functional form.
+SdpEntry = TypedDict("SdpEntry", {
+    "frame": int,
+    "time": str,
+    "message": str,
+    "role": str,
+    "from": str,
+    "media": list[SdpMedia],
+}, total=False)
+SdpEntry.__pydantic_config__ = _EXTRA_OK  # type: ignore[attr-defined]
+
+
+class CallMedia(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    call_id: str
+    sdp: list[SdpEntry]
+
+
+class MosEstimate(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    value: float
+    r_factor: float
+    estimate: bool
+    method: str
+    inputs: dict[str, Any]
+
+
+class RtcpSummary(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    reports: int
+    sender_reported_packets: int
+    fraction_lost_max_pct: float
+    cumulative_lost_last: int
+    jitter_max_ms: float
+    rtt_ms_max: float
+    rtt_ms_mean: float
+    rtt_note: str
+
+
+class RtpStreamRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    ssrc: str
+    src: str
+    dst: str
+    call_id: str
+    linked_by: str
+    sdp_frame: int
+    payload_type: int
+    codec: str
+    codec_source: str
+    clock_rate: int
+    payload_types: dict[str, int]
+    first_time: str
+    last_time: str
+    duration_s: float
+    packets: int
+    expected: int
+    lost: int
+    lost_pct: float
+    duplicates: int
+    sequence_errors: int
+    out_of_order: int
+    max_delta_ms: float
+    mean_delta_ms: float
+    max_jitter_ms: float
+    mean_jitter_ms: float
+    telephone_event_packets: int
+    marker_packets: int
+    rtcp: RtcpSummary
+    mos_estimate: MosEstimate
+    reverse_ssrc: str
+    one_way: bool
+    issues: list[str]
+
+
+class RtcpXrReport(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    time: str
+    reporter_ssrc: str
+    r_factor: int
+    mos_lq: float
+    mos_cq: float
+    round_trip_ms: int
+
+
+class RtpStreamsResult(RowsResult, total=False):
+    streams: list[RtpStreamRow]
+    summary: dict[str, Any]
+    calls: list[CallMedia]
+    rtcp_xr: list[RtcpXrReport]
+    mos_method: str
+    display_filter: str | None
+    notes: list[str]
+
+
 # ----------------------------------------------------------------- SCTP / SIGTRAN
 class SctpAssociationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
@@ -527,6 +842,10 @@ class TimelineRow(TypedDict, total=False):
     rtt_ms: float
     unanswered: bool
     failed: bool
+    leg_without_response: bool
+    duplicate_of_frame: int
+    chain: dict[str, Any]
+    note: str
 
 
 class SubscriberIdentity(TypedDict, total=False):
@@ -573,6 +892,7 @@ class FindIdentifierResult(RowsResult, total=False):
     total_hits: int
     errors: list[FileError]
     partially_scanned: list[str]
+    files_not_scanned: int
 
 
 # ----------------------------------------------------------------- capture comparison
@@ -671,7 +991,7 @@ class SubscriberLoop(TypedDict, total=False):
     regular: bool
 
 
-class MessageRatesResult(ToolResult, total=False):
+class MessageRatesResult(RowsResult, total=False):
     protocol: str
     interval_s: float
     display_filter: str
@@ -685,7 +1005,125 @@ class MessageRatesResult(ToolResult, total=False):
     duration_s: float
     by_message: list[MessageRate]
     bursts: list[Burst]
+    bursts_total: int
     subscriber_loops: list[SubscriberLoop]
     timeline: list[dict[str, Any]]
     timeline_interval_s: float
     storms: list[str]
+
+
+# ----------------------------------------------------------------- DNS
+class DnsTransactionRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    time: str
+    client: str
+    server: str
+    transport: str
+    id: str
+    name: str
+    type: str
+    response_frame: int
+    rcode: int
+    rcode_name: str
+    answers: int
+    addresses: list[str]
+    cnames: list[str]
+    rtt_ms: float
+    unanswered: bool
+    near_capture_end: bool
+    retransmissions: int
+    retry_of: int
+    truncated_tc: bool
+    tcp_fallback_frame: int
+    fallback_from_udp: bool
+    duplicate_responses: int
+
+
+class DnsServerRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    server: str
+    queries: int
+    answered: int
+    unanswered: int
+    unanswered_share: float
+    rcodes: dict[str, int]
+    retransmissions: int
+    transports: dict[str, int]
+    clients: int
+    icmp_errors: int
+    rtt_ms: dict[str, float]
+
+
+class DnsNameRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    name: str
+    queries: int
+    unanswered: int
+    failed: int
+    rcodes: dict[str, int]
+    retries: int
+    slow: int
+    types: list[str]
+    servers: list[str]
+
+
+class DnsTransactionsResult(RowsResult, total=False):
+    transactions: list[DnsTransactionRow]
+    servers: list[DnsServerRow]
+    names: list[DnsNameRow]
+    summary: dict[str, Any]
+    issues: list[str]
+
+
+# ----------------------------------------------------------------- TLS
+class TlsAlert(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    level: str
+    description: str
+    frame: int
+    quic: bool
+
+
+class TlsCertificate(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    subject_cn: str
+    subject_o: str
+    issuer_cn: str
+    issuer_o: str
+    san: list[str]
+    san_total: int
+    not_before: str
+    not_after: str
+    chain_length: int
+
+
+class TlsHandshakeRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    transport: str
+    stream: int
+    client: str
+    server: str
+    frame: int
+    time: str
+    sni: str
+    offered: dict[str, Any]
+    client_hellos: int
+    client_hello_missing: bool
+    hello_retry_request: bool
+    chosen: dict[str, Any]
+    tcp_to_hello_ms: float
+    server_hello_ms: float
+    alerts: list[TlsAlert]
+    certificate: TlsCertificate
+    outcome: str
+    note: str
+    closed: dict[str, str]
+    duplicate_copies: int
+    issues: list[str]
+
+
+class TlsHandshakesResult(RowsResult, total=False):
+    connections: list[TlsHandshakeRow]
+    summary: dict[str, Any]
+    issues: list[str]

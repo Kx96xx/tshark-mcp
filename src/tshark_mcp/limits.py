@@ -49,8 +49,9 @@ class Limits:
     aggregating tool (GTP-U, SCTP, SIP, find_identifier) keeps. A long capture is reported
     as truncated when it has more frames than this."""
 
-    max_output_bytes: int = 200 * 1024
-    """Upper bound on the JSON returned to the model; rows are dropped to fit."""
+    max_output_bytes: int = 30 * 1024
+    """Upper bound on the JSON returned to the model (about 8k tokens); rows past it are
+    left for the next page (``next_offset``) and inner lists are trimmed to fit."""
 
     max_stdout_bytes: int = 64 * 1024 * 1024
     """Upper bound on raw tshark stdout kept in memory; tshark is killed beyond it."""
@@ -279,6 +280,16 @@ def lint_apn(value: str) -> str:
     if not isinstance(value, str) or not _APN.match(value.strip()):
         raise ToolError("invalid_argument", f"apn must be a dotted name of letters, digits and hyphens, got {value!r}")
     return value.strip()
+
+
+_HOSTNAME = re.compile(r"^(?=.{1,253}\.?$)[A-Za-z0-9_](?:[A-Za-z0-9_\-]{0,62})(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_\-]{0,62}))*\.?$")
+
+
+def lint_hostname(value: Any, what: str = "name") -> str:
+    """A DNS name or TLS server name: dot-separated labels of letters, digits, hyphens and underscores."""
+    if not isinstance(value, str) or not _HOSTNAME.match(value.strip()):
+        raise ToolError("invalid_argument", f"{what} must be a DNS name such as example.com, got {value!r}")
+    return value.strip().rstrip(".").lower()
 
 
 _SIP_METHOD = re.compile(r"^[A-Za-z]{2,16}$")

@@ -23,7 +23,7 @@ EXPECTED_TOOLS = {
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions",
+    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health",
 }
 
 
@@ -55,6 +55,9 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("gtp_tunnel_health", {"path": f"{d}/gtpu.pcap"}),
         ("message_rates", {"path": f"{d}/all.pcap", "interval": 10}),
         ("gtpv1_sessions", {"path": f"{d}/gtpv2.pcap"}),
+        ("capture_quality", {"path": f"{d}/all.pcap"}),
+        ("rtp_streams", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
+        ("tcp_health", {"path": f"{d}/sip.pcap"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
@@ -120,11 +123,18 @@ def test_list_tools_names_and_schemas(client_run):
     def props(name: str) -> dict[str, Any]:
         return _attr(tools[name], "input_schema", "inputSchema")["properties"]
 
-    assert {"path", "identifier", "kind", "max_files"} == set(props("find_identifier"))
-    assert {"path", "session_id", "imsi", "command_code", "filter", "limit"} == set(props("diameter_sessions"))
-    assert {"path", "imsi", "apn", "teid", "filter", "limit"} == set(props("gtp_sessions"))
-    assert {"path", "call_id", "number", "method", "filter", "limit"} == set(props("sip_dialogs"))
-    assert {"path", "layer", "filter", "limit"} == set(props("conversations"))
+    assert {"path", "identifier", "kind", "max_files", "offset"} == set(props("find_identifier"))
+    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset"} == set(props("diameter_sessions"))
+    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset"} == set(props("gtp_sessions"))
+    assert {"path", "call_id", "number", "method", "filter", "limit", "offset"} == set(props("sip_dialogs"))
+    assert {"path", "layer", "filter", "limit", "offset"} == set(props("conversations"))
+    # The paging contract: every tool that takes a row limit also takes an offset and
+    # reports total_matched / returned / dropped / next_offset.
+    for name in tools:
+        if "limit" in props(name):
+            assert "offset" in props(name), name
+            assert {"total_matched", "returned", "dropped", "offset", "next_offset"} <= set(
+                _attr(tools[name], "output_schema", "outputSchema")["properties"]), name
 
     def out_props(name: str) -> dict[str, Any]:
         return _attr(tools[name], "output_schema", "outputSchema")["properties"]

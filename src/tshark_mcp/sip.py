@@ -58,22 +58,25 @@ def correlation_filter(call_ids: set[str]) -> str | None:
 _PER_MESSAGE = ("sip.Call-ID", "sip.CSeq.method", "sip.CSeq.seq", "sip.from.addr", "sip.to.addr", "sip.resend")
 _PER_REQUEST = ("sip.Method", "sip.r-uri")
 _PER_RESPONSE = ("sip.Status-Code",)
+_PACKET = ("frame.number", "frame.time_epoch", "ip.src", "ip.dst")
 _KIND = re.compile(r"\(([^()]*)\)\s*$")
 
 
-def parse_messages(stdout: str) -> list[dict[str, Any]]:
+def parse_messages(stdout: str, fields: list[str] | None = None) -> list[dict[str, Any]]:
     """One record per SIP message. A TCP segment can carry several messages; tshark
     then lists each field's values for all of them, and the protocol item text
     ("Session Initiation Protocol (INVITE)" or "(200)") says which is a request and
     which a response, so every value goes back to its own message. Optional headers
     (P-Asserted-Identity, Reason, Contact, ...) are kept for a message only when every
-    message of the packet has exactly one."""
+    message of the packet has exactly one. ``fields`` is :data:`FIELDS` followed by any
+    extra columns (the message body, more headers); extras follow the same rule."""
+    fields = fields or FIELDS
     out = []
     for line in stdout.splitlines():
         cols = split_fields_line(line)
-        if len(cols) < len(FIELDS):
+        if len(cols) < len(fields):
             continue
-        rec = dict(zip(FIELDS, cols))
+        rec = dict(zip(fields, cols))
         call_ids = rec["sip.Call-ID"].split(AGGREGATOR) if rec["sip.Call-ID"] else []
         if len(call_ids) <= 1:
             for k, v in rec.items():
@@ -111,7 +114,9 @@ def _split_bundle(rec: dict[str, str], n: int) -> list[dict[str, Any]]:
             counters[kind] += 1
             for k in (_PER_REQUEST if kind == "request" else _PER_RESPONSE):
                 msg[k] = values[k][j] if j < len(values[k]) else ""
-        for k in ("sip.P-Asserted-Identity", "sip.P-Preferred-Identity", "sip.Reason", "sip.Contact", "sip.auth.username"):
+        for k in values:
+            if k in _PACKET or k in _PER_MESSAGE or k in _PER_REQUEST or k in _PER_RESPONSE or k == "sip":
+                continue
             if len(values[k]) == n:
                 msg[k] = values[k][i]
         if msg["sip.Call-ID"]:
@@ -286,3 +291,83 @@ def dialog_failed(row: dict[str, Any]) -> bool:
 
 def call_ids(rows: list[dict[str, Any]]) -> set[str]:
     return {r["call_id"] for r in rows}
+
+
+# ----------------------------------------------------------------- SDP per call
+# The SIP fields plus the raw body and its type, for the media tools.
+MEDIA_FIELDS = [*FIELDS, "sip.msg_body", "sip.Content-Type"]
+
+
+def sdp_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every message of ``messages`` (from :func:`parse_messages` with
+    :data:`MEDIA_FIELDS`) that carries SDP, in capture order, with its role in the
+    RFC 3264 offer/answer exchange of its Call-ID. SDP in a request is an ``offer``
+    (in ACK, or in PRACK after an offer in a reliable 18x, an ``answer``); SDP in a
+    response is the ``answer`` to the offer its request carried (same CSeq), or an
+    ``offer`` when the request had none (answered in the ACK). An SDP whose o= session
+    id and version were already seen in the call is a ``repeat``: the answer sent in
+    183 and again in 200, or the same body forwarded by a proxy on its other leg.
+    Retransmissions are skipped."""
+    from . import sdp as sdp_mod
+
+    out: list[dict[str, Any]] = []
+    seen: dict[str, set[str]] = {}
+    offered_cseqs: dict[str, set[str]] = {}
+    response_offer: dict[str, bool] = {}
+    for rec in messages:
+        if rec.get("sip.resend") in ("1", "True"):
+            continue
+        text = sdp_mod.extract(sdp_mod.body_text(rec.get("sip.msg_body")))
+        if not text:
+            continue
+        parsed = sdp_mod.parse(text)
+        if not parsed["media"]:
+            continue
+        call_id = rec["sip.Call-ID"]
+        method = rec["sip.Method"]
+        cseq = rec.get("sip.CSeq.seq", "")
+        key = f'{parsed.get("origin")}|{parsed.get("origin_version")}'
+        keys = seen.setdefault(call_id, set())
+        if parsed.get("origin_version") and key in keys:
+            role = "repeat"
+        elif method:
+            if method == "ACK" or (method == "PRACK" and response_offer.get(call_id)):
+                role = "answer"
+                response_offer[call_id] = False
+            else:
+                role = "offer"
+                offered_cseqs.setdefault(call_id, set()).add(cseq)
+        elif cseq in offered_cseqs.get(call_id, set()):
+            role = "answer"
+        else:
+            role = "offer"
+            response_offer[call_id] = True
+        keys.add(key)
+        status = to_int(rec["sip.Status-Code"])
+        out.append({
+            "call_id": call_id,
+            "frame": to_int(rec["frame.number"]),
+            "time": parse_time(rec["frame.time_epoch"]),
+            "src": rec["ip.src"],
+            "dst": rec["ip.dst"],
+            "message": method or (f'{status} {rec["sip.CSeq.method"]}'.strip() if status is not None else ""),
+            "role": role,
+            "sdp": parsed,
+        })
+    return out
+
+
+def media_endpoints(sdps: list[dict[str, Any]]) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    """(address, port) -> the SDP media sections that advertised it as a receive address,
+    for RTP and (on the RTCP port) RTCP, oldest first."""
+    out: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for entry in sdps:
+        for index, media in enumerate(entry["sdp"]["media"]):
+            addr = media.get("address")
+            if not addr or not media.get("port"):
+                continue
+            ref = {"entry": entry, "media": media, "index": index, "rtcp": False}
+            out.setdefault((addr, media["port"]), []).append(ref)
+            if media.get("rtcp_port"):
+                out.setdefault((addr, media["rtcp_port"]), []).append({**ref, "rtcp": True})
+    return out

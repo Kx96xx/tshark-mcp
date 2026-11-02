@@ -15,7 +15,7 @@ class TestLimits:
         lim = Limits()
         assert lim.max_file_bytes == 500 * 1024 * 1024
         assert lim.max_packets == 500
-        assert lim.max_output_bytes == 200 * 1024
+        assert lim.max_output_bytes == 30 * 1024
         assert lim.timeout_seconds == 60.0
 
     @pytest.mark.parametrize("field", ["max_file_bytes", "max_packets", "max_output_bytes", "timeout_seconds"])
@@ -176,3 +176,12 @@ class TestSmallLints:
         assert clamp_limit(0, 500, 200) == 1
         with pytest.raises(ToolError):
             clamp_limit("ten", 500, 200)
+
+
+def test_lint_hostname():
+    from tshark_mcp.limits import lint_hostname
+    assert lint_hostname("WWW.Example.COM.") == "www.example.com"
+    assert lint_hostname("_sip._udp.ims.example.org") == "_sip._udp.ims.example.org"
+    for bad in ("", "a b", 'x"y', "a..b", "-x.com", "x\\y", "a" * 64 + ".com", None, 5):
+        with pytest.raises(ToolError):
+            lint_hostname(bad)

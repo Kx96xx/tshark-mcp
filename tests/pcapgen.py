@@ -504,6 +504,230 @@ def write_sigtran_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# --------------------------------------------------------------------------- RTP / voice
+MEDIA_GW_IP = "192.0.2.70"
+UE_NAT_IP = "203.0.113.7"
+UE_PRIVATE_IP = "10.0.0.5"
+CALL_ID_VOICE = "voice-call-1@ue.example"
+CALL_ID_NAT = "voice-nat-2@ue.example"
+CALL_ID_ONEWAY = "voice-oneway-3@ue.example"
+CALL_ID_488 = "voice-488-4@ue.example"
+SSRC_UP = 0x11111111
+SSRC_DOWN = 0x22222222
+
+
+def _rtp(pt: int, seq: int, ts: int, ssrc: int, payload: bytes, marker: bool = False) -> bytes:
+    return struct.pack("!BBHII", 0x80, (0x80 if marker else 0) | pt, seq & 0xFFFF, ts & 0xFFFFFFFF, ssrc) + payload
+
+
+def _rtcp_sr(ssrc: int, ntp_msw: int, ntp_lsw: int, rtp_ts: int, packets: int, octets: int,
+             blocks: list[tuple[int, int, int, int, int, int, int]]) -> bytes:
+    """Sender report; each block is (ssrc, fraction, cum_lost, ext_high_seq, jitter, lsr, dlsr)."""
+    body = struct.pack("!IIIIII", ssrc, ntp_msw, ntp_lsw, rtp_ts, packets, octets)
+    for b_ssrc, fraction, cum, high, jitter, lsr, dlsr in blocks:
+        body += struct.pack("!IIIIII", b_ssrc, (fraction << 24) | (cum & 0xFFFFFF), high, jitter, lsr, dlsr)
+    return struct.pack("!BBH", 0x80 | len(blocks), 200, len(body) // 4) + body
+
+
+def _rtcp_xr_voip(ssrc: int, source: int, r_factor: int, mos_lq_tenths: int, mos_cq_tenths: int, rt_delay: int) -> bytes:
+    block = struct.pack("!BBH", 7, 0, 8) + struct.pack(
+        "!IBBBBHHHHbbBBBBBBBBHHH", source, 3, 0, 0, 0, 0, 0, rt_delay, 40, -20, -60, 127, 16, r_factor, 127,
+        mos_lq_tenths, mos_cq_tenths, 0, 0, 40, 80, 200)
+    body = struct.pack("!I", ssrc) + block
+    return struct.pack("!BBH", 0x80, 207, len(body) // 4) + body
+
+
+def _sdp(addr: str, port: int, formats: list[int], rtpmaps: list[str], extra: list[str] | None = None,
+         version: int = 1) -> str:
+    lines = ["v=0", f"o=- 100 {version} IN IP4 {addr}", "s=-", f"c=IN IP4 {addr}", "t=0 0",
+             f"m=audio {port} RTP/AVP {' '.join(str(f) for f in formats)}"]
+    lines += [f"a=rtpmap:{m}" for m in rtpmaps] + (extra or [])
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _voice_sip(call_id: str, frm_tag: str):
+    frm = f'<sip:+{MSISDN}@ims.mnc001.mcc001.3gppnetwork.org>;tag={frm_tag}'
+    to = '<sip:+15550100555@ims.mnc001.mcc001.3gppnetwork.org>'
+    via = "Via: SIP/2.0/UDP 198.51.100.9:5060;branch=z9hG4bK" + frm_tag
+    ruri = "sip:+15550100555@ims.mnc001.mcc001.3gppnetwork.org"
+
+    def req(method: str, cseq: int, to_tag: str | None = None, extra: list[str] | None = None, body: str = "",
+            ctype: str = "application/sdp") -> bytes:
+        lines = [f"{method} {ruri} SIP/2.0", via, f"From: {frm}", f"To: {to}" + (f";tag={to_tag}" if to_tag else ""),
+                 f"Call-ID: {call_id}", f"CSeq: {cseq} {method}"] + (extra or [])
+        if body:
+            lines.append(f"Content-Type: {ctype}")
+        return _sip(lines, body)
+
+    def resp(code: int, reason: str, cseq: int, method: str, to_tag: str | None = "net", extra: list[str] | None = None,
+             body: str = "") -> bytes:
+        lines = [f"SIP/2.0 {code} {reason}", via, f"From: {frm}", f"To: {to}" + (f";tag={to_tag}" if to_tag else ""),
+                 f"Call-ID: {call_id}", f"CSeq: {cseq} {method}"] + (extra or [])
+        if body:
+            lines.append("Content-Type: application/sdp")
+        return _sip(lines, body)
+
+    return req, resp
+
+
+def _audio(frames, t_start: float, src: str, sport: int, dst: str, dport: int, ssrc: int, pt: int, rate: int,
+           count: int, seq0: int, ts0: int, *, drop=(), swap=(), jitter_ms=None, events=None) -> None:
+    """``count`` packets of 20 ms audio. ``drop`` skips sequence offsets (lost), ``swap``
+    exchanges the arrival of offset i and i+1, ``jitter_ms(i)`` delays arrival i, and
+    ``events`` maps an offset to a list of (pt, event, end, duration) RFC 4733 packets
+    sent in place of that audio packet (same timestamp, own sequence numbers)."""
+    step = rate // 50
+    out = []
+    seq = seq0
+    for i in range(count):
+        arrival = t_start + i * 0.020 + ((jitter_ms(i) if jitter_ms else 0.0) / 1000.0)
+        if events and i in events:
+            for k, (ev_pt, ev, end, dur) in enumerate(events[i]):
+                payload = struct.pack("!BBH", ev, (0x80 if end else 0) | 10, dur)
+                out.append((arrival + k * 0.0001, _rtp(ev_pt, seq, ts0 + i * step, ssrc, payload, marker=(k == 0))))
+                seq += 1
+            continue
+        if i not in drop:
+            out.append((arrival, _rtp(pt, seq, ts0 + i * step, ssrc, bytes(32))))
+        seq += 1
+    for i in swap:
+        out[i], out[i + 1] = (out[i + 1][0] - 0.0, out[i][1]), (out[i][0], out[i + 1][1])
+    for ts, payload in out:
+        frames.append((ts, _udp_frame(src, dst, sport, dport, payload)))
+
+
+def write_voice_call_pcap(path: Path) -> Path:
+    """A complete VoLTE-style call with media: INVITE (SDP offer AMR-WB, PCMA,
+    telephone-event; retransmitted once), 100, 180, 200 with the SDP answer, ACK; RTP
+    both ways (uplink loses 3 packets, has one reordered pair, some jitter and the
+    RFC 4733 digit 5; downlink is clean), RTCP SR from each side (the network's report
+    about the uplink sees the loss and gives a round trip), RTCP XR VoIP metrics, a SIP
+    INFO with dtmf-relay digit 7, and a BYE from the network with a Q.850 Reason."""
+    t0 = 1_700_000_500.0
+    frames: list[tuple[float, bytes]] = []
+    req, resp = _voice_sip(CALL_ID_VOICE, "v1")
+    offer = _sdp(UE_SIP_IP, 40000, [96, 8, 101], ["96 AMR-WB/16000", "8 PCMA/8000", "101 telephone-event/16000"],
+                 ["a=fmtp:101 0-15", "a=ptime:20", "a=sendrecv"])
+    answer = _sdp(MEDIA_GW_IP, 30000, [96, 101], ["96 AMR-WB/16000", "101 telephone-event/16000"],
+                  ["a=fmtp:101 0-15", "a=ptime:20", "a=sendrecv"])
+
+    def ue(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, msg)))
+
+    def net(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, msg)))
+
+    invite = req("INVITE", 1, extra=["Contact: <sip:198.51.100.9:5060>"], body=offer)
+    ue(t0, invite)
+    ue(t0 + 0.5, invite)
+    net(t0 + 0.52, resp(100, "Trying", 1, "INVITE", to_tag=None))
+    net(t0 + 1.2, resp(180, "Ringing", 1, "INVITE"))
+    net(t0 + 3.0, resp(200, "OK", 1, "INVITE", body=answer))
+    ue(t0 + 3.02, req("ACK", 1, to_tag="net"))
+
+    media0 = t0 + 3.1
+    _audio(frames, media0, UE_SIP_IP, 40000, MEDIA_GW_IP, 30000, SSRC_UP, 96, 16000, 250, 1000, 160000,
+           drop=(50, 51, 52), swap=(97,), jitter_ms=lambda i: 6.0 if i % 10 == 5 else 0.0,
+           events={150: [(101, 5, False, 160), (101, 5, False, 320), (101, 5, True, 480), (101, 5, True, 480),
+                         (101, 5, True, 480)]})
+    _audio(frames, media0 + 0.005, MEDIA_GW_IP, 30000, UE_SIP_IP, 40000, SSRC_DOWN, 96, 16000, 250, 5000, 900000)
+
+    # RTCP: the UE's SR (NTP 0x0000AAAA.BBBB0000), then the gateway's SR whose report block
+    # about the uplink answers it (LSR = middle 32 bits, DLSR 0.1 s): round trip 100 ms.
+    sr_up = _rtcp_sr(SSRC_UP, 0x0000AAAA, 0xBBBB0000, 160000 + 16000 * 2, 100, 3200,
+                     [(SSRC_DOWN, 0, 0, 5099, 16, 0, 0)])
+    frames.append((media0 + 2.0, _udp_frame(UE_SIP_IP, MEDIA_GW_IP, 40001, 30001, sr_up)))
+    sr_down = _rtcp_sr(SSRC_DOWN, 0x0000CCCC, 0xDDDD0000, 900000 + 16000 * 2, 110, 3520,
+                       [(SSRC_UP, 3, 3, 1099, 80, 0xAAAABBBB, 6554)])
+    frames.append((media0 + 2.2, _udp_frame(MEDIA_GW_IP, UE_SIP_IP, 30001, 40001, sr_down)))
+    xr = _rtcp_xr_voip(SSRC_DOWN, SSRC_UP, 88, 41, 40, 100)
+    frames.append((media0 + 2.3, _udp_frame(MEDIA_GW_IP, UE_SIP_IP, 30001, 40001, xr)))
+
+    info = req("INFO", 2, to_tag="net", body="Signal=7\r\nDuration=160\r\n", ctype="application/dtmf-relay")
+    ue(t0 + 6.0, info)
+    net(t0 + 6.03, resp(200, "OK", 2, "INFO"))
+    bye = _sip([
+        "BYE sip:198.51.100.9:5060 SIP/2.0", "Via: SIP/2.0/UDP 192.0.2.50:5060;branch=z9hG4bKbye1",
+        "From: <sip:+15550100555@ims.mnc001.mcc001.3gppnetwork.org>;tag=net",
+        f"To: <sip:+{MSISDN}@ims.mnc001.mcc001.3gppnetwork.org>;tag=v1", f"Call-ID: {CALL_ID_VOICE}",
+        "CSeq: 1 BYE", 'Reason: Q.850;cause=16;text="Normal call clearing"',
+    ])
+    net(t0 + 8.5, bye)
+    ue(t0 + 8.52, _sip([
+        "SIP/2.0 200 OK", "Via: SIP/2.0/UDP 192.0.2.50:5060;branch=z9hG4bKbye1",
+        "From: <sip:+15550100555@ims.mnc001.mcc001.3gppnetwork.org>;tag=net",
+        f"To: <sip:+{MSISDN}@ims.mnc001.mcc001.3gppnetwork.org>;tag=v1", f"Call-ID: {CALL_ID_VOICE}", "CSeq: 1 BYE",
+    ]))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
+def write_voice_problems_pcap(path: Path) -> Path:
+    """Three broken calls. NAT: the UE offers its private address 10.0.0.5, its RTP
+    really comes from 203.0.113.7:61000, and the gateway keeps sending to the private
+    address. One-way: only the UE sends RTP. 488: the offer has PCMU/PCMA only, the
+    488 Not Acceptable Here lists AMR-WB, with a Warning header."""
+    t0 = 1_700_000_700.0
+    frames: list[tuple[float, bytes]] = []
+
+    def ue(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, msg)))
+
+    def net(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, msg)))
+
+    # NAT call
+    req, resp = _voice_sip(CALL_ID_NAT, "n2")
+    ue(t0, req("INVITE", 1, body=_sdp(UE_PRIVATE_IP, 40000, [0, 101], ["0 PCMU/8000", "101 telephone-event/8000"])))
+    net(t0 + 0.8, resp(180, "Ringing", 1, "INVITE"))
+    net(t0 + 1.0, resp(200, "OK", 1, "INVITE", body=_sdp(MEDIA_GW_IP, 30002, [0, 101],
+                                                          ["0 PCMU/8000", "101 telephone-event/8000"])))
+    ue(t0 + 1.02, req("ACK", 1, to_tag="net"))
+    _audio(frames, t0 + 1.1, UE_NAT_IP, 61000, MEDIA_GW_IP, 30002, 0x33333333, 0, 8000, 100, 1, 0)
+    _audio(frames, t0 + 1.105, MEDIA_GW_IP, 30002, UE_PRIVATE_IP, 40000, 0x44444444, 0, 8000, 100, 1, 0)
+    ue(t0 + 4.0, req("BYE", 2, to_tag="net"))
+    net(t0 + 4.02, resp(200, "OK", 2, "BYE"))
+
+    # One-way call
+    req, resp = _voice_sip(CALL_ID_ONEWAY, "w3")
+    ue(t0 + 10.0, req("INVITE", 1, body=_sdp(UE_SIP_IP, 40002, [8], ["8 PCMA/8000"])))
+    net(t0 + 10.5, resp(200, "OK", 1, "INVITE", body=_sdp(MEDIA_GW_IP, 30004, [8], ["8 PCMA/8000"])))
+    ue(t0 + 10.52, req("ACK", 1, to_tag="net"))
+    _audio(frames, t0 + 10.6, UE_SIP_IP, 40002, MEDIA_GW_IP, 30004, 0x55555555, 8, 8000, 100, 1, 0)
+    ue(t0 + 13.0, req("BYE", 2, to_tag="net"))
+    net(t0 + 13.02, resp(200, "OK", 2, "BYE"))
+
+    # 488 call
+    req, resp = _voice_sip(CALL_ID_488, "x4")
+    ue(t0 + 20.0, req("INVITE", 1, body=_sdp(UE_SIP_IP, 40004, [0, 8], ["0 PCMU/8000", "8 PCMA/8000"])))
+    net(t0 + 20.05, resp(100, "Trying", 1, "INVITE", to_tag=None))
+    net(t0 + 20.3, resp(488, "Not Acceptable Here", 1, "INVITE",
+                        extra=['Warning: 305 pcscf.example "Incompatible media format"',
+                               'Reason: SIP;cause=488;text="Not Acceptable Here"'],
+                        body=_sdp(MEDIA_GW_IP, 30006, [96], ["96 AMR-WB/16000"])))
+    ue(t0 + 20.32, req("ACK", 1, to_tag="net"))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
+def write_rtp_without_sdp_pcap(path: Path) -> Path:
+    """One PCMU stream with no SIP at all: tshark decodes it only with heuristics."""
+    frames: list[tuple[float, bytes]] = []
+    _audio(frames, 1_700_000_900.0, "198.51.100.20", 16384, "198.51.100.21", 16386, 0x66666666, 0, 8000, 50, 1, 0)
+    return _frames_to_pcap(path, frames)
+
+
+def write_voice_pcaps(directory: Path) -> dict[str, Path]:
+    """The voice captures, kept in their own directory so the directory scans of the
+    signalling captures are unchanged."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {
+        "voice_call": write_voice_call_pcap(directory / "voice_call.pcap"),
+        "voice_problems": write_voice_problems_pcap(directory / "voice_problems.pcap"),
+        "rtp_no_sdp": write_rtp_without_sdp_pcap(directory / "rtp_no_sdp.pcap"),
+    }
+
+
 def write_all(directory: Path) -> dict[str, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     return {
@@ -532,5 +756,5 @@ if __name__ == "__main__":  # pragma: no cover
     import sys
 
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
-    for name, p in write_all(out).items():
+    for name, p in {**write_all(out), **write_voice_pcaps(out / "voice")}.items():
         print(name, p)

@@ -112,3 +112,89 @@ def base_row(tx: Transaction) -> dict[str, Any]:
     if req is None:
         row["unmatched_answer"] = True
     return row
+
+
+# ------------------------------------------------------------ proxy chains
+DUPLICATE_WINDOW_S = 0.05
+CHAIN_WINDOW_S = 1.0
+
+
+def annotate_legs(txs: list[Transaction], rows: list[dict[str, Any]], identity: Callable[[Message], Hashable | None]) -> None:
+    """Explain requests without a response on captures that hold several legs of one procedure.
+
+    ``rows[i]`` is the row built from ``txs[i]``; rows are changed in place.
+
+    - **Duplicates**: the same request (same peers, sequence key and name) seen again
+      within 50 ms is one packet captured twice (two interfaces or a mirror), not a
+      retransmission; it gets ``duplicate_of_frame`` instead of ``unanswered``.
+    - **Proxy chains**: requests with the same ``identity`` (for GTP: IMSI, message and
+      APN) within one second of the first are legs of one procedure relayed through
+      proxies. When at least one leg has no response, every leg of the chain gets
+      ``chain`` (``leg`` k of ``legs`` in time order, how many legs were answered and on
+      which frames); fully answered chains are left as they are. When some legs were answered, a leg without a
+      response gets ``leg_without_response`` instead of ``unanswered``, with a note
+      saying whether the answered leg is further along the chain (the response was not
+      relayed back on this leg, or was not captured here) or before it. When no leg was
+      answered every leg stays ``unanswered``: the procedure itself got no response.
+    """
+    seen: dict[tuple, Message] = {}
+    dup: set[int] = set()
+    for i, tx in enumerate(txs):
+        req = tx.request
+        if req is None:
+            continue
+        k = (req.src, req.dst, req.key, req.name)
+        first_copy = seen.get(k)
+        if first_copy is not None and req.time - first_copy.time <= DUPLICATE_WINDOW_S and tx.answer is None:
+            dup.add(i)
+            rows[i].pop("unanswered", None)
+            rows[i]["duplicate_of_frame"] = first_copy.frame
+            rows[i]["note"] = "the same request captured twice (identical packet seen again), not a retransmission"
+        else:
+            seen[k] = req
+    groups: dict[Hashable, list[list[int]]] = {}
+    order = sorted((i for i, tx in enumerate(txs) if tx.request is not None and i not in dup),
+                   key=lambda i: (txs[i].request.time, txs[i].request.frame))  # type: ignore[union-attr]
+    for i in order:
+        req = txs[i].request
+        assert req is not None
+        ident = identity(req)
+        if ident is None:
+            continue
+        chains = groups.setdefault(ident, [])
+        if chains and req.time - txs[chains[-1][0]].request.time <= CHAIN_WINDOW_S:  # type: ignore[union-attr]
+            chains[-1].append(i)
+        else:
+            chains.append([i])
+    for chains in groups.values():
+        for chain in chains:
+            answered = [i for i in chain if txs[i].answer is not None]
+            if len(chain) < 2 or len(answered) == len(chain):
+                continue  # a single request, or every leg answered: nothing to explain
+            answer_frames = [txs[i].answer.frame for i in answered]  # type: ignore[union-attr]
+            for pos, i in enumerate(chain):
+                row = rows[i]
+                row["chain"] = {"leg": pos + 1, "legs": len(chain), "answered_legs": len(answered),
+                                **({"answered_on_frames": answer_frames} if answer_frames else {})}
+                if txs[i].answer is not None or not answered or not row.get("unanswered"):
+                    continue
+                row.pop("unanswered", None)
+                row["leg_without_response"] = True
+                later = [j for j in answered if chain.index(j) > pos]
+                if later:
+                    j = later[0]
+                    row["note"] = (f"no response on this leg, but leg {chain.index(j) + 1} further along the chain was "
+                                   f"answered (frame {txs[j].answer.frame}{_cause(rows[j])}): the response was not "  # type: ignore[union-attr]
+                                   "relayed back to this sender, or was not captured on this leg")
+                else:
+                    j = answered[-1]
+                    row["note"] = (f"no response on this leg; leg {chain.index(j) + 1} before it was answered (frame "
+                                   f"{txs[j].answer.frame}{_cause(rows[j])}): the node that relayed this request answered "  # type: ignore[union-attr]
+                                   "on its own (the next hop did not answer), or the response on this leg was not captured")
+
+
+def _cause(row: dict[str, Any]) -> str:
+    cause, name = row.get("cause"), row.get("cause_name")
+    if cause is None:
+        return ""
+    return f", cause {cause} {name}" if name else f", cause {cause}"
