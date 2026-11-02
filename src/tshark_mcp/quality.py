@@ -33,7 +33,10 @@ FIELDS = [
     "ipv6.src", "ipv6.dst", "ipv6.plen", "ipv6.hlim",
     "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw", "tcp.len", "tcp.flags", "tcp.checksum",
     "tcp.checksum.status", "tcp.options.timestamp.tsval", "udp.srcport", "udp.dstport", "udp.length", "udp.checksum", "udp.checksum.status",
-    "icmp.type", "icmp.code", "icmpv6.type", "icmpv6.code",
+    "icmp.type", "icmp.code", "icmp.checksum", "icmp.seq", "icmpv6.type", "icmpv6.code", "icmpv6.checksum",
+    "icmpv6.echo.sequence_number",
+    "sctp.verification_tag", "sctp.chunk_type", "sctp.data_tsn_raw", "sctp.sack_cumulative_tsn_ack_raw", "sctp.sack_a_rwnd",
+    "sctp.parameter_heartbeat_information",
 ]
 
 # Validation of these checksums is off by default in tshark; the runner allows exactly these.
