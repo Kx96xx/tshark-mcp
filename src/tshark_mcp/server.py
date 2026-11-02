@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, pairing, rates, search, sigtran, sip, tunnels
+from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, pairing, rates, search, sigtran, sip, tls, tunnels
 from .fields import field_catalogue, iso, parse_packets, split_fields_line, to_int, validate_fields
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -50,8 +50,9 @@ call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
-their answers and shows unanswered queries, rcodes and slow resolvers. Results
-are JSON. List tools return one page: total_matched rows found, returned in
+their answers and shows unanswered queries, rcodes and slow resolvers;
+tls_handshakes shows why a TLS or QUIC handshake failed, without decrypting.
+Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
 when next_offset is present, call again with offset=next_offset and the same
 arguments for the next page. "truncated": true always says why and how to get
@@ -981,6 +982,43 @@ def dns_transactions(path: str, name: str | None = None, filter: str | None = No
         return _envelope("transactions", rows, cap, scan, offset=offset, display_filter=flt, **out)
     return _guarded("dns_transactions", {"path": path, "name": name, "filter": filter, "limit": limit,
                                          "offset": offset}, run)
+
+
+@app.tool(title="TLS handshakes", annotations=READ_ONLY)
+def tls_handshakes(path: str, server_name: str | None = None, filter: str | None = None,
+                   limit: int = 200, offset: int = 0) -> models.TlsHandshakesResult:
+    """TLS handshakes per connection, read from the clear part of the handshake. No
+    decryption and no key material. For TCP and QUIC: the client's offer (SNI, ALPN,
+    TLS versions, number of cipher suites without GREASE, fallback SCSV) against the
+    server's choice (version, cipher suite, ALPN when in clear), HelloRetryRequest,
+    time from SYN to ClientHello and from ClientHello to ServerHello, alerts with
+    level, name and who sent them (QUIC CONNECTION_CLOSE carrying a TLS alert too),
+    and for TLS 1.2 and older the leaf certificate (subject, issuer, SAN, notBefore,
+    notAfter, chain length). `outcome` is established, alert, no_server_hello,
+    reset_by_server, closed_by_server, client_gave_up, client_rejected_likely (TLS
+    1.3: the client sent one encrypted alert-sized record instead of Finished,
+    usually a certificate it would not accept), unreadable (the server answered but
+    tshark could not read a ServerHello), incomplete, or server_hello for QUIC (the
+    rest is encrypted). `issues` names expired or not-yet-valid certificates, an SNI
+    the certificate does not cover, deprecated versions, a version the client did not
+    offer, HelloRetryRequest and repeated ClientHellos. Copies of one packet (several
+    interfaces, tunnelled and decapsulated) count once; TLS inside GTP-U is read from
+    the inner packet. A connection whose ClientHello is not readable is listed with
+    `client_hello_missing` when the server's side is. `server_name` keeps that SNI
+    and the names under it; `filter` is ANDed with the base filter. Problem
+    connections come first."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        wanted = lint_hostname(server_name, "server_name") if server_name is not None and str(server_name).strip() != "" else None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        flt = _filter(filter, base=tls.display_filter())
+        stdout, scan = _fields_run(capture, flt, tls.FIELDS, st.limits.max_scan_packets, aggregator=tls.AGGREGATOR)
+        out = tls.summarise(tls.build(tls.parse(stdout)), wanted)
+        rows = sorted(out.pop("connections"), key=lambda r: (0 if tls.is_problem(r) else 1, r.get("frame") or 0))
+        return _envelope("connections", rows, cap, scan, offset=offset, display_filter=flt, **out)
+    return _guarded("tls_handshakes", {"path": path, "server_name": server_name, "filter": filter, "limit": limit,
+                                       "offset": offset}, run)
 
 
 @app.tool(title="SIP dialogs", annotations=READ_ONLY)

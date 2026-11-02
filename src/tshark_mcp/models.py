@@ -787,3 +787,56 @@ class DnsTransactionsResult(RowsResult, total=False):
     names: list[DnsNameRow]
     summary: dict[str, Any]
     issues: list[str]
+
+
+# ----------------------------------------------------------------- TLS
+class TlsAlert(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    level: str
+    description: str
+    frame: int
+    quic: bool
+
+
+class TlsCertificate(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    subject_cn: str
+    subject_o: str
+    issuer_cn: str
+    issuer_o: str
+    san: list[str]
+    san_total: int
+    not_before: str
+    not_after: str
+    chain_length: int
+
+
+class TlsHandshakeRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    transport: str
+    stream: int
+    client: str
+    server: str
+    frame: int
+    time: str
+    sni: str
+    offered: dict[str, Any]
+    client_hellos: int
+    client_hello_missing: bool
+    hello_retry_request: bool
+    chosen: dict[str, Any]
+    tcp_to_hello_ms: float
+    server_hello_ms: float
+    alerts: list[TlsAlert]
+    certificate: TlsCertificate
+    outcome: str
+    note: str
+    closed: dict[str, str]
+    duplicate_copies: int
+    issues: list[str]
+
+
+class TlsHandshakesResult(RowsResult, total=False):
+    connections: list[TlsHandshakeRow]
+    summary: dict[str, Any]
+    issues: list[str]
