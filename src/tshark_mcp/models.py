@@ -1267,3 +1267,69 @@ class TlsHandshakesResult(RowsResult, total=False):
     connections: list[TlsHandshakeRow]
     summary: dict[str, Any]
     issues: list[str]
+
+
+# ----------------------------------------------------------------- TCP response times
+class TcpExchange(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    time: str
+    method: str
+    uri: str
+    host: str
+    status: int
+    request_bytes: int
+    request_ms: float
+    response_frame: int
+    response_bytes: int
+    think_ms: float
+    server_ms: float
+    transfer_ms: float
+    total_ms: float
+    retransmissions: int
+    out_of_order: int
+    stalls: list[dict[str, Any]]
+    no_response: bool
+    long_wait: bool
+
+
+class ResponseTimeFlow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    stream: int
+    tcp_streams: list[int]
+    client: str
+    server: str
+    frame: int
+    first: str
+    duration_ms: float
+    rtt_ms: float
+    rtt_capture_to_server_ms: float
+    rtt_capture_to_client_ms: float
+    rtt_source: str
+    connect_ms: float
+    syn_retransmissions: int
+    synack_retransmissions: int
+    capture_near: str
+    exchanges: int
+    unanswered_requests: int
+    long_waits: int
+    server_pushes: int
+    max_server_ms: float
+    time_split_ms: dict[str, float]
+    verdict: str
+    why: str
+    retransmissions: int
+    out_of_order: int
+    zero_windows: int
+    resets: dict[str, int]
+    closed: dict[str, str]
+    duplicate_copies: int
+    slowest_exchanges: list[TcpExchange]
+
+
+class ResponseTimesResult(RowsResult, total=False):
+    flows: list[ResponseTimeFlow]
+    servers: list[dict[str, Any]]
+    not_opened: list[dict[str, Any]]
+    summary: dict[str, Any]
+    issues: list[str]

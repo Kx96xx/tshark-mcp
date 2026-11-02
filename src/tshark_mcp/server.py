@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, tls, tunnels
+from . import __version__, avps, compare, diameter, dns, gtp, gtpv1, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, tcphealth, timing, tls, tunnels
 from .fields import (
     compact, dicts_with, field_catalogue, iso, parse_packets, parse_time, split_fields_line, to_int, validate_fields,
 )
@@ -63,6 +63,7 @@ Before reading missing packets or retransmissions as network faults,
 capture_quality says whether the capture itself can be trusted (copies,
 capture drops, truncation, clocks); tcp_health tells real TCP loss, resets
 and MTU black holes from capture artifacts.
+response_times splits slow TCP requests into network, server and receiver time.
 Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
 when next_offset is present, call again with offset=next_offset and the same
@@ -1298,6 +1299,45 @@ def tls_handshakes(path: str, server_name: str | None = None, filter: str | None
         return _envelope("connections", rows, cap, scan, offset=offset, display_filter=flt, **out)
     return _guarded("tls_handshakes", {"path": path, "server_name": server_name, "filter": filter, "limit": limit,
                                        "offset": offset}, run)
+
+
+@app.tool(title="TCP response times", annotations=READ_ONLY)
+def response_times(path: str, filter: str | None = None, limit: int = 100,
+                   offset: int = 0) -> models.ResponseTimesResult:
+    """Where the time goes in TCP request/response flows: network, server or receiver.
+    Each connection is cut into exchanges (a run of client data, then the server's
+    answer). Per exchange: request and response bytes, think time (last request byte
+    to first response byte), `server_ms` (think time less the round trip from the
+    capture point to the server, so it holds wherever the capture was taken),
+    transfer time, retransmissions and out-of-order segments (told apart by IPv4 ID
+    where there is one, so reordering is not called loss), and stalls inside the response (gaps over 200 ms
+    and three round trips) with their cause: retransmission, zero_window (the client
+    could not take more) or server_pause. HTTP/1.x method, URI, host and status are
+    attached when tshark dissects them. Per flow: round trip from the handshake (or
+    the quickest ACKs; with lost SYNs or SYN-ACKs also `connect_ms` and how often each
+    was sent), which side the capture sits near, `time_split_ms` (network
+    round trips, server, transfer, retransmission stalls, zero-window stalls, server
+    pauses), and a `verdict`: server-bound, network-bound, receiver-bound, fast (every
+    exchange within 100 ms), idle-or-push (answers only after 10 s or more: long
+    polls, push channels, keep-alives) or no-response, with `why`. Answers after 10 s
+    are marked `long_wait` and left out of the split; server data long after a
+    response with no new request counts as `server_pushes`. `servers` gives per-server
+    server_ms percentiles; `not_opened` lists SYNs that got no answer or a reset. One
+    connection split over several tcp.stream numbers by a tap's copies is joined.
+    Copies of the same packet count once. TCP inside GTP-U is read from the inner
+    packet. Pipelined or multiplexed protocols (HTTP/2, gRPC) give exchanges that
+    group several requests. `filter` is ANDed with `tcp`, e.g. `tcp.port == 443`.
+    Slowest flows first."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        flt = _filter(filter, base=timing.display_filter())
+        stdout, scan = _fields_run(capture, flt, timing.FIELDS, st.limits.max_scan_packets, aggregator=timing.AGGREGATOR)
+        out = timing.summarise(timing.parse(stdout))
+        rows = out.pop("flows")
+        return _envelope("flows", rows, cap, scan, offset=offset, display_filter=flt, **out)
+    return _guarded("response_times", {"path": path, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @app.tool(title="SIP dialogs", annotations=READ_ONLY)

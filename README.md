@@ -5,7 +5,7 @@
 A read-only [MCP](https://modelcontextprotocol.io) server that lets an LLM agent analyse
 existing packet captures through `tshark`, with dedicated tools for the mobile-core
 protocols (Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP with RTP/RTCP media, and SCTP/M3UA/SCCP/TCAP/MAP) and for
-DNS and TLS handshakes.
+DNS, TLS handshakes and TCP response times.
 
 The server can only ever run `tshark -r <file>` on files inside directories you allow,
 under hard limits on file size, packets, output size and run time. It cannot capture,
@@ -16,7 +16,7 @@ read a capture without being able to run one.
 
 Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
 GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent twenty-four narrow tools that
+driving a raw shell is a liability. tshark-mcp gives the agent twenty-five narrow tools that
 return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
 GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
 itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
@@ -24,7 +24,8 @@ frames, checksum offload and clocks that run backwards.
 
 ## Install
 
-Requires Python 3.10+, the `mcp` package 1.12 or newer (installed automatically) and tshark
+Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically;
+CI also runs the suite on the oldest of each) and tshark
 4.0 or newer (tested with 4.2 and 4.6). tshark comes with Wireshark:
 `brew install --cask wireshark` on macOS, `apt-get install tshark` on Debian or Ubuntu,
 `dnf install wireshark-cli` on Fedora.
@@ -92,6 +93,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `tls_handshakes(path, server_name, filter, limit, offset)` | TLS over TCP and QUIC per connection, from the clear part of the handshake (no decryption, no key material): the client's offer (SNI, ALPN, versions, cipher-suite count without GREASE, fallback SCSV) against the server's choice (version, suite, ALPN when in clear), HelloRetryRequest, SYN-to-ClientHello and ClientHello-to-ServerHello times, alerts with level, name and sender (QUIC CONNECTION_CLOSE too), the leaf certificate for TLS 1.2 and older (subject, issuer, SAN, validity, chain length), and an `outcome`: established, alert, no_server_hello, reset_by_server, closed_by_server, client_gave_up, client_rejected_likely (TLS 1.3 alert-sized record instead of Finished), unreadable, incomplete, or server_hello for QUIC; `issues` names expired certificates, SNI/SAN mismatches, deprecated or unoffered versions and repeated ClientHellos. A connection whose ClientHello is not readable is still listed (`client_hello_missing`) when its ServerHello, certificate or alerts are |
 | `rtp_streams(path, call_id, ssrc, heuristic, filter, limit, offset)` | Per RTP stream (SSRC and source/destination address:port): the SIP Call-ID whose SDP advertised its destination (or source) address and port, payload type and codec from the SDP rtpmap or the static table, packets, expected, lost and lost %, duplicates, sequence errors, out-of-order packets, max/mean interarrival delta, RFC 3550 max/mean jitter, duration, the reverse stream or `one_way`, RTCP reception reports about it (fraction and cumulative lost, jitter, round trip where the LSR matches a captured SR), RTCP XR VoIP metrics as reported, and `mos_estimate`: a simplified ITU-T G.107 E-model score from loss, jitter, delay and the codec's G.113 Ie/Bpl, returned with its method and inputs because it is an estimate, not a measured MOS. `call_id` reads the RTP to or from the call's SDP addresses, so a NATed source is still found; `heuristic` decodes RTP without SDP in the capture. Packets, lost, max delta and max jitter match `tshark -z rtp,streams` |
 | `sip_call_detail(path, call_id)` | One INVITE call by Call-ID, built on the `sip_dialogs` row: the ladder with the messages that carry SDP marked, `outcome`, final response with its reason phrase, post-dial delay (INVITE to the first 180/183, or to the failure response as RFC 6076 defines it), ringing, answer and setup times, early media, call duration from 200 OK to BYE, retransmissions per message, Reason headers with the Q.850 cause named, Warning headers, whether the caller or the callee sent BYE or CANCEL (by From tag), and each SDP with its offer/answer role, address, port, codecs, direction and ptime, plus the codecs offer and answer (or a 488's SDP) have in common |
+| `response_times(path, filter, limit, offset)` | Where the time goes per TCP flow: each connection cut into exchanges (client data, then the server's answer) with think time, `server_ms` (think time less the capture-to-server round trip, so it holds at any capture point), transfer time, retransmissions and out-of-order segments (told apart by IPv4 ID), stalls with their cause (retransmission, zero_window, server_pause), HTTP/1.x method, URI and status when dissected; per flow the handshake (or ACK) round trip, lost SYNs or SYN-ACKs with the time to connect, which side the capture sits near, `time_split_ms` and a `verdict`: server-bound, network-bound, receiver-bound, fast, idle-or-push (answers only after 10 s: long polls, push channels) or no-response; per-server server_ms percentiles, SYNs never answered or refused (`not_opened`). One connection split over several tcp.stream numbers by a tap's copies is joined |
 | `sip_dialogs(path, call_id, number, method, filter, limit, offset)` | Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status, outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration; a TCP segment carrying several SIP messages is split so each message joins its own dialog |
 | `sctp_associations(path, limit, offset)` | Per endpoint pair: handshake state, initiate tags, DATA chunks, heartbeats sent vs acked, retransmissions, ABORT/SHUTDOWN seen |
 | `sigtran_messages(path, filter, limit, offset)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
@@ -305,7 +307,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 433 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 442 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP and RFC 4733 events (loss,
