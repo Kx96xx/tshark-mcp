@@ -285,6 +285,21 @@ class ConversationsResult(RowsResult, total=False):
     total_bytes: int
 
 
+class PacketDetailResult(ToolResult, total=False):
+    """One frame's dissection: ``layers`` maps each protocol to its fields as tshark's
+    JSON gives them (a list when the packet carries several PDUs of that protocol)."""
+    path: str
+    frame: int
+    time: str
+    length: int
+    protocols: str
+    layers: dict[str, Any]
+    fields_returned: int
+    fields_dropped: int
+    values_shortened: int
+    malformed: bool
+
+
 class FilterPacketsResult(RowsResult, total=False):
     packets: list[dict[str, str]]
     fields: list[str]
@@ -526,6 +541,8 @@ class TunnelRow(TypedDict, total=False):
     duration_s: float
     inner_src: list[AddressCount]
     inner_dst: list[AddressCount]
+    first_frame: int
+    last_frame: int
 
 
 class GtpUserPlaneResult(RowsResult, total=False):
@@ -579,6 +596,8 @@ class TunnelHealthRow(TypedDict, total=False):
     reverse_teids: list[str]
     reverse_seen: bool
     issues: list[str]
+    first_frame: int
+    last_frame: int
 
 
 class OuterIcmpError(TypedDict, total=False):
@@ -802,6 +821,9 @@ class SctpAssociationRow(TypedDict, total=False):
     chunk_counts: dict[str, int]
     first: str
     last: str
+    first_frame: int
+    last_frame: int
+    abort_frame: int
 
 
 class SctpAssociationsResult(RowsResult, total=False):
@@ -907,6 +929,8 @@ class FileHits(TypedDict, total=False):
     protocols: dict[str, int]
     truncated: bool
     truncated_reason: str
+    first_frame: int
+    last_frame: int
 
 
 class FileError(TypedDict, total=False):
@@ -997,6 +1021,7 @@ class MessageRate(TypedDict, total=False):
     mean_per_s: float
     active_intervals: int
     bursts: int
+    first_frame: int
 
 
 class Burst(TypedDict, total=False):
@@ -1024,6 +1049,8 @@ class SubscriberLoop(TypedDict, total=False):
     min_gap_s: float
     max_gap_s: float
     regular: bool
+    first_frame: int
+    last_frame: int
 
 
 class MessageRatesResult(RowsResult, total=False):

@@ -167,6 +167,7 @@ def summarise(gpdus: list[dict[str, Any]], outer: list[dict[str, Any]], mtu: int
                 "inner_dst": Counter(), "overheads": Counter(), "max_outer": 0, "max_inner": 0, "families": Counter(),
                 "df_large": 0, "tcp": Counter(), "streams": set(), "mss": Counter(), "icmp": Counter(), "frag_mtus": Counter(),
                 "last_ack": {}, "copy_tracker": CopyTracker(), "flows": FlowTracker(),
+                "first_frame": rec.get("frame"),
             }
         if _duplicate_copy(b, rec):
             b["copies"] = b.get("copies", 0) + 1
@@ -175,6 +176,7 @@ def summarise(gpdus: list[dict[str, Any]], outer: list[dict[str, Any]], mtu: int
             continue
         b["packets"] += 1
         b["frame_bytes"] += rec["frame_len"]
+        b["last_frame"] = rec.get("frame")
         if rec["time"] is not None:
             b["first"] = rec["time"] if b["first"] is None else min(b["first"], rec["time"])
             b["last"] = rec["time"] if b["last"] is None else max(b["last"], rec["time"])
@@ -285,6 +287,7 @@ def _row(b: dict[str, Any], mtu: int) -> dict[str, Any]:
     row = {
         "teid": b["teid"], "outer_src": b["outer_src"], "outer_dst": b["outer_dst"], "packets": b["packets"],
         "frame_bytes": b["frame_bytes"], "first": iso(b["first"]), "last": iso(b["last"]),
+        "first_frame": b["first_frame"], "last_frame": b.get("last_frame"),
         "duration_s": round(duration, 6) if duration is not None else None,
         "inner_protocols": dict(b["protocols"]),
         "inner_src": [a for a, _ in b["inner_src"].most_common(3)],
