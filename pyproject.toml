@@ -22,7 +22,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: System :: Networking :: Monitoring",
 ]
-dependencies = ["mcp>=1.12", "typing-extensions>=4.6"]
+# mcp 2.0 and older fail: 1.x has no FastMCP(version=...) and 2.0 rejects the structured
+# output; models.py imports pydantic directly (ConfigDict on the result TypedDicts).
+# The floor (mcp 2.1.0, pydantic 2.12.0) is tested in CI.
+dependencies = ["mcp>=2.1", "pydantic>=2.12,<3", "typing-extensions>=4.6"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "scapy>=2.5"]
