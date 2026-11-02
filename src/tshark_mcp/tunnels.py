@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+from .copies import CopyTracker, nonzero
 from .fields import compact, iso, parse_time, split_fields_line, to_int
 
 FIELDS = [
@@ -162,7 +163,7 @@ def summarise(gpdus: list[dict[str, Any]], outer: list[dict[str, Any]], mtu: int
                 "first": rec["time"], "last": rec["time"], "protocols": Counter(), "inner_src": Counter(),
                 "inner_dst": Counter(), "overheads": Counter(), "max_outer": 0, "max_inner": 0, "families": Counter(),
                 "df_large": 0, "tcp": Counter(), "streams": set(), "mss": Counter(), "icmp": Counter(), "frag_mtus": Counter(),
-                "syns_seen": set(), "last_ack": {}, "packets_seen": {}, "flow_end": {}, "last_ip_id": {}, "id_steps": {},
+                "syns_seen": set(), "last_ack": {}, "copy_tracker": CopyTracker(), "flow_end": {}, "last_ip_id": {}, "id_steps": {},
             }
         if _duplicate_copy(b, rec):
             b["copies"] = b.get("copies", 0) + 1
@@ -203,9 +204,6 @@ def summarise(gpdus: list[dict[str, Any]], outer: list[dict[str, Any]], mtu: int
     return rows, _outer_errors(outer)
 
 
-DUPLICATE_WINDOW_S = 0.005
-
-
 def _duplicate_copy(b: dict[str, Any], rec: dict[str, Any]) -> bool:
     """The same tunnelled packet seen again: same outer and inner IP ID (and, when both
     IDs are zero, within a few milliseconds). Capturing on several interfaces does this."""
@@ -213,13 +211,7 @@ def _duplicate_copy(b: dict[str, Any], rec: dict[str, Any]) -> bool:
     tcp = rec.get("tcp") or {}
     key = (rec["outer_src"], rec["outer_dst"], outer_id, inner_id, rec.get("inner_src"), rec.get("inner_dst"),
            tcp.get("seq"), tcp.get("ack_no"), tcp.get("len"), rec.get("inner_len"))
-    seen = b["packets_seen"].get(key)
-    b["packets_seen"][key] = rec["time"]
-    if seen is None:
-        return False
-    if (outer_id and int(outer_id, 16) != 0) or (inner_id and int(inner_id, 16) != 0):
-        return True
-    return rec["time"] is not None and abs(rec["time"] - seen) <= DUPLICATE_WINDOW_S
+    return b["copy_tracker"].check(key, nonzero(outer_id, inner_id), rec["time"])[0]
 
 
 def _tcp_stats(b: dict[str, Any], rec: dict[str, Any], tcp: dict[str, Any]) -> None:

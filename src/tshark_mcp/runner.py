@@ -82,6 +82,13 @@ FORBIDDEN_FLAGS: frozenset[str] = frozenset({
     "--update-interval",
 })
 
+# The only preferences a tool may set with -o: switch on checksum validation, which
+# tshark leaves off by default. Anything else after -o (a keylog file, an extcap or
+# Lua path, a temp directory) is refused like any other forbidden flag.
+ALLOWED_PREFERENCES: frozenset[str] = frozenset({
+    "ip.check_checksum:TRUE", "tcp.check_checksum:TRUE", "udp.check_checksum:TRUE",
+})
+
 # A tiny but complete pcap file (global header only) fed on stdin to compile a
 # display filter without touching the user's capture.
 EMPTY_PCAP = bytes.fromhex("d4c3b2a1" "0200" "0400" "00000000" "00000000" "ffff0000" "01000000")
@@ -114,6 +121,8 @@ def assert_read_only(args: Sequence[str]) -> None:
     """Raise if ``args`` (everything after the program name) could capture or write."""
     for index, arg in enumerate(args):
         head = arg.split("=", 1)[0] if arg.startswith("--") else arg
+        if arg == "-o" and index + 1 < len(args) and args[index + 1] in ALLOWED_PREFERENCES:
+            continue
         if head in FORBIDDEN_FLAGS:
             raise ToolError("forbidden_flag", f"refusing to run tshark with {arg!r}")
         # Combined short options such as "-qw" are refused outright.
