@@ -25,16 +25,28 @@ from typing import Any
 
 from . import sip
 from .fields import compact, iso, parse_time, to_int
+from .sdp import body_text
 
 EXTRA_FIELDS = [
     "sip.Expires", "sip.P-Associated-URI", "sip.Service-Route", "sip.Path", "sip.Security-Client",
     "sip.Security-Server", "sip.Security-Verify", "sip.WWW-Authenticate", "sip.auth.digest.response",
     "sip.auth.auts", "sip.Retry-After", "sip.Min-Expires", "sip.Warning", "sip.Status-Line", "sip.User-Agent",
-    "sip.Require", "sip.Content-Type",
+    "sip.Require", "sip.Content-Type", "sip.Event", "sip.msg_body",
 ]
 MULTI = ("sip.P-Associated-URI", "sip.Service-Route", "sip.Path", "sip.Contact", "sip.Security-Client",
          "sip.Security-Server", "sip.Security-Verify", "sip.Warning", "sip.Require")
-FILTER = 'sip.CSeq.method == "REGISTER"'
+FILTER = ('sip.CSeq.method == "REGISTER" || (sip.Method == "NOTIFY" && sip.Content-Type contains "reginfo")')
+REGINFO_CONTENT = "application/reginfo+xml"
+# Why a registration ended, from the contact event of a reg-event NOTIFY (RFC 3680 section 5.3,
+# TS 24.229 section 5.4.2.1.2).
+NOTIFY_EVENT_HINTS = {
+    "deactivated": "the network de-registered the UE and expects it to re-register at once (S-CSCF restart, "
+                   "re-assignment or an administrative reset)",
+    "rejected": "the network de-registered the UE and it must not re-register (subscription withdrawn or barred)",
+    "unregistered": "the UE itself de-registered this contact",
+    "expired": "the registration lapsed without a refresh",
+    "probation": "the network de-registered the UE and it may re-register after the retry-after period",
+}
 COPY_WINDOW = 0.005
 IN_PROGRESS_WINDOW = 32.0
 """A challenge or request this close to the end of the capture (RFC 3261 Timer F,
@@ -243,6 +255,75 @@ def transactions(stdout: str, fields: list[str]) -> list[dict[str, Any]]:
     return [_describe(t) for t in out]
 
 
+_TAG = re.compile(r"<(registration|contact)\b([^>]*)>", re.I)
+_ATTR = re.compile(r'([A-Za-z-]+)\s*=\s*"([^"]*)"')
+_REG_END = re.compile(r"</registration\s*>|<registration\b[^>]*/>", re.I)
+
+
+def reginfo(text: str) -> list[dict[str, Any]]:
+    """The ``<registration>`` elements of an ``application/reginfo+xml`` body with their
+    ``aor`` and ``state`` and each ``<contact>``'s ``state``, ``event`` and ``expires``.
+    Read with regular expressions: no XML parser touches packet data."""
+    out: list[dict[str, Any]] = []
+    for m in _TAG.finditer(text):
+        attrs = {k.lower(): v for k, v in _ATTR.findall(m.group(2))}
+        if m.group(1).lower() == "registration":
+            out.append({"aor": attrs.get("aor", ""), "state": (attrs.get("state") or "").lower(), "contacts": []})
+        elif out:
+            out[-1]["contacts"].append(compact({
+                "state": (attrs.get("state") or "").lower() or None, "event": (attrs.get("event") or "").lower() or None,
+                "expires": to_int(attrs.get("expires")) if attrs.get("expires") else None,
+            }))
+    return out
+
+
+def notifies(stdout: str, fields: list[str]) -> list[dict[str, Any]]:
+    """Reg-event NOTIFYs (RFC 3680) in the output, one per Call-ID and CSeq however many
+    legs or retransmissions carried it, with the registrations their reginfo body
+    reports."""
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    for rec in sip.parse_messages(stdout, fields, MULTI):
+        if rec.get("sip.Method") != "NOTIFY" or REGINFO_CONTENT not in (rec.get("sip.Content-Type") or "").lower():
+            continue
+        key = (rec["sip.Call-ID"], rec["sip.CSeq.seq"])
+        ts, frame = parse_time(rec["frame.time_epoch"]), to_int(rec["frame.number"])
+        entry = seen.get(key)
+        if entry is not None:
+            if ts is not None and (entry["time_epoch"] is None or ts < entry["time_epoch"]):
+                entry["time_epoch"], entry["frame"] = ts, frame
+            continue
+        seen[key] = {
+            "time_epoch": ts, "frame": frame, "call_id": key[0], "to": rec.get("sip.to.addr", ""),
+            "request_uri": rec.get("sip.r-uri", ""), "registrations": reginfo(body_text(rec.get("sip.msg_body"))),
+        }
+    return sorted(seen.values(), key=lambda n: (n["time_epoch"] if n["time_epoch"] is not None else 0.0, n["frame"] or 0))
+
+
+def _notify_rows(user: dict[str, Any], all_notifies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The reg-event NOTIFYs about ``user``: a registration whose aor is the IMPU, one
+    of its associated URIs or the same user part, or a NOTIFY addressed to the IMPU."""
+    impu = user["impu"].lower()
+    aliases = {impu, user_of(impu)}
+    for tx in user["own"]:
+        for uri in tx.get("associated_uris") or []:
+            aliases.add(uri.lower())
+            aliases.add(user_of(uri))
+    rows = []
+    for n in all_notifies:
+        matched = [r for r in n["registrations"]
+                   if r["aor"].lower() in aliases or (r["aor"] and user_of(r["aor"]) in aliases)]
+        if not matched and n["to"] and (n["to"].lower() in aliases or user_of(n["to"]) in aliases):
+            matched = n["registrations"][:1]
+        for r in matched:
+            contact = r["contacts"][0] if r["contacts"] else {}
+            rows.append(compact({
+                "time": iso(n["time_epoch"]), "time_epoch": n["time_epoch"], "frame": n["frame"], "call_id": n["call_id"],
+                "aor": r["aor"] or None, "state": r["state"] or None, "contact_state": contact.get("state"),
+                "contact_event": contact.get("event"), "expires": contact.get("expires"),
+            }))
+    return rows
+
+
 def _describe(tx: dict[str, Any]) -> dict[str, Any]:
     req = tx["request"] or (tx["finals"][0]["rec"] if tx["finals"] else {})
     req_contacts = contacts(req.get("sip.Contact", "")) if tx["request"] else []
@@ -331,6 +412,7 @@ def _steps(own: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def registrations(stdout: str, fields: list[str], capture_end: float | None) -> list[dict[str, Any]]:
+    all_notifies = notifies(stdout, fields)
     """One row per public identity (To of the user's own REGISTERs), with every
     transaction, the third-party REGISTERs that name it, and a verdict."""
     txs = transactions(stdout, fields)
@@ -346,13 +428,15 @@ def registrations(stdout: str, fields: list[str], capture_end: float | None) -> 
         if not tx["to"]:
             continue
         (entry(tx["to"])["third" if tx["third_party"] else "own"]).append(tx)
-    rows = [_registration(u, capture_end) for u in users.values()]
+    rows = [_registration(u, capture_end, _notify_rows(u, all_notifies)) for u in users.values()]
     rows.sort(key=lambda r: (r.get("first_time") or "", r.get("first_frame") or 0))
     return rows
 
 
-def _registration(u: dict[str, Any], capture_end: float | None) -> dict[str, Any]:
+def _registration(u: dict[str, Any], capture_end: float | None,
+                  reg_notifies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     own: list[dict[str, Any]] = u["own"]
+    reg_notifies = reg_notifies or []
     registered_until: float | None = None
     state = None
     challenges = auth_challenges = 0
@@ -404,6 +488,19 @@ def _registration(u: dict[str, Any], capture_end: float | None) -> dict[str, Any
                     time_to_register = round((end - attempt_start) * 1000.0, 3)
         elif status >= 300:
             state = "failed"
+
+    # A reg-event NOTIFY reporting the registration terminated, after the last REGISTER
+    # that succeeded and not followed by another, ends the registration (network-initiated
+    # de-registration, TS 24.229 5.4.2.1.2).
+    terminated_by = None
+    if state == "registered" and last_ok is not None:
+        since = last_ok.get("status_time_epoch") or last_ok["time_epoch"]
+        for n in reg_notifies:
+            t = n.get("time_epoch")
+            if n.get("state") == "terminated" and (t is None or since is None or t >= since):
+                terminated_by = n
+        if terminated_by is not None:
+            state, registered_until = "deregistered_by_network", None
 
     last = own[-1] if own else None
     verdict = "unknown"
@@ -464,6 +561,13 @@ def _registration(u: dict[str, Any], capture_end: float | None) -> dict[str, Any
     elif state == "deregistered":
         verdict = "deregistered"
         reasons.append(f"de-registered (expires 0) at frame {last['frame']}")
+    elif state == "deregistered_by_network":
+        verdict = "deregistered"
+        event = terminated_by.get("contact_event")
+        hint = NOTIFY_EVENT_HINTS.get(event or "")
+        text = (f"network-initiated de-registration: the reg-event NOTIFY at frame {terminated_by['frame']} reports "
+                f"the registration terminated" + (f", contact event {event}" if event else ""))
+        reasons.append(text + (f": {hint}" if hint else ""))
     elif state == "registered":
         if registered_until is not None and capture_end is not None and capture_end > registered_until:
             verdict = "expired"
@@ -501,6 +605,7 @@ def _registration(u: dict[str, Any], capture_end: float | None) -> dict[str, Any
     impi = next((t["impi"] for t in own if t.get("impi")), None)
     first_req = next((t for t in own if t.get("has_request")), None)
     times = [t["time_epoch"] for t in own + u["third"] if t["time_epoch"] is not None]
+    times += [n["time_epoch"] for n in reg_notifies if n.get("time_epoch") is not None]
     finals = [t["status_time_epoch"] for t in own + u["third"] if t.get("status_time_epoch") is not None]
     last_time = max(times + finals) if times or finals else None
     row = compact({
@@ -523,10 +628,11 @@ def _registration(u: dict[str, Any], capture_end: float | None) -> dict[str, Any
         "counts": compact({
             "transactions": len(own), "initial": counts["initial"], "challenges": challenges,
             "re_registrations": counts["re-registration"], "de_registrations": counts["de-registration"],
-            "third_party": len(u["third"]),
+            "third_party": len(u["third"]), "reg_event_notifies": len(reg_notifies) or None,
         }),
         "transactions": _steps(own),
         "third_party": third,
+        "reg_event_notifies": [compact({k: v for k, v in n.items() if k != "time_epoch"}) for n in reg_notifies] or None,
     })
     if "reasons" not in row:  # always present, right after the verdict
         row = {k: v for pair in row.items() for k, v in ((pair,) if pair[0] != "verdict" else (pair, ("reasons", reasons)))}

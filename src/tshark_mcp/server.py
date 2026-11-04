@@ -1949,7 +1949,10 @@ def ims_registration(path: str, impu: str | None = None, imsi: str | None = None
     and Path of the last 200 OK; `third_party` REGISTERs the S-CSCF sent to
     application servers for this user with their status; and a `verdict`:
     registered, expired (not refreshed before the granted expiry, while the capture
-    goes on), deregistered, challenge-loop (authenticated REGISTERs challenged again,
+    goes on), deregistered (by the UE with expires 0, or by the network through a
+    reg-event NOTIFY whose reginfo reports the registration terminated, with the
+    contact event named: deactivated, rejected, probation, ...; the NOTIFYs are listed
+    in `reg_event_notifies`), challenge-loop (authenticated REGISTERs challenged again,
     AUTS resync), failed (403, 404, 408, 421, 423, 500, 503 with Retry-After and the
     rest named in IMS terms, a 401 never answered, no final response), in_progress
     (a challenge or request within 32 s of the end of the capture) or unknown, with
