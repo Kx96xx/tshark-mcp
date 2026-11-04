@@ -135,6 +135,10 @@ SCTP the same way.
 
 ## Install
 
+The package is published as `tshark-mcp-server` (the PyPI name `tshark-mcp` belongs to an
+unrelated project); the command stays `tshark-mcp` and the module `tshark_mcp`. Until the
+first PyPI release, install from git as below.
+
 Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically;
 CI also runs the suite on the oldest of each) and tshark
 4.0 or newer (tested with 4.2 and 4.6).
@@ -211,7 +215,7 @@ diameter_sessions(path="/pcaps/dra.pcap", imsi="001010123456789")
 
 | Tool | What it returns |
 | --- | --- |
-| `find_identifier(path, identifier, kind, max_files, offset)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned` |
+| `find_identifier(path, identifier, kind, max_files, offset)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned`. Hits count packets that carry the identifier, so for Diameter they count requests (answers carry no User-Name) |
 | `pcap_info(path)` | Packet count, duration, first/last timestamp, size, link type, top 15 protocol-hierarchy entries, active limits |
 | `capture_quality(path)` | Whether loss and timing conclusions can be drawn from the capture: duplicate copies of the same packet with the likely cause (two VLANs or interfaces, a Linux any capture, tunnelled and decapsulated, rebuilt copies with zeroed TCP headers; without an IP ID a copy also needs to arrive within 5 ms with the same TCP, UDP or ICMP checksum, an ICMP error the same quoted packet, and SCTP the same TSNs, acknowledged TSN and heartbeat information); TCP bytes the receiver acknowledged that the capture never saw (dropped by the capture, or the file was filtered) versus gaps a retransmission filled (lost on the network before the capture point); frames cut to the snapshot length; packets above 1500 bytes (segmentation offload); bad IP/TCP/UDP checksums and whether they are offload artifacts (one sender, data acknowledged anyway); TCP streams seen in one direction only and unanswered SYNs; timestamps going backwards, identical stamps, resolution, longest silence; a `verdict` (trustworthy, use with care, not trustworthy) with the reasons |
 | `tcp_health(path, filter, stream, mtu, limit, offset)` | Per TCP stream, with copies of the same packet dropped first (tshark counts them as retransmissions): handshake with SYN retries, the SYN to SYN-ACK and SYN-ACK to ACK halves of the RTT, MSS, window scale and SACK; per direction data segments and retransmissions split by where the loss happened (`lost_before_capture`, `retransmitted_after_capture`, `missed_by_capture` when the receiver acknowledged bytes the file lacks), reordering told apart by IP ID or TCP timestamp, duplicate ACKs, zero windows, keep-alives; `resets` with `likely_from` endpoint or middlebox from the reset's TTL and source MAC against that side's other packets, and the idle time before it; ICMP errors about the stream (a mirrored copy counts once); MSS above `mtu`, DF packets above it and the PMTUD black-hole pattern (full-size segments retransmitted and never acknowledged while small ones pass); `issues` in plain words |
@@ -387,6 +391,55 @@ message_rates(path="/pcaps/dra.pcap", interval=10)
     "storms": ["6 ULR for 001010123456789 over 50.0 s, about every 10.0 s, from mme01.example.org, to realm example.org", ...]}
 ```
 
+Why can three UEs not register on IMS, and is the fourth really registered?
+
+```
+ims_registration(path="/pcaps/ims_register.pcap")
+-> {"registrations": [
+     {"impu": "sip:001010000000101@ims.mnc001.mcc001.3gppnetwork.org", "verdict": "registered", "time_to_register_ms": 1600.0,
+      "registered_until": "...T07:38:20.040Z", "smsip": true, "mmtel": true, "sec_agree": ["ipsec-3gpp alg=hmac-sha-1-96 ealg=null"],
+      "associated_uris": ["sip:+15550100123@ims.mnc001.mcc001.3gppnetwork.org", "tel:+15550100123"],
+      "counts": {"transactions": 3, "initial": 1, "challenges": 1, "re_registrations": 1, "third_party": 2, ...},
+      "reasons": ["third-party REGISTER to sip:as2.ims.mnc001.mcc001.3gppnetwork.org failed with 500 (frame 12): that application server does not know the user is registered"], ...},
+     {"impu": "sip:001010000000102@...", "verdict": "challenge-loop",
+      "reasons": ["3 REGISTERs were challenged, 2 of them already carrying a challenge response: the network rejects the AKA response (wrong K/OPc, IMPI not the one the HSS holds) or the UE keeps answering a stale challenge",
+                  "the UE sent AUTS: its SQN is out of sync with the HSS (resynchronisation)"], ...},
+     {"impu": "sip:001010000000103@...", "verdict": "failed",
+      "reasons": ["403 at frame 20: Forbidden: the network refused the identities (IMPI/IMPU not provisioned or not associated, roaming or the access network not allowed, or the subscription barred)"], ...},
+     {"impu": "sip:001010000000105@...", "verdict": "expired", ...}]}
+```
+
+Where did the SMS go: rejected by the SMSC, or never deliverable to that UE?
+
+```
+sms_over_ims(path="/pcaps/ims_sms.pcap")
+-> {"messages": [
+     {"direction": "MO", "rp_message": "RP-DATA (MS to network)", "smsc_digits": "15550100900",
+      "tpdu": {"type": "SMS-SUBMIT", "tp_mr": 11, "tp_da": "15550100300", ...}, "sip_response": 200,
+      "ack": {"rp_message": "RP-ERROR (network to MS)", "frame": 17, "delay_ms": 300.0, "rp_cause": 21, "rp_cause_name": "Short message transfer rejected", ...},
+      "verdict": "rejected", "reasons": ["RP-ERROR at frame 17, cause 21 (Short message transfer rejected)"]},
+     {"direction": "MT", "rp_message": "RP-DATA (network to MS)", "tpdu": {"type": "SMS-DELIVER", "tp_oa": "15550100300", ...},
+      "sip_response": 488, "ue_registration": {"impu": "sip:001010000000202@...", "verdict": "registered", "smsip": false},
+      "verdict": "not_registered_for_sms",
+      "reasons": ["the MESSAGE was answered 488 (frame 30): Not Acceptable Here: the recipient's registration does not cover SMS over IP",
+                  "the UE registered without +g.3gpp.smsip (REGISTER at frame 3): the network should not use SMS over IMS for it, which explains the failure"]}, ...]}
+```
+
+Which resolver is failing, and for which names?
+
+```
+dns_transactions(path="/pcaps/dns.pcap")
+-> {"summary": {"queries": 10, "answered": 7, "unanswered": 3, "unanswered_near_capture_end": 1,
+                "rcodes": {"NOERROR": 5, "NXDOMAIN": 1, "SERVFAIL": 1}, "retransmissions": 1, "retries": 1,
+                "truncated_tc": 1, "tcp_fallbacks": 1, "icmp_errors": 1, "rtt_ms": {"p50": 15.0, "p90": 1500.0, "max": 1500.0}},
+    "issues": ["192.0.2.53 left 2 of 8 queries unanswered", "192.0.2.99 answered none of 1 queries",
+               "1 ICMP errors came back for queries to 192.0.2.99 (port unreachable or filtered)",
+               "192.0.2.54 is slow: 90% of answers within 1500.0 ms", "1 answers were SERVFAIL (e.g. broken.example.net)",
+               "1 truncated UDP answers were followed by the same query over TCP", ...],
+    "transactions": [{"frame": 3, "client": "198.51.100.20:40002", "server": "192.0.2.53:53", "transport": "udp", "id": "0x1002",
+                      "name": "missing.example.com", "type": "A", "response_frame": 4, "rcode_name": "NXDOMAIN", "rtt_ms": 20.0}, ...]}
+```
+
 Top talkers on the Diameter port only:
 
 ```
@@ -459,7 +512,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 643 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 645 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

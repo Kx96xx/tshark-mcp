@@ -6,7 +6,7 @@ the project uses [semantic versioning](https://semver.org/).
 ## 0.1.0 - 2026-11-04
 
 First release. Everything below was built between 1 and 4 November 2026 in pull requests #1
-to #57; the numbers in brackets are the pull requests.
+to #62; the numbers in brackets are the pull requests.
 
 ### The server
 
@@ -29,6 +29,7 @@ to #57; the numbers in brackets are the pull requests.
 - Redaction of subscriber identifiers with stable keyed tokens that work as arguments
   (`--redact ids` / `ids+ips`), with a bounded pre-scan so even a first `conversations` call
   hides UE addresses (#47, #50).
+  An IMEI written as TAC-SNR-CD inside a `urn:gsma:imei:` instance id is found too (#60).
 - JSON-lines audit log (`--log-file`).
 
 ### Tools (33)
@@ -46,7 +47,8 @@ chains, #4, #22, #46, #51), `gtpv1_sessions` (#20), `gtp_user_plane`, `gtp_tunne
 
 SIP, media and IMS: `sip_dialogs`, `sip_call_detail` (#33), `rtp_streams` with RFC 3550
 jitter, RTCP and an E-model MOS estimate (#24), `media_path_check` for one-way audio, NAT and
-488 cases (#34), `dtmf_events` (#39), `ims_registration` (#52), `sms_over_ims` (#54).
+488 cases (#34), `dtmf_events` (#39), `ims_registration` (#52; network-initiated de-registration
+from reg-event NOTIFYs, #61), `sms_over_ims` (#54).
 
 Transport and infrastructure: `tcp_health` (#32, #53), `response_times` (#31, #43),
 `tls_handshakes` (#28, #41), `dns_transactions` (#23), `sctp_associations`,
@@ -81,3 +83,8 @@ storms and subscriber loops with the nodes involved, #19, #21, #48).
   GTPv2 Create Session rejected) regenerated and checked by `tests/test_examples.py` (#56).
 - CI on Python 3.10 to 3.13 with the tshark Ubuntu 24.04 ships (4.2), plus a run on the
   oldest supported `mcp` and `pydantic` (#27). All test captures are synthetic.
+- `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, issue and pull request templates (#58).
+- The distribution is named `tshark-mcp-server` (the PyPI name `tshark-mcp` belongs to an
+  unrelated project); the import name `tshark_mcp` and the `tshark-mcp` command are unchanged.
+  A publish workflow uploads to PyPI through trusted publishing when a GitHub release is
+  published (#59).
