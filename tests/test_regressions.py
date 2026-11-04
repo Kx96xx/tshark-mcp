@@ -47,6 +47,15 @@ class TestCutShortCapture:
         assert "warnings" not in result
 
 
+    def test_pcap_info_counts_the_readable_packets(self, configure, tmp_path: Path):
+        """capinfos exits non-zero on a file cut short but prints the totals of what it read;
+        pcap_info reported 1 packet (the protocol-hierarchy fallback) for a 6-packet file."""
+        srv = configure(allow=[str(tmp_path)])
+        result = srv.pcap_info(str(_cut_short(tmp_path)))
+        assert result["packets"] == 6 and result["first_packet"] and result["last_packet"]
+        assert "cut short" in result["warnings"][0]
+
+
 # ------------------------------------------- tshark -c counts frames read, not matched
 def _after_filler(tmp_path: Path, source: Path, filler: int, name: str) -> Path:
     """``filler`` unrelated UDP frames (DNS-port noise) followed by every frame of ``source``."""
