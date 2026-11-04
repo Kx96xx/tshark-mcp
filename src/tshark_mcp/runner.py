@@ -7,13 +7,25 @@ The runner is the only place that starts a process. It enforces:
   is refused before the process starts;
 * a wall-clock timeout and a cap on the bytes read from stdout, both of which
   kill the child when exceeded;
-* ``-n`` on every run so tshark never performs name resolution (no DNS).
+* ``-n`` on every run so tshark never performs name resolution (no DNS);
+* a clean environment: tshark gets an empty, read-only personal configuration
+  directory, so no personal ``init.lua``, Lua or binary plugin, extcap, preference or
+  profile from the account running the server is loaded;
+* a lower CPU priority (nice 10) and, on Linux, an address-space limit for the child;
+* at most ``max_concurrent_runs`` children at once (a later call waits up to
+  ``busy_wait_seconds``, then fails with ``busy``);
+* the capture keeps the same device and inode from before the start to the end of the
+  run, so a file swapped in after the allowlist check is never read.
 """
 
 from __future__ import annotations
 
+import atexit
 import os
+import re
 import selectors
+import sys
+import tempfile
 from contextvars import ContextVar, Token
 import shutil
 import subprocess
@@ -94,6 +106,32 @@ ALLOWED_PREFERENCES: frozenset[str] = frozenset({
 # prints a table; anything else after -z is refused.
 ALLOWED_STATS: frozenset[str] = frozenset({"io", "conv", "endpoints", "expert", "rtp", "sip", "diameter", "dns", "http"})
 
+# Decode-as (-d) is allowed only as "<layer>==<port or range>,<protocol>" on these
+# selectors: it changes which built-in dissector reads a port, nothing else.
+DECODE_AS_SELECTORS: frozenset[str] = frozenset({"tcp.port", "udp.port", "sctp.port", "sctp.ppi"})
+_DECODE_AS = re.compile(r"^(?P<sel>[a-z]+\.[a-z]+)==(?P<lo>\d{1,5})(?:-(?P<hi>\d{1,5}))?,(?P<proto>[a-z][a-z0-9_.\-]{0,63})$")
+
+
+def check_decode_as(value: str) -> None:
+    """Raise unless ``value`` is a decode-as rule on an allowed selector."""
+    m = _DECODE_AS.match(value or "")
+    if not m or m.group("sel") not in DECODE_AS_SELECTORS:
+        raise ToolError("forbidden_flag", f"refusing decode-as rule {value!r}; allowed: "
+                        f"<{'|'.join(sorted(DECODE_AS_SELECTORS))}>==<number>[-<number>],<protocol>")
+    lo, hi = int(m.group("lo")), int(m.group("hi") or m.group("lo"))
+    top = 0xFFFFFFFF if m.group("sel") == "sctp.ppi" else 65535
+    if lo > hi or hi > top:
+        raise ToolError("forbidden_flag", f"refusing decode-as rule {value!r}: bad number or range")
+
+
+# Variables kept from the server's environment for the child; everything else (including
+# WIRESHARK_*, SSLKEYLOGFILE, LD_PRELOAD, DYLD_*) is dropped.
+KEPT_ENV: tuple[str, ...] = ("PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "WINDIR")
+NICE_INCREMENT = 10
+# Lines tshark, GLib or a Python fake print when an allocation fails.
+OUT_OF_MEMORY_MARKERS: tuple[str, ...] = ("out of memory", "failed to allocate", "cannot allocate memory",
+                                          "bad_alloc", "memoryerror")
+
 # A tiny but complete pcap file (global header only) fed on stdin to compile a
 # display filter without touching the user's capture.
 EMPTY_PCAP = bytes.fromhex("d4c3b2a1" "0200" "0400" "00000000" "00000000" "ffff0000" "01000000")
@@ -125,6 +163,8 @@ def find_tshark(explicit: str | None = None) -> str:
 def assert_read_only(args: Sequence[str]) -> None:
     """Raise if ``args`` (everything after the program name) could capture or write."""
     for index, arg in enumerate(args):
+        if arg == "-d":
+            check_decode_as(args[index + 1] if index + 1 < len(args) else "")
         if arg == "-z":
             stat = args[index + 1] if index + 1 < len(args) else ""
             if stat.split(",", 1)[0] not in ALLOWED_STATS:
@@ -147,11 +187,32 @@ def assert_read_only(args: Sequence[str]) -> None:
 class Runner:
     """Runs tshark in read-only mode under the configured limits."""
 
-    def __init__(self, limits: Limits, tshark: str | None = None, capinfos: str | None = None) -> None:
+    def __init__(self, limits: Limits, tshark: str | None = None, capinfos: str | None = None,
+                 user_profile: bool = False) -> None:
         self.limits = limits
         self.tshark = find_tshark(tshark)
         self.capinfos = capinfos or self._sibling("capinfos")
         self.dftest = self._sibling("dftest")
+        self.user_profile = user_profile
+        self._slots = threading.BoundedSemaphore(limits.max_concurrent_runs)
+        self._env: dict[str, str] | None = None
+
+    def child_env(self) -> dict[str, str] | None:
+        """The environment every child gets: None (inherit) with ``user_profile``, otherwise
+        the kept variables plus an empty read-only directory as HOME, XDG config and data
+        homes, Wireshark's personal configuration and extcap directories."""
+        if self.user_profile:
+            return None
+        if self._env is None:
+            empty = tempfile.mkdtemp(prefix="tshark-mcp-profile-")
+            os.chmod(empty, 0o500)
+            atexit.register(_remove_dir, empty)
+            env = {k: v for k, v in os.environ.items() if k in KEPT_ENV or k.startswith("LC_")}
+            for var in ("HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                        "WIRESHARK_CONFIG_DIR", "WIRESHARK_EXTCAP_DIR"):
+                env[var] = empty
+            self._env = env
+        return self._env
 
     def _sibling(self, name: str) -> str | None:
         beside = Path(self.tshark).with_name(name)
@@ -167,13 +228,15 @@ class Runner:
         ``timeout`` can only shorten the configured per-run limit (a caller with a
         shared budget passes what is left of it)."""
         argv: list[str] = ["-n", "-r", str(capture)]
+        identity = _identity(capture)
         if max_packets is not None:
             # One more than the frame-read cap so a caller can place a sentinel frame just past it.
             argv += ["-c", str(max(1, min(int(max_packets), self.limits.max_scan_packets + 1)))]
         if display_filter:
             argv += ["-Y", display_filter]
         argv += list(args)
-        return self._execute(self.tshark, argv, timeout=timeout)
+        return self._execute(self.tshark, argv, timeout=timeout,
+                             capture=(capture, identity) if identity is not None else None)
 
     def list_fields(self) -> RunResult:
         return self._execute(self.tshark, ["-G", "fields"])
@@ -201,18 +264,32 @@ class Runner:
         """Machine-readable capinfos summary, or None when capinfos is unavailable."""
         if not self.capinfos:
             return None
+        identity = _identity(capture)
         return self._execute(self.capinfos, ["-M", "-S", "-c", "-u", "-a", "-e", "-s", "-E", "-t", str(capture)],
-                             read_only_check=False)
+                             read_only_check=False, capture=(capture, identity) if identity is not None else None)
 
     # ---------------------------------------------------------------- internals
     def _execute(self, program: str, args: Sequence[str], *, stdin: bytes | None = None,
-                 read_only_check: bool = True, timeout: float | None = None) -> RunResult:
+                 read_only_check: bool = True, timeout: float | None = None,
+                 capture: tuple[Path, tuple[int, int]] | None = None) -> RunResult:
         if read_only_check:
             assert_read_only(args)
-        argv = [program, *args]
         started = time.monotonic()
         limit = self.limits.timeout_seconds if timeout is None else max(0.0, min(timeout, self.limits.timeout_seconds))
-        deadline = started + limit
+        wait = max(0.0, min(self.limits.busy_wait_seconds, limit))
+        if not self._slots.acquire(timeout=wait):
+            raise ToolError("busy", f"{self.limits.max_concurrent_runs} tshark runs are already in progress and none "
+                                    f"finished within {round(wait, 3)}s", max_concurrent_runs=self.limits.max_concurrent_runs)
+        try:
+            return self._run(program, args, stdin=stdin, limit=limit, started=started, capture=capture)
+        finally:
+            self._slots.release()
+
+    def _run(self, program: str, args: Sequence[str], *, stdin: bytes | None, limit: float, started: float,
+             capture: tuple[Path, tuple[int, int]] | None) -> RunResult:
+        argv = [program, *args]
+        # The wait for a slot does not eat into the run's own time limit.
+        deadline = time.monotonic() + limit
         try:
             proc = subprocess.Popen(
                 argv,
@@ -221,9 +298,14 @@ class Runner:
                 stderr=subprocess.PIPE,
                 shell=False,
                 close_fds=True,
+                env=self.child_env(),
             )
         except OSError as exc:
             raise ToolError("exec_failed", f"could not start {program}: {exc}") from None
+        self._constrain(proc.pid)
+        if capture is not None and _identity(capture[0]) != capture[1]:
+            _kill(proc)
+            raise _changed(capture[0])
 
         stderr_chunks: list[bytes] = []
         stderr_thread = threading.Thread(target=_drain, args=(proc.stderr, stderr_chunks), daemon=True)
@@ -271,6 +353,8 @@ class Runner:
             raise ToolError("timeout", f"tshark exceeded {round(limit, 3)}s and was killed",
                             timeout_seconds=round(limit, 3)) from None
         stderr_thread.join(timeout=1.0)
+        if capture is not None and _identity(capture[0]) != capture[1]:
+            raise _changed(capture[0])
         duration_ms = int((time.monotonic() - started) * 1000)
         return RunResult(
             argv=tuple(argv),
@@ -280,6 +364,45 @@ class Runner:
             duration_ms=duration_ms,
             stdout_bytes=total,
         )
+
+
+    def _constrain(self, pid: int) -> None:
+        """Lower the child's priority and, where the platform allows it, cap its address
+        space. Applied right after the start, before tshark has finished loading its
+        dissectors and opened the capture; a failure leaves the run unconstrained but bounded
+        by the time and output caps."""
+        try:
+            os.setpriority(os.PRIO_PROCESS, pid, min(19, os.getpriority(os.PRIO_PROCESS, os.getpid()) + NICE_INCREMENT))
+        except (AttributeError, OSError):
+            pass
+        if sys.platform.startswith("linux"):
+            try:
+                import resource
+                cap = self.limits.max_tshark_memory_bytes
+                resource.prlimit(pid, resource.RLIMIT_AS, (cap, cap))
+            except (ImportError, AttributeError, OSError, ValueError):
+                pass
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _changed(path: Path) -> ToolError:
+    return ToolError("capture_changed", f"{path.name} was replaced while tshark was reading it; nothing from that "
+                                        "run is returned")
+
+
+def _remove_dir(path: str) -> None:
+    try:
+        os.chmod(path, 0o700)
+        os.rmdir(path)
+    except OSError:
+        pass
 
 
 def _drain(stream, sink: list[bytes]) -> None:
@@ -311,6 +434,11 @@ def check_result(result: RunResult, *, allow_nonzero: bool = False) -> RunResult
     """
     if result.returncode != 0 and not allow_nonzero:
         stderr = result.stderr.strip()
+        lowered = stderr.lower()
+        if any(marker in lowered for marker in OUT_OF_MEMORY_MARKERS):
+            raise ToolError("tshark_failed", f"tshark ran out of memory (the server caps the memory of each run): "
+                            f"{stderr.splitlines()[-1] if stderr else result.returncode}",
+                            returncode=result.returncode, out_of_memory=True)
         if any(marker in stderr for marker in PARTIAL_READ_MARKERS):
             first_line = stderr.splitlines()[0]
             note_warning(f"tshark stopped before the end of the file; results cover the readable part only: {first_line}")

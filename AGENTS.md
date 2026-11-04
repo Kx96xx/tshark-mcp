@@ -33,7 +33,10 @@ under `mcpServers`.
 Other flags: `--max-file-mb` (500), `--max-packets` (500 matching packets dissected in full
 per call), `--max-scan-packets` (200 000 frames read per tshark run), `--max-output-kb` (30),
 `--timeout` (60 s per tshark run, shared by every run of a multi-pass call), `--max-files`
-(50 per `find_identifier` call), `--redact off|ids|ids+ips`, `--redact-keep-prefix`. Each has
+(50 per `find_identifier` call), `--max-concurrent-runs` (2 tshark processes at once, a call
+waits `--busy-wait` 30 s for a slot, then fails with `busy`), `--max-tshark-memory-mb` (2048,
+Linux), `--allow-user-profile` (off: tshark never loads the personal Wireshark profile, Lua
+scripts, plugins or extcap of the account running the server), `--redact off|ids|ids+ips`, `--redact-keep-prefix`. Each has
 a `TSHARK_MCP_*` environment variable.
 
 ### Which tool for which question
@@ -87,7 +90,7 @@ server publishes an `outputSchema` for each.
   add `suggestions` (close field names). Types
   include `invalid_argument`, `invalid_filter`, `invalid_path` (outside the allowlist),
   `not_found`, `not_a_file`, `not_a_directory`, `timeout`, `output_too_large`, `tshark_failed`,
-  `unknown_field` and `unknown_token`.
+  `unknown_field`, `unknown_token`, `busy` (too many tshark runs at once; retry) and `capture_changed` (the file was replaced while being read).
 
 ### Reading the output
 
