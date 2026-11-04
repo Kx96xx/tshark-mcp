@@ -77,8 +77,9 @@ storms and subscriber loops with the nodes involved, #19, #21, #48).
 ### Documentation and project
 
 - README with quickstart, a worked one-way-audio example on a committed synthetic capture,
-  per-tool table, safety model and limitations (#26, #57); `llms.txt` for agents;
-  `docs/EXAMPLE.md` walking through a failed attach.
+  per-tool table, safety model and limitations (#26, #57), then restructured for a 60-second
+  read with the detail moved to `docs/TOOLS.md` and `docs/SAFETY.md` (#64); `AGENTS.md` and
+  `CLAUDE.md` for agents (#63); `llms.txt`; `docs/EXAMPLE.md` walking through a failed attach.
 - `examples/`: three synthetic sample captures (SIP one-way audio, Diameter error answer,
   GTPv2 Create Session rejected) regenerated and checked by `tests/test_examples.py` (#56).
 - CI on Python 3.10 to 3.13 with the tshark Ubuntu 24.04 ships (4.2), plus a run on the

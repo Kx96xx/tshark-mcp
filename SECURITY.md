@@ -20,7 +20,7 @@ than a bounded `tshark -r`.
   full (500), frames read per run (200 000, with a ceiling on any `-c` the runner will pass),
   JSON per call (30 KB), raw stdout kept (64 MB, tshark is killed beyond it), wall clock per
   run and per multi-pass call (60 s, tshark is killed beyond it), files opened per directory
-  search (50). The numeric ones are configurable; see the README's safety-model table.
+  search (50). The numeric ones are configurable; see the caps table in [docs/SAFETY.md](docs/SAFETY.md).
 - **Inputs are validated before they reach tshark.** Display filters are linted for control
   characters and shell metacharacters outside quoted strings, then compiled by tshark against
   an empty capture before the real file is touched. Field names must exist in

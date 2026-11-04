@@ -33,8 +33,8 @@ oldest supported `mcp` and `pydantic`.
   they come from, with the reference in a comment.
 - **Keep the output contract.** Paged tools take `limit` and `offset` and return
   `total_matched`, `returned`, `dropped` and `next_offset`; truncation always comes with a
-  `truncated_reason`; packet text goes through `untrusted.apply`. Update the README table,
-  `llms.txt` and the test count when a tool is added or its arguments change.
+  `truncated_reason`; packet text goes through `untrusted.apply`. Update the tool tables in the README and `docs/TOOLS.md`,
+  `llms.txt`, `AGENTS.md` and the test count when a tool is added or its arguments change.
 - `ruff check --select F,E9` must be clean; CI must be green on the exact commit before merge.
 
 ## Reporting a bug
