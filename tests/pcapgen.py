@@ -912,9 +912,11 @@ IMS_EXPIRED = "001010000000105"    # 200 for 60 s, no refresh, no smsip or MMTel
 IMS_ESP = "001010000000106"        # 401, then ESP that never yields a protected REGISTER
 IMS_DEREG = "001010000000107"
 IMS_SILENT = "001010000000108"     # REGISTER never answered
+IMS_NOTIFY = "001010000000109"     # registered, then a reg-event NOTIFY terminates it (deactivated)
 IMS_MSISDN = "15550100123"         # IMS_OK's implicit tel URI
 UE_IMS = {IMS_OK: "198.51.100.41", IMS_LOOP: "198.51.100.42", IMS_403: "198.51.100.43", IMS_503: "198.51.100.44",
-          IMS_EXPIRED: "198.51.100.45", IMS_ESP: "198.51.100.46", IMS_DEREG: "198.51.100.47", IMS_SILENT: "198.51.100.48"}
+          IMS_EXPIRED: "198.51.100.45", IMS_ESP: "198.51.100.46", IMS_DEREG: "198.51.100.47", IMS_SILENT: "198.51.100.48",
+          IMS_NOTIFY: "198.51.100.49"}
 PCSCF_SPI_C, PCSCF_SPI_S = 3333, 4444
 MMTEL_TAG = '+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"'
 
@@ -951,6 +953,34 @@ def _reg_response(imsi: str, cseq: int, code: int, reason: str, extra: list[str]
         f"SIP/2.0 {code} {reason}", f"Via: SIP/2.0/UDP {ue}:5060;branch=z9hG4bK{imsi[-3:]}{cseq}",
         f"From: <{frm or impu}>;tag=r{cseq}", f"To: <{impu}>;tag=s{cseq}",
         f"Call-ID: {call_id or 'reg-' + imsi[-3:]}@ue.example", f"CSeq: {cseq} REGISTER", *(extra or []),
+    ])
+
+
+def _reginfo(imsi: str, state: str, contact_state: str, event: str, expires: int | None = None) -> str:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    exp = f' expires="{expires}"' if expires is not None else ""
+    return ('<?xml version="1.0"?>\r\n<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="1" state="full">\r\n'
+            f'  <registration aor="{impu}" id="a{imsi[-3:]}" state="{state}">\r\n'
+            f'    <contact id="c1" state="{contact_state}" event="{event}"{exp}>\r\n'
+            f'      <uri>sip:{UE_IMS[imsi]}:5060</uri>\r\n    </contact>\r\n  </registration>\r\n</reginfo>\r\n')
+
+
+def _notify(imsi: str, cseq: int, body: str, *, src: str) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return _sip([
+        f"NOTIFY sip:{UE_IMS[imsi]}:5060 SIP/2.0", f"Via: SIP/2.0/UDP {src}:5060;branch=z9hG4bKn{imsi[-3:]}{cseq}",
+        f"From: <{impu}>;tag=sub{imsi[-3:]}", f"To: <{impu}>;tag=ue{imsi[-3:]}", f"Call-ID: sub-{imsi[-3:]}@ue.example",
+        f"CSeq: {cseq} NOTIFY", "Event: reg", "Subscription-State: active;expires=600000", "Max-Forwards: 70",
+        "Content-Type: application/reginfo+xml",
+    ], body)
+
+
+def _notify_ok(imsi: str, cseq: int, *, via_host: str) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return _sip([
+        "SIP/2.0 200 OK", f"Via: SIP/2.0/UDP {via_host}:5060;branch=z9hG4bKn{imsi[-3:]}{cseq}",
+        f"From: <{impu}>;tag=sub{imsi[-3:]}", f"To: <{impu}>;tag=ue{imsi[-3:]}", f"Call-ID: sub-{imsi[-3:]}@ue.example",
+        f"CSeq: {cseq} NOTIFY",
     ])
 
 
@@ -1008,6 +1038,10 @@ def write_ims_register_pcap(path: Path) -> Path:
     add(1.790, AS2_IP, s, _reg_response(IMS_OK, 11, 500, "Server Internal Error", call_id="3pr-2", frm=scscf, ue=s))
     add(300.0, p, s, _register(IMS_OK, 3, 600000, response="1f1e2d3c4b5a69788796a5b4c3d2e1f0"))
     add(300.040, s, p, _reg_response(IMS_OK, 3, 200, "OK", _ok(IMS_OK, 3600)))
+    # The reg-event NOTIFY after the refresh (state active) on both legs, answered by the UE.
+    add(301.0, s, p, _notify(IMS_OK, 1, _reginfo(IMS_OK, "active", "active", "refreshed", 3600), src=s))
+    add(301.01, p, ue, _notify(IMS_OK, 1, _reginfo(IMS_OK, "active", "active", "refreshed", 3600), src=s))
+    add(301.03, ue, p, _notify_ok(IMS_OK, 1, via_host=s))
     # 2. Challenge loop: every answer is challenged again; the last carries AUTS.
     ue = UE_IMS[IMS_LOOP]
     add(10.0, ue, p, _register(IMS_LOOP, 1, 600000))
@@ -1040,6 +1074,14 @@ def write_ims_register_pcap(path: Path) -> Path:
     add(50.04, s, p, _reg_response(IMS_DEREG, 5, 200, "OK", _ok(IMS_DEREG, 3600)))
     add(60.0, p, s, _register(IMS_DEREG, 6, 0, response="ee"))
     add(60.04, s, p, _reg_response(IMS_DEREG, 6, 200, "OK", [f"Contact: <sip:{ue}:5060>;expires=0"]))
+    # 9. Registered, then de-registered by the network: a reg-event NOTIFY with the
+    # registration terminated and the contact deactivated (the UE should re-register).
+    ue = UE_IMS[IMS_NOTIFY]
+    add(80.0, p, s, _register(IMS_NOTIFY, 7, 600000, response="ff"))
+    add(80.04, s, p, _reg_response(IMS_NOTIFY, 7, 200, "OK", _ok(IMS_NOTIFY, 3600)))
+    add(90.0, s, p, _notify(IMS_NOTIFY, 2, _reginfo(IMS_NOTIFY, "terminated", "terminated", "deactivated"), src=s))
+    add(90.01, p, ue, _notify(IMS_NOTIFY, 2, _reginfo(IMS_NOTIFY, "terminated", "terminated", "deactivated"), src=s))
+    add(90.03, ue, p, _notify_ok(IMS_NOTIFY, 2, via_host=s))
     # 8. Never answered (two retransmissions).
     ue = UE_IMS[IMS_SILENT]
     for dt in (70.0, 70.5, 71.5):
