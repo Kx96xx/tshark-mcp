@@ -407,3 +407,17 @@ def search(runner: Runner, protocol: str, query: str, application: str | None = 
     rows.sort(key=lambda r: (0 if all(w in r["name"].lower() for w in words) else 1, r.get("avp", ""),
                              (0, r["code"], "") if isinstance(r["code"], int) else (1, 0, str(r["code"]))))
     return rows
+
+
+def brief(runner: Runner, protocol: str, code: Any, application: str | None = None) -> dict[str, Any] | None:
+    """The name, meaning and reference of a code as :func:`lookup` gives them, for tools that
+    explain the codes they found; None when the code cannot be looked up."""
+    if code is None:
+        return None
+    try:
+        full = lookup(runner, protocol, code, application)
+    except ToolError:
+        return None
+    if not full.get("name") and not full.get("meaning"):
+        return None
+    return {k: full[k] for k in ("name", "meaning", "ref") if full.get(k)}

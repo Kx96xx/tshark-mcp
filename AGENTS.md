@@ -8,7 +8,7 @@ the tools.
 
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
-compact JSON. It cannot capture, write, export, resolve names or load code. Forty-five
+compact JSON. It cannot capture, write, export, resolve names or load code. Forty-six
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -58,6 +58,7 @@ a `TSHARK_MCP_*` environment variable.
 | One-way audio, no audio, 488 | `sip_dialogs` to find the Call-ID, then `media_path_check(path, call_id)`, then `rtp_streams(path, call_id=...)` |
 | Call quality (loss, jitter, MOS estimate) | `rtp_streams`; `sip_call_detail(path, call_id)` for timing, Reason, who hung up |
 | ASR, NER, post-dial delay or call duration per carrier, prefix or hour | `call_kpis(path, group_by="peer" / "destination_prefix" / "interval")`, then `sip_call_detail` on a Call-ID from `worst_calls` |
+| The customer got 503 but the carrier sent 480: which hop of the B2BUA, SBC or CSCF chain failed or rewrote it? | `call_legs(path, call_id=... or number=...)`: legs with `linked_by` and confidence, `status_mapping`, `where_it_failed`; then `sip_call_detail` on one leg |
 | DTMF not working | `dtmf_events(path, call_id=...)` |
 | UE cannot register on IMS | `ims_registration(path, imsi=... or impu=...)` |
 | SMS over IMS lost or rejected | `sms_over_ims(path, number=... or imsi=...)` |
@@ -170,6 +171,7 @@ src/tshark_mcp/
   untrusted.py  caps and cleans text copied from packets
   pairing.py    request/answer pairing shared by Diameter, GTP, PFCP and DNS
   callkpi.py    call_kpis: call KPIs per group, built on sip.py's message parser
+  calllegs.py   call_legs: B2BUA/SBC/CSCF legs stitched by icid, Session-ID, X- headers, media or number
   diameter.py gtp.py gtpv1.py pfcp.py sip.py sdp.py rtp.py media.py dtmf.py ims.py sms.py
   sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py
   rates.py compare.py avps.py packets.py expert.py models.py (TypedDict output schemas)

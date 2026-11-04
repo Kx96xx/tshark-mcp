@@ -40,6 +40,7 @@ EXPECTED_TOOLS = {
     "incident_summary",
     "diff_captures",
     "throughput_timeline",
+    "call_legs",
 }
 
 
@@ -91,6 +92,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("media_path_check", {"path": f"{d}/voice/voice_problems.pcap", "call_id": pcapgen.CALL_ID_NAT}),
         ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
         ("call_kpis", {"path": f"{d}/voice/call_mix.pcap", "group_by": "destination_prefix"}),
+        ("call_legs", {"path": f"{d}/voice/call_legs.pcap", "call_id": "legs-a1@ue.example"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
         ("find_fields", {"query": "result code", "protocol": "diameter", "limit": 5}),
@@ -268,6 +270,11 @@ def test_every_tool_call_returns_structured_content(client_run):
     kpis = by_name[("call_kpis", ("group_by", "path"))]
     assert {r["destination_prefix"]: r["asr_pct"] for r in kpis["groups"]} == {"4477": 40.0, "1555": 50.0}
     assert kpis["summary"]["calls"] == 10 and kpis["worst_calls"][0]["frame"] > 0
+    legs = by_name[("call_legs", ("call_id", "path"))]
+    (stitched,) = legs["calls"]
+    assert stitched["legs_count"] == 3 and stitched["where_it_failed"]["status"] == 480
+    assert any(m["rewritten"] and m["sent"]["status"] == 503 for m in stitched["status_mapping"])
+    assert {r["leg"] for r in stitched["ladder"]} == {0, 1, 2}
     roam = by_name[("roaming_attach_check", ("imsi", "path"))]
     (attempt,) = roam["attempts"]
     assert attempt["first_failure"]["code"] == 78 and "Create Session failed" in attempt["verdict"]

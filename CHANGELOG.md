@@ -46,6 +46,11 @@ the project uses [semantic versioning](https://semver.org/).
   ICMP errors beside them; series per conversation, host or stream; a verdict per TCP stream
   (loss-limited, receiver-limited, application-idle, sender-limited, fine) and issues that say
   where goodput fell and why, and which counters burst.
+- `call_legs`: the legs of one call that a B2BUA, SBC or CSCF chain gave different Call-IDs,
+  stitched by icid, RFC 7989 Session-ID, X- Call-ID headers, Replaces and Target-Dialog (high
+  confidence), a shared SDP media endpoint (medium) or the called number and time (low), with the
+  link and its confidence per leg, the delay each element added, header changes, which element
+  rewrote a status or Q.850 cause and the deepest failed leg explained with cause_lookup.
 
 ### Fixed
 
