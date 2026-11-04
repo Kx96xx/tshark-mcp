@@ -35,6 +35,7 @@ EXPECTED_TOOLS = {
     "cause_lookup",
     "call_kpis",
     "gtp_ies",
+    "roaming_attach_check",
 }
 
 
@@ -59,6 +60,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("gtp_sessions", {"path": f"{d}/gtpv2.pcap", "teid": "0xc001"}),
         ("gtp_user_plane", {"path": f"{d}/gtpu.pcap"}),
         ("gtp_ies", {"path": f"{d}/gtpv2.pcap", "message": "Create Session Request"}),
+        ("roaming_attach_check", {"path": f"{d}/gtpv2.pcap", "imsi": pcapgen.IMSI_OTHER}),
         ("sip_dialogs", {"path": f"{d}/sip.pcap", "method": "INVITE"}),
         ("sctp_associations", {"path": f"{d}/sctp.pcap"}),
         ("sigtran_messages", {"path": f"{d}/sigtran.pcap"}),
@@ -246,6 +248,11 @@ def test_every_tool_call_returns_structured_content(client_run):
     kpis = by_name[("call_kpis", ("group_by", "path"))]
     assert {r["destination_prefix"]: r["asr_pct"] for r in kpis["groups"]} == {"4477": 40.0, "1555": 50.0}
     assert kpis["summary"]["calls"] == 10 and kpis["worst_calls"][0]["frame"] > 0
+    roam = by_name[("roaming_attach_check", ("imsi", "path"))]
+    (attempt,) = roam["attempts"]
+    assert attempt["first_failure"]["code"] == 78 and "Create Session failed" in attempt["verdict"]
+    assert any(c["check"] == "subscription" and c["result"] == "unknown" for c in attempt["checks"])
+
     ies = by_name[("gtp_ies", ("message", "path"))]
     rejected = next(t for t in ies["transactions"] if t.get("cause") == 78)
     assert rejected["request_ies"]["apn"] == "bogus.apn" and "'bogus.apn'" in rejected["likely_causes"][0]

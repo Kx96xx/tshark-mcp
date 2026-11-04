@@ -155,6 +155,7 @@ class TestRegistration:
             "cause_lookup",
             "call_kpis",
             "gtp_ies",
+            "roaming_attach_check",
         ])
         by_name = {t.name: t for t in tools}
 

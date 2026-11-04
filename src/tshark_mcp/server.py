@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, callkpi, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -62,6 +62,8 @@ gtpv1_sessions, pfcp_sessions, sigtran_messages or sip_dialogs with a structured
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type);
 gtp_ies does the same for GTPv2-C IEs (APN, PDN type, QoS, ULI, offending IE).
+For "this roamer cannot attach or gets no bearer" call roaming_attach_check:
+it holds the ULA subscription against the Create Session and names the first failure.
 sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
 up); call_kpis gives ASR, NER, PDD and ACD per peer, trunk, prefix or interval. media_path_check explains one-way audio and 488s. For voice quality,
 rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
@@ -2910,6 +2912,260 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
     return _guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit, "offset": offset}, run)
 
 
+@_tool(title="Roaming attach check", annotations=READ_ONLY)
+def roaming_attach_check(path: str, imsi: str, msisdn: str | None = None, home_plmn: str | None = None,
+                         limit: int = 50, offset: int = 0) -> models.RoamingAttachCheckResult:
+    """Why can this roamer not attach or get a bearer. Collects the subscriber's
+    attach and PDN steps (S6a AIR/AIA and ULR/ULA, MAP sendAuthenticationInfo,
+    updateLocation and updateGprsLocation for 2G/3G, GTPv2-C Create Session and Modify
+    Bearer, Gx CCR-I/CCA-I, PFCP Session Establishment) and groups them into `attempts`
+    in time order. Each attempt gives `visited_plmn` (ULR Visited-PLMN-Id, GTPv2 Serving
+    Network or the MAP peer GT), `roaming`, `access` (RAT, TAI, ECGI), `steps` with
+    result, code, `ref` and frames, the ULA `subscription` digest (carried from an
+    earlier attempt when this one has no ULA), the Create Session `request` (APN, PDN
+    type, selection mode, RAT, serving network, flags, APN-AMBR), `checks` (APN
+    subscribed, PDN type allowed, home routing or local breakout from the APN operator
+    identifier against VPLMN-Dynamic-Address-Allowed, RAT against
+    Access-Restriction-Data, ODB, AMBR), `first_failure` and a one-sentence `verdict`.
+    `home_plmn` ("MCC-MNC") overrides the home network read from the IMSI (needed for
+    multi-IMSI SIMs and MVNO ranges; otherwise the MNC length follows the MCC).
+    Content-free: no authentication vectors, SMS or USSD text are read or returned."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        if not imsi_d or not 6 <= len(imsi_d) <= 15:
+            raise ToolError("invalid_argument", "imsi must be the subscriber's IMSI (6 to 15 digits)")
+        msisdn_d = lint_digits(msisdn, "msisdn") if msisdn else None
+        if home_plmn:
+            home = roaming.parse_plmn(home_plmn)
+            if home is None:
+                raise ToolError("invalid_argument", f"home_plmn must be MCC-MNC such as '001-01', got {home_plmn!r}")
+            home_source = "home_plmn argument"
+        else:
+            home = roaming.home_from_imsi(imsi_d)
+            home_source = f"IMSI ({len(home[1])}-digit MNC for MCC {home[0]}; pass home_plmn to override)"
+        cap = clamp_limit(limit, st.limits.max_packets, 50)
+        deadline = _now() + st.limits.timeout_seconds
+        steps, notes, stopped = _roaming_steps(capture, imsi_d, msisdn_d, deadline)
+        attempts = roaming.evaluate_all(steps, imsi=imsi_d, home=home)
+        failed = [a for a in attempts if a.get("first_failure")]
+        last = attempts[-1] if attempts else None
+        verdict = (f'{len(attempts)} attempt(s), {len(failed)} with a failure; latest: {last["verdict"]}' if last else
+                   "no attach or PDN step for this IMSI in the capture: check the IMSI, or run find_identifier "
+                   "across the ring")
+        out = _envelope("attempts", attempts, cap, None, offset=offset, imsi=imsi_d,
+                        home_plmn=roaming.plmn_text(home), home_plmn_source=home_source,
+                        summary={"attempts": len(attempts), "failed": len(failed),
+                                 "steps_by_protocol": _count(steps, "protocol")},
+                        verdict=verdict, passes=notes)
+        reasons = _trace_reasons(notes, stopped, st.limits.timeout_seconds)
+        if reasons:
+            out["truncated"] = True
+            out["truncated_reason"] = "; ".join(reasons)
+        return out
+    return _guarded("roaming_attach_check", {"path": path, "imsi": imsi, "msisdn": msisdn, "home_plmn": home_plmn,
+                                             "limit": limit, "offset": offset}, run)
+
+
+_ROAMING_DIAMETER = {318: ("auth", "air", "AIR/AIA"), 316: ("location", "ulr", "ULR/ULA")}
+_ROAMING_MAP = {56: ("auth", "map_sai", "MAP sendAuthenticationInfo"),
+                2: ("location", "map_ul", "MAP updateLocation"),
+                23: ("location", "map_ugl", "MAP updateGprsLocation")}
+
+
+def _roaming_steps(capture: Path, imsi_d: str, msisdn_d: str | None,
+                   deadline: float) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+    """The attach and PDN steps of one subscriber, as plain dicts for roaming.evaluate_all."""
+    st = state()
+    steps: list[dict[str, Any]] = []
+    notes: dict[str, Any] = {}
+    stage, stopped = "diameter", None
+    gtp_found: list[tuple[Any, dict[str, Any]]] = []
+    try:
+        # Diameter: S6a by User-Name, Gx by Subscription-Id-Data, then the whole sessions.
+        flt = diameter.identity_filter(imsi_d, msisdn_d)
+        flt = f'({flt}) || diameter.Subscription-Id-Data == "{imsi_d}"'
+        stdout, scan = _fields_run(capture, flt, ["diameter.Session-Id"], st.limits.max_scan_packets,
+                                   timeout=_left(deadline))
+        sessions = {v.strip() for ln in stdout.splitlines() for v in ln.split(",") if v.strip()}
+        notes["diameter"] = {"sessions": len(sessions), "truncated": scan.truncated}
+        corr = diameter.correlation_filter(sessions)
+        if corr:
+            packets, scan = _json_run(capture, corr, diameter.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+            messages = diameter.extract_messages(packets, keep_raw=True)
+            mine = diameter.subscriber_sessions(messages, imsi_d, msisdn_d, exact_imsi=True)
+            notes["diameter"]["truncated"] = notes["diameter"]["truncated"] or scan.truncated
+            for tx in diameter.pair(messages):
+                step = _roaming_diameter_step(tx, mine, imsi_d)
+                if step:
+                    steps.append(step)
+
+        stage = "gtpv2"
+        _gtp_subscriber_txs(gtp, "gtpv2", capture, imsi_d, msisdn_d, deadline, notes, gtp_found, keep_raw=True)
+
+        stage = "pfcp"
+        ue_rows = [{"protocol": "gtpv2", "paa": row.get("paa")} for _tx, row in gtp_found if row.get("paa")]
+        before = len(ue_rows)
+        _trace_pfcp(capture, imsi_d, deadline, notes, ue_rows)
+        for row in ue_rows[before:]:
+            if row.get("message") == "Session Establishment Request":
+                steps.append(_roaming_step(row, "pdn", "pfcp_establishment", "PFCP Session Establishment", "pfcp",
+                                           code=None, success=None if row.get("unanswered") else not row.get("failed")))
+
+        stage = "map"
+        flt = sigtran.identity_filter(imsi_d, msisdn_d)
+        if flt:
+            stdout, scan = _fields_run(capture, flt, ["tcap.tid"], st.limits.max_scan_packets, timeout=_left(deadline))
+            tids = {_colonise(t) for ln in stdout.splitlines() for t in ln.strip().split(",") if t.strip()}
+            corr = sigtran.correlation_filter(tids)
+            if corr:
+                notes["map"] = {"transactions": len(tids), "truncated": scan.truncated}
+                packets, scan = _json_run(capture, corr, sigtran.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
+                steps.extend(_roaming_map_steps(sigtran.extract_rows(packets)))
+                notes["map"]["truncated"] = notes["map"]["truncated"] or scan.truncated
+    except ToolError as exc:
+        if exc.type != "timeout":
+            raise
+        stopped = stage
+        notes.setdefault(stopped, {})["timed_out"] = True
+    for tx, row in gtp_found:
+        step = _roaming_gtp_step(tx, row)
+        if step:
+            steps.append(step)
+    return steps, notes, stopped
+
+
+def _roaming_step(row: dict[str, Any], phase: str, kind: str, name: str, ref_key: str, *, code: Any,
+                  success: bool | None, result: str | None = None, **extra: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {"phase": phase, "kind": kind, "step": name, "protocol": ref_key.split("_")[0],
+                           "time": row.get("time"), "request_frame": row.get("request_frame"),
+                           "answer_frame": row.get("answer_frame"), "rtt_ms": row.get("rtt_ms")}
+    if row.get("unanswered"):
+        out["unanswered"] = True
+        if row.get("near_capture_end"):
+            out["near_capture_end"] = True
+    else:
+        out["result"] = result if result is not None else row.get("result")
+        out["code"] = code
+        out["success"] = success
+        if success is False:
+            out["ref"] = roaming.REFS.get(ref_key)
+    out.update(extra)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _roaming_diameter_step(tx: Any, mine: set[str], imsi_d: str) -> dict[str, Any] | None:
+    anchor = tx.request or tx.answer
+    code = anchor.fields.get("command_code")
+    row = diameter.transaction_row(tx)
+    trees = {side: avps.avp_tree(m.fields.get("raw") or {}, avps.HARD_MAX_AVPS)[0]
+             for side, m in (("request", tx.request), ("answer", tx.answer)) if m is not None}
+    req_key = avps.key_view(trees["request"]) if "request" in trees else {}
+    ans_key = avps.key_view(trees["answer"]) if "answer" in trees else {}
+    if code in _ROAMING_DIAMETER:
+        if row.get("session_id") not in mine:
+            return None
+        phase, kind, name = _ROAMING_DIAMETER[code]
+    elif code == 272 and str(req_key.get("CC-Request-Type", "")).startswith("INITIAL"):
+        ids = [str(v) for v in avps.find(trees.get("request", {}), "Subscription-Id-Data")]
+        if imsi_d not in ids and row.get("session_id") not in mine:
+            return None
+        phase, kind, name = "pdn", "gx_initial", "Gx CCR-I/CCA-I"
+    else:
+        return None
+    erc, rc = row.get("experimental_result_code"), row.get("result_code")
+    app = "gx" if kind == "gx_initial" else "s6a"
+    ref_key = app if erc is not None else "diameter"
+    extra: dict[str, Any] = {}
+    if kind == "ulr":
+        extra.update(visited_plmn=req_key.get("Visited-PLMN-Id"), rat_type=req_key.get("RAT-Type"),
+                     ulr_flags=req_key.get("ULR-Flags"),
+                     subscription=ans_key.get("subscription") if isinstance(ans_key.get("subscription"), dict) else None)
+    if kind == "air" and ans_key.get("authentication_vectors"):
+        extra["vectors_returned"] = ans_key["authentication_vectors"]  # the count only, never the vectors
+    if kind == "gx_initial":
+        extra["apn"] = req_key.get("Called-Station-Id")
+    if "answer" in trees:
+        diag = roaming.error_diagnostic(trees["answer"])
+        if diag:
+            extra["error_diagnostic"] = diag
+    failed = row.get("success") is False
+    if failed and (erc or rc) is not None:
+        extra["cause_lookup"] = f"cause_lookup(protocol='diameter', code={erc or rc}, application='{app}')"
+    step = _roaming_step({**row, "protocol": "diameter"}, phase, kind, name, ref_key, code=erc if erc is not None else rc,
+                         success=row.get("success"), **extra)
+    step["protocol"] = "diameter"
+    return step
+
+
+def _roaming_gtp_step(tx: Any, row: dict[str, Any]) -> dict[str, Any] | None:
+    mtype = (tx.request or tx.answer).fields.get("message_type")
+    if mtype == 32:
+        kind, name = "create_session", "Create Session"
+    elif mtype == 34:
+        kind, name = "modify_bearer", "Modify Bearer"
+    else:
+        return None
+    req_raw = tx.request.fields.get("raw") if tx.request is not None else None
+    request = gtpies.key_view(req_raw) if req_raw else {}
+    response = gtpies.key_view(tx.answer.fields.get("raw") or {}, req_raw) if tx.answer is not None else {}
+    cause = response.get("cause") or {}
+    accepted = row.get("accepted")
+    extra: dict[str, Any] = {"apn": request.get("apn") or row.get("apn")}
+    if kind == "create_session":
+        extra["request"] = request
+        if response.get("paa"):
+            extra["paa"] = response["paa"]
+    if accepted is False:
+        if cause.get("offending_ie"):
+            extra["offending_ie"] = cause["offending_ie"]
+        if row.get("cause") is not None:
+            extra["cause_lookup"] = f"cause_lookup(protocol='gtpv2', code={row['cause']})"
+        why = gtpies.likely_causes(request, response)
+        if why:
+            extra["likely_causes"] = why
+    step = _roaming_step(row, "pdn", kind, name, "gtpv2", code=row.get("cause"), success=accepted,
+                         result=row.get("cause_name"), **extra)
+    step["protocol"] = "gtpv2"
+    return step
+
+
+def _roaming_map_steps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """MAP invokes of the attach procedures paired with their result or error. Only
+    operation and error names are read, never parameters (no authentication vectors)."""
+    out: list[dict[str, Any]] = []
+    by_frame = {r.get("frame"): r for r in rows}
+    for row in rows:
+        invoke = next((c for c in row.get("components", []) if c.get("type") == "invoke"
+                       and c.get("opcode") in _ROAMING_MAP), None)
+        if invoke is None:
+            continue
+        phase, kind, name = _ROAMING_MAP[invoke["opcode"]]
+        reply = by_frame.get(row.get("answered_in_frame"))
+        error = next((c for c in (reply or {}).get("components", []) if c.get("type") == "returnError"), None)
+        aborted = (reply or {}).get("tcap") == "abort"
+        base = {"time": row.get("time"), "request_frame": row.get("frame"),
+                "answer_frame": reply.get("frame") if reply else None, "rtt_ms": (reply or {}).get("rtt_ms"),
+                "unanswered": row.get("unanswered")}
+        if error:
+            result, code, success = error.get("error"), error.get("error_code"), False
+        elif aborted:
+            result, code, success = "TCAP abort", None, False
+        elif reply and (reply.get("tcap") == "end" or any(str(c.get("type", "")).startswith("returnResult")
+                                                         for c in reply.get("components", []))):
+            result, code, success = "returnResult", None, True
+        else:
+            result, code, success = None, None, None
+        extra = {"peer_gt": row.get("calling_gt")}
+        if error and code is not None:
+            extra["cause_lookup"] = f"cause_lookup(protocol='map', code={code})"
+        step = _roaming_step(base, phase, kind, name, "map", code=code, success=success, result=result, **extra)
+        step["protocol"] = "map"
+        out.append(step)
+    return out
+
+
 def _trace_reasons(notes: dict[str, Any], stopped: str | None, budget: float) -> list[str]:
     reasons = []
     if stopped is not None:
@@ -3135,12 +3391,28 @@ def _identity(ident: tuple[str | None, str | None]) -> dict[str, str] | None:
 def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_d: str | None, deadline: float,
                notes: dict[str, Any], timeline: list[dict[str, Any]]) -> None:
     """One GTP version's passes of the subscriber trace (``module`` is gtp or gtpv1)."""
+    found: list[tuple[Any, dict[str, Any]]] = []
+    try:
+        _gtp_subscriber_txs(module, key, capture, imsi_d, msisdn_d, deadline, notes, found)
+    finally:  # a pass that ran out of time still adds what the earlier passes found
+        for _tx, row in found:
+            timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
+
+
+def _gtp_subscriber_txs(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_d: str | None,
+                        deadline: float, notes: dict[str, Any], found: list[tuple[Any, dict[str, Any]]],
+                        keep_raw: bool = False) -> None:
+    """Append the subscriber's GTP transactions and their rows to ``found``: requests naming
+    the subscriber, then the same sequence numbers and the control-plane TEIDs learnt from
+    them. Rows are added even when a later pass runs out of time.
+    ``keep_raw`` keeps each message's dissection (GTPv2-C only) for gtp_ies-style views."""
     st = state()
     flt = module.identity_filter(imsi_d, msisdn_d)
     if not flt:
         return
+    extract = (lambda pk: module.extract_messages(pk, keep_raw=True)) if keep_raw else module.extract_messages
     packets, scan = _json_run(capture, flt, module.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-    seed = module.extract_messages(packets)
+    seed = extract(packets)
     if not seed and key == "gtpv1":
         return  # most captures carry no GTPv1-C; keep the passes summary short
     seqs, teids = module.sequence_numbers(seed), module.control_teids(seed)
@@ -3156,7 +3428,7 @@ def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_
             if not corr:
                 break
             packets, scan = _json_run(capture, corr, module.JSON_LAYERS, st.limits.max_packets, deadline=deadline)
-            fetched = module.extract_messages(packets)
+            fetched = extract(packets)
             for m in fetched:
                 collected.setdefault((m.frame, m.src, m.dst, m.fields.get("seq"), m.fields.get("message_type")), m)
             learnt: set[int] = set()
@@ -3176,9 +3448,7 @@ def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_
         ends = _capture_end(capture, deadline)
         annotate_legs(txs, rows, session_identity(txs, module.announced_teids), ends)
         mark_unanswered_near_end(txs, rows, ends)
-        for row in rows:
-            if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
-                timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
+        found.extend((tx, row) for tx, row in zip(txs, rows) if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs))
 
 
 def _diameter_step(tx: Any, row: dict[str, Any], with_avps: bool = False) -> dict[str, Any]:

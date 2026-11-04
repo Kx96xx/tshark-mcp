@@ -126,7 +126,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Forty tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Forty-one tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -171,6 +171,7 @@ examples: [docs/TOOLS.md](docs/TOOLS.md).
 | `sctp_associations` | Handshake, heartbeats, retransmissions, aborts per association |
 | `sigtran_messages` | M3UA, SCCP, TCAP and MAP with operation names, IMSI and MSISDN |
 | `trace_subscriber` | One timeline for a subscriber across Diameter, GTP, PFCP, MAP and SIP |
+| `roaming_attach_check` | Why a roamer cannot attach or get a bearer: each attempt's steps, the ULA subscription held against the Create Session, checks and a verdict |
 | `compare_captures` | A working and a failing capture side by side, with the first divergence |
 
 ## Redaction
@@ -211,7 +212,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 805 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 818 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
