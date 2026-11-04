@@ -185,3 +185,17 @@ def test_lint_hostname():
     for bad in ("", "a b", 'x"y', "a..b", "-x.com", "x\\y", "a" * 64 + ".com", None, 5):
         with pytest.raises(ToolError):
             lint_hostname(bad)
+
+
+def test_a_path_the_filesystem_cannot_take_is_invalid_path_not_an_internal_error(tmp_path):
+    """A 5000-character name raises ENAMETOOLONG from Path.exists(); it came back as
+    internal_error ('OSError: [Errno 63] File name too long') instead of a path error."""
+    from tshark_mcp.limits import Allowlist, Limits, ToolError
+    import pytest
+    allow = Allowlist.from_strings([str(tmp_path)])
+    with pytest.raises(ToolError) as exc:
+        allow.resolve(str(tmp_path / ("a" * 5000 + ".pcap")), Limits())
+    assert exc.value.type == "invalid_path" and "cannot access" in str(exc.value)
+    with pytest.raises(ToolError) as exc2:
+        allow.resolve_dir(str(tmp_path / ("b" * 5000)))
+    assert exc2.value.type == "invalid_path"

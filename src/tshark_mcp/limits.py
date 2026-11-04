@@ -168,14 +168,22 @@ class Allowlist:
                 f"{path} resolves to {resolved}, which is outside the allowed directories",
                 allowed_dirs=[str(r) for r in self.roots],
             )
-        if not resolved.exists():
+        try:
+            present = resolved.exists()
+        except OSError as exc:  # a name too long for the filesystem, a loop of symlinks, ...
+            raise ToolError("invalid_path", f"cannot access {path}: {exc.strerror or exc}") from None
+        if not present:
             raise ToolError("not_found", f"no such file: {path}")
         return resolved
 
     def resolve_dir(self, path: str) -> Path:
         """Resolve ``path`` and check it is a directory inside one of the allowed roots."""
         resolved = self.resolve_inside(path)
-        if not resolved.is_dir():
+        try:
+            is_dir = resolved.is_dir()
+        except OSError as exc:
+            raise ToolError("invalid_path", f"cannot access {path}: {exc.strerror or exc}") from None
+        if not is_dir:
             raise ToolError("not_a_directory", f"{path} is not a directory")
         return resolved
 
@@ -183,9 +191,13 @@ class Allowlist:
         """Resolve ``path`` (following symlinks) and check it is a readable capture
         inside one of the allowed roots and under the size cap."""
         resolved = self.resolve_inside(path)
-        if not resolved.is_file():
+        try:
+            is_file = resolved.is_file()
+            size = resolved.stat().st_size if is_file else 0
+        except OSError as exc:
+            raise ToolError("invalid_path", f"cannot access {path}: {exc.strerror or exc}") from None
+        if not is_file:
             raise ToolError("not_a_file", f"{path} is not a regular file")
-        size = resolved.stat().st_size
         if size > limits.max_file_bytes:
             raise ToolError(
                 "file_too_large",
