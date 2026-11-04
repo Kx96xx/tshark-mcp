@@ -60,16 +60,19 @@ class TestReadOnlyGuard:
 class TestFakeSubprocess:
     def test_a_crashing_tshark_is_explained(self, tmp_path: Path):
         """tshark dies of SIGSEGV on some fuzzed captures; the error used to be 'tshark exited
-        with -11', which reads like a server fault and gives no way out."""
+        with -11', which reads like a server fault and gives no way out. The fake dies of
+        SIGTERM: any signal death gives a negative return code and takes the same path, and a
+        real SIGSEGV would make the macOS crash reporter pop up a dialog on every test run."""
         fake = _fake_tshark(tmp_path, """
             import signal
-            os.kill(os.getpid(), signal.SIGSEGV)
+            os.kill(os.getpid(), signal.SIGTERM)
         """)
         runner = Runner(Limits(), tshark=fake)
         with pytest.raises(ToolError) as exc:
             check_result(runner._execute(fake, ["-r", str(tmp_path / "x.pcap")]))
         assert exc.value.type == "tshark_failed"
-        assert "tshark crashed (SIGSEGV)" in str(exc.value) and "newer tshark" in str(exc.value)
+        assert "tshark crashed (SIGTERM)" in str(exc.value) and "newer tshark" in str(exc.value)
+        assert exc.value.details.get("returncode") == -15 if hasattr(exc.value, "details") else True
 
     def test_timeout_kills_child(self, tmp_path: Path):
         fake = _fake_tshark(tmp_path, """
