@@ -92,7 +92,8 @@ def check(call_id: str, sdps: list[dict[str, Any]], streams: list[dict[str, Any]
         if media.get("port") == 0:
             issue("media_rejected", f"the {role} rejects the audio stream (port 0)")
         if media.get("direction") in ("sendonly", "recvonly", "inactive"):
-            issue("media_direction", f"the {role} sets a={media['direction']} (hold or one-way by signalling)")
+            issue("media_direction", f"the {role} sets a={media['direction']}: one-way (or no) media by signalling, "
+                  "a hold or a one-way service, not a fault of the media path")
         if sdp_mod.is_private(media.get("address")):
             issue("private_sdp_address", f"the {role} advertises the private address {media['address']}; "
                   "it is reachable only inside its own network (normal for an IMS UE inside the operator's core, "
@@ -108,6 +109,19 @@ def check(call_id: str, sdps: list[dict[str, Any]], streams: list[dict[str, Any]
     a_ep = (a_media.get("address"), a_media.get("port"))
     o_str, a_str = ep(*o_ep), ep(*a_ep)
     allowed = {c["pt"] for m in (o_media, a_media) for c in m.get("codecs", []) if isinstance(c["pt"], int)}
+
+    # What the SDP directions allow: the offerer sends unless the offer is recvonly/inactive or
+    # the answer is sendonly/inactive (the answer's direction is the answerer's own); the
+    # answerer sends unless the offer is sendonly/inactive or the answer is recvonly/inactive.
+    o_dir, a_dir = o_media.get("direction") or "sendrecv", a_media.get("direction") or "sendrecv"
+    expected_by_sdp = {
+        "offerer to answerer": o_dir in ("sendrecv", "sendonly") and a_dir in ("sendrecv", "recvonly"),
+        "answerer to offerer": o_dir in ("sendrecv", "recvonly") and a_dir in ("sendrecv", "sendonly"),
+    }
+    why_not = {
+        "offerer to answerer": f"a={o_dir} in the offer" if o_dir not in ("sendrecv", "sendonly") else f"a={a_dir} in the answer",
+        "answerer to offerer": f"a={o_dir} in the offer" if o_dir not in ("sendrecv", "recvonly") else f"a={a_dir} in the answer",
+    }
 
     directions = []
     for name, sender, receiver, sender_ep, receiver_ep in (
@@ -139,13 +153,15 @@ def check(call_id: str, sdps: list[dict[str, Any]], streams: list[dict[str, Any]
             issue("rtp_to_wrong_address",
                   f"the {sender} ({sender_ep}) sends RTP to {', '.join(sorted({s['dst'] for s in from_sender}))}, "
                   f"not to the {receiver}'s SDP address {receiver_ep}")
-        else:
+        elif expected_by_sdp[name]:
             row["status"] = "missing"
+        else:
+            row["status"] = f"not expected ({why_not[name]})"
         directions.append(row)
     out["directions"] = directions
 
     missing = [d for d in directions if d["status"] == "missing"]
-    if not streams:
+    if not streams and any(expected_by_sdp.values()):
         issue("no_rtp", "no RTP for this call in the capture: the capture point may not see the media path, "
               "the media may be encrypted or tunnelled, or it never flowed")
     elif missing:
