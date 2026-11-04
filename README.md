@@ -1,36 +1,146 @@
 # tshark-mcp
 
 [![CI](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml)
+![Python 3.10 to 3.13](https://img.shields.io/badge/python-3.10%20to%203.13-blue)
+![Licence MIT](https://img.shields.io/badge/licence-MIT-green)
 
-A read-only [MCP](https://modelcontextprotocol.io) server that lets an LLM agent analyse
-existing packet captures through `tshark`, with dedicated tools for the mobile-core
-protocols (Diameter, GTPv2-C, GTPv1-C, GTP-U, SIP with RTP/RTCP media, and SCTP/M3UA/SCCP/TCAP/MAP) and for
-DNS, TLS handshakes and TCP response times.
-
-The server can only ever run `tshark -r <file>` on files inside directories you allow,
-under hard limits on file size, packets, output size and run time. It cannot capture,
-write, export, resolve names or load code. That is the point: an agent should be able to
+**Read-only packet-capture analysis for AI assistants.** tshark-mcp is an
+[MCP](https://modelcontextprotocol.io) server that lets Claude, or any other MCP client,
+investigate existing pcap files through `tshark`. Investigating a failed attach, a dropped
+bearer, one-way audio or a lost SMS means correlating Diameter, GTP, SIP, RTP and MAP by
+subscriber across a capture; tshark can do all of it, but an agent driving a raw shell is a
+liability. So the server exposes thirty-three narrow tools that return compact JSON for the
+mobile-core and VoIP protocols (Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP with RTP/RTCP,
+IMS registration, SMS over IMS, SCTP/M3UA/SCCP/TCAP/MAP), DNS, TLS handshakes and TCP
+health. They pair requests with answers, name the codes they see (Result-Code 5420, GTP
+cause 78, Q.850 cause 16), flag what never got a reply, and say when the capture itself
+cannot be trusted. The server can only ever run `tshark -r <file>` on files inside
+directories you allow, under hard limits on file size, packets, output size and run time.
+It cannot capture, write, export, resolve names or load code: an agent should be able to
 read a capture without being able to run one.
 
-## Why
+## Quickstart
 
-Investigating a failed attach, a dropped bearer or a lost SMS means correlating Diameter,
-GTP, MAP and SIP by subscriber across one capture. tshark can do all of it, but an agent
-driving a raw shell is a liability. tshark-mcp gives the agent thirty-three narrow tools that
-return compact JSON, pair requests with answers, name the codes it sees (Result-Code 5420,
-GTP cause 78, MAP opcode 46) and flag what never got a reply. It also says when the capture
-itself cannot be trusted: copies of the same packet, packets the capture dropped, cut-short
-frames, checksum offload and clocks that run backwards.
+1. Install tshark (it comes with Wireshark): `brew install --cask wireshark` on macOS,
+   `apt-get install tshark` on Debian or Ubuntu, `dnf install wireshark-cli` on Fedora.
+2. Install the server (Python 3.10 or newer):
+
+   ```sh
+   uv tool install git+https://github.com/Kx96xx/tshark-mcp
+   # or: pipx install git+https://github.com/Kx96xx/tshark-mcp
+   ```
+
+3. Point your MCP client at it, with the directory that holds your captures.
+
+   Claude Code:
+
+   ```sh
+   claude mcp add tshark-mcp -- tshark-mcp --allow-dir /path/to/pcaps
+   ```
+
+   Claude Desktop (`claude_desktop_config.json`), Cursor, or any other client that starts
+   stdio servers:
+
+   ```json
+   {
+     "mcpServers": {
+       "tshark-mcp": {
+         "command": "tshark-mcp",
+         "args": ["--allow-dir", "/path/to/pcaps"]
+       }
+     }
+   }
+   ```
+
+4. Ask a question: "Why is there one-way audio on the call in `sip_one_way_audio.pcap`?"
+   The [examples/](examples/) directory has three small synthetic captures to start with.
+
+## Example: diagnosing one-way audio
+
+[`examples/sip_one_way_audio.pcap`](examples/sip_one_way_audio.pcap) is a synthetic
+257-packet capture of one SIP call: INVITE, 100, 180, 200 OK with SDP, ACK, five seconds of
+PCMA audio from the caller, BYE. The called side never sends media. The agent finds the call
+with `sip_dialogs`, then asks `media_path_check` to hold the SDP against the RTP that was
+captured. This is the real output, trimmed; the allowed directory is shown as `/captures`:
+
+```
+media_path_check(path="/captures/sip_one_way_audio.pcap", call_id="one-way-audio-1@ue.example")
+```
+
+```json
+{
+  "offer":  {"message": "INVITE", "sdp_frame": 1, "media_endpoint": "198.51.100.9:40010",
+             "codecs": ["PCMA/8000", "telephone-event/8000"], "direction": "sendrecv"},
+  "answer": {"message": "200 INVITE", "sdp_frame": 4, "media_endpoint": "192.0.2.70:30010",
+             "codecs": ["PCMA/8000", "telephone-event/8000"], "direction": "sendrecv"},
+  "common_codecs": ["PCMA/8000"],
+  "directions": [
+    {"direction": "offerer to answerer", "expected": "198.51.100.9:40010 > 192.0.2.70:30010",
+     "streams": [{"ssrc": "0x6a6a6a6a", "src": "198.51.100.9:40010", "dst": "192.0.2.70:30010",
+                  "packets": 250, "codec": "PCMA/8000", "first_frame": 6}],
+     "status": "as negotiated"},
+    {"direction": "answerer to offerer", "expected": "192.0.2.70:30010 > 198.51.100.9:40010",
+     "streams": [], "status": "missing"}
+  ],
+  "issues": [{"kind": "one_way_media",
+              "detail": "no RTP seen answerer to offerer (192.0.2.70:30010 > 198.51.100.9:40010): one-way audio as captured"}],
+  "verdict": "no RTP seen answerer to offerer (192.0.2.70:30010 > 198.51.100.9:40010): one-way audio as captured"
+}
+```
+
+The SDP negotiated a `sendrecv` PCMA stream both ways, the caller's RTP arrived exactly
+where the answer asked for it, and nothing ever came back from the media gateway. That
+rules out the caller's NAT, a codec mismatch and a hold: the fault is behind 192.0.2.70.
+Two more calls close the loop. `rtp_streams` shows the one stream is clean, so the caller's
+side is not the problem, and `sip_call_detail` shows the signalling was normal:
+
+```
+rtp_streams(path="/captures/sip_one_way_audio.pcap")
+```
+
+```json
+{
+  "streams": [{"ssrc": "0x6a6a6a6a", "call_id": "one-way-audio-1@ue.example", "linked_by": "sdp_destination",
+               "codec": "PCMA/8000", "packets": 250, "expected": 250, "lost": 0, "out_of_order": 0,
+               "max_jitter_ms": 0.0, "duration_s": 4.98, "first_frame": 6, "last_frame": 255,
+               "mos_estimate": {"value": 4.39, "r_factor": 92.5, "estimate": true,
+                                "method": "simplified ITU-T G.107 E-model", "...": "..."},
+               "one_way": true, "issues": ["no RTP seen in the reverse direction"]}],
+  "summary": {"streams": 1, "one_way": 1, "with_loss": 0, "rtcp_packets": 0, "lowest_mos_estimate": 4.39}
+}
+```
+
+```
+sip_call_detail(path="/captures/sip_one_way_audio.pcap", call_id="one-way-audio-1@ue.example")
+```
+
+```json
+{
+  "call": {"outcome": "answered", "final_response": {"status": 200, "reason_phrase": "OK", "frame": 4},
+           "timing": {"post_dial_delay_ms": 900.0, "ringing_ms": 900.0, "answer_ms": 2400.0,
+                      "setup_ms": 2420.0, "call_duration_s": 5.2},
+           "ended_by": {"method": "BYE", "by": "caller", "frame": 256},
+           "media": {"common_codecs": ["PCMA/8000"], "negotiated_codec": "PCMA/8000", "...": "..."},
+           "...": "..."}
+}
+```
+
+Every row carries the frame numbers it was built from (`sdp_frame: 4`, `first_frame: 6`),
+so `packet_detail(path, frame)` can show the packet behind any claim. The other two sample
+captures are a Diameter Update-Location answered with error 5420 and a GTPv2 Create Session
+rejected with cause 78 (see [examples/README.md](examples/README.md));
+`tests/test_examples.py` regenerates all three and keeps this output true.
+[docs/EXAMPLE.md](docs/EXAMPLE.md) walks through a failed attach across Diameter, GTP and
+SCTP the same way.
 
 ## Install
 
 Requires Python 3.10+, the `mcp` package 2.1 or newer and `pydantic` 2.12 or newer (both installed automatically;
 CI also runs the suite on the oldest of each) and tshark
-4.0 or newer (tested with 4.2 and 4.6). tshark comes with Wireshark:
-`brew install --cask wireshark` on macOS, `apt-get install tshark` on Debian or Ubuntu,
-`dnf install wireshark-cli` on Fedora.
+4.0 or newer (tested with 4.2 and 4.6).
 
 ```sh
+uv tool install git+https://github.com/Kx96xx/tshark-mcp
 pipx install git+https://github.com/Kx96xx/tshark-mcp
 # or, from a clone
 uv tool install .        # or: pipx install .
@@ -96,25 +206,6 @@ diameter_sessions(path="/pcaps/dra.pcap", imsi="001010123456789")
   or encrypted payloads, split across fields, or in other encodings are not found; host
   names, realms, APNs and MAC addresses are kept. Redaction rewrites results only: the
   capture is never changed or written.
-
-Claude Code:
-
-```sh
-claude mcp add tshark-mcp -- tshark-mcp --allow-dir /path/to/pcaps
-```
-
-Claude Desktop (`claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "tshark-mcp": {
-      "command": "tshark-mcp",
-      "args": ["--allow-dir", "/path/to/pcaps"]
-    }
-  }
-}
-```
 
 ## Tools
 
@@ -368,7 +459,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 633 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 643 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
@@ -376,8 +467,9 @@ reordering, jitter, NAT, one-way media, a 488), IMS REGISTER flows (AKA challeng
 403, 503, expiry, ESP after a challenge, third-party REGISTER), SMS over IMS (MO and MT with
 RP-ACK, RP-ERROR, status reports, a wrongly coded RP-ACK, a UE without smsip), an SCTP handshake with an
 unanswered heartbeat, MAP updateLocation and mo-forwardSM over M3UA, and test-range IMSI,
-MSISDN, IMEISV and UE address values for the redaction tests), so nothing in the
-repository contains traffic from a real network.
+MSISDN, IMEISV and UE address values for the redaction tests), and the three captures
+committed under `examples/` come from the same generator, so nothing in the repository
+contains traffic from a real network.
 
 ## Licence
 
