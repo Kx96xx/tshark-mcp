@@ -315,6 +315,24 @@ def check_result(result: RunResult, *, allow_nonzero: bool = False) -> RunResult
             first_line = stderr.splitlines()[0]
             note_warning(f"tshark stopped before the end of the file; results cover the readable part only: {first_line}")
             return result
+        if result.returncode < 0:
+            raise ToolError("tshark_failed", crash_message(result.returncode, stderr), returncode=result.returncode)
         raise ToolError("tshark_failed", stderr or f"tshark exited with {result.returncode}",
                         returncode=result.returncode)
     return result
+
+
+def crash_message(returncode: int, stderr: str = "") -> str:
+    """What to tell the caller when tshark died of a signal: the crash is in tshark's own
+    dissectors (this server only reads its output), so the way out is a newer tshark or a
+    filter that keeps the offending packets from being dissected."""
+    import signal as _signal
+
+    try:
+        name = _signal.Signals(-returncode).name
+    except ValueError:
+        name = f"signal {-returncode}"
+    text = (f"tshark crashed ({name}) while reading this capture: a bug in tshark's own dissectors, not in "
+            f"this server; the capture may be malformed or fuzzed. Try a newer tshark, or a narrower display "
+            f"filter so the packets that trigger it are not dissected")
+    return f"{text}. tshark said: {stderr}" if stderr else text

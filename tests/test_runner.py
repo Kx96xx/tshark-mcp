@@ -58,6 +58,19 @@ class TestReadOnlyGuard:
 
 
 class TestFakeSubprocess:
+    def test_a_crashing_tshark_is_explained(self, tmp_path: Path):
+        """tshark dies of SIGSEGV on some fuzzed captures; the error used to be 'tshark exited
+        with -11', which reads like a server fault and gives no way out."""
+        fake = _fake_tshark(tmp_path, """
+            import signal
+            os.kill(os.getpid(), signal.SIGSEGV)
+        """)
+        runner = Runner(Limits(), tshark=fake)
+        with pytest.raises(ToolError) as exc:
+            check_result(runner._execute(fake, ["-r", str(tmp_path / "x.pcap")]))
+        assert exc.value.type == "tshark_failed"
+        assert "tshark crashed (SIGSEGV)" in str(exc.value) and "newer tshark" in str(exc.value)
+
     def test_timeout_kills_child(self, tmp_path: Path):
         fake = _fake_tshark(tmp_path, """
             sys.stdout.write("partial")
