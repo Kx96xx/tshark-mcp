@@ -12,7 +12,8 @@ default, ``--schema-profile``) publishes the same tools with:
   out; ``error`` and the paging keys stay. ``additionalProperties`` stays true, so every
   result that matches the full schema also matches the compact one;
 * the input schema without the generated ``title`` keys, and an optional argument
-  (``anyOf`` string or null, default null) written as ``"type": ["string", "null"]``; enums,
+  (``anyOf`` string or null, default null) written as ``"type": ["string", "null"]`` (an
+  optional list as ``"type": ["array", "null"]`` with its ``items``); enums,
   defaults and descriptions are unchanged;
 * the description up to its ``Details:`` paragraph, which moves to the resource.
 
@@ -32,7 +33,7 @@ URI_PREFIX = "schema://tools/"
 
 # Keys of ToolResult that the server instructions describe for every tool.
 COMMON_KEYS = frozenset({"truncated", "truncated_reason", "warnings", "trimmed", "untrusted_text_fields",
-                         "text_values_shortened", "redaction"})
+                         "text_values_shortened", "redaction", "tokens_estimate", "columns", "output"})
 
 _DETAILS = re.compile(r"\n[ \t]*Details:[ \t]*")
 _MAX_KEYS_LISTED = 40
@@ -154,6 +155,11 @@ def _simple_union(prop: dict[str, Any]) -> dict[str, Any]:
                                                        and isinstance(v["type"], str) for v in variants):
         prop = {k: v for k, v in prop.items() if k != "anyOf"}
         prop["type"] = [v["type"] for v in variants]
+    elif (isinstance(variants, list) and len(variants) == 2 and {"type": "null"} in variants
+          and all(isinstance(v, dict) and isinstance(v.get("type"), str) for v in variants)):
+        # X | None with X an array (or another typed schema): X with "null" added to its type.
+        typed = next(v for v in variants if v != {"type": "null"})
+        prop = {**{k: v for k, v in prop.items() if k != "anyOf"}, **typed, "type": [typed["type"], "null"]}
     if "default" in prop and prop["default"] is None:
         prop = {k: v for k, v in prop.items() if k != "default"}
     return prop

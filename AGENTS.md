@@ -101,6 +101,11 @@ names exists.
   `offset`, `dropped` and `next_offset` (present only when more rows exist). `truncated: true`
   always comes with `truncated_reason`. `total_is_lower_bound: true` means a packet or frame
   cap stopped the scan: narrow the filter rather than page.
+- Output size: tools with `limit` also take `columns` (row keys to keep; frame keys always
+  stay; an unknown name is an `invalid_argument` error listing the valid ones),
+  `output="summary"` (everything but the rows plus the first three rows, under 4 KB; paging
+  says where the rest starts) and `max_output_kb` (lowers the server's output cap for this
+  call, never raises it). Every successful result carries `tokens_estimate` (JSON bytes / 3.6).
 - Every call may pass `redact="ids"` or `"ids+ips"`; it can raise the server's redaction
   level, never lower it. Tokens such as `imsi:3f2a9c1b0d` work as arguments in later calls.
 - Cancelling a request kills tshark within a quarter of a second. With a `progressToken`,

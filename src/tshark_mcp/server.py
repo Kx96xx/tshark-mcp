@@ -35,6 +35,7 @@ from .limits import (
 from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_identity
 from . import redact as redaction
 from . import pfcp
+from . import output as shaping
 from . import progress
 from . import prompts as guided
 from . import schemas
@@ -81,7 +82,8 @@ List tools return one page: total_matched found, returned from offset, dropped
 after it; with next_offset, call again with offset=next_offset and the same
 arguments. "truncated": true says why and how to get the rest;
 total_is_lower_bound means a cap stopped the scan: narrow the filter, do not
-page. Rows carry frame numbers (frame, request_frame, answer_frame, ...): cite
+page. Row tools take output="summary" (summary plus 3 rows) and columns=[...]
+first; tokens_estimate says what a result cost. Rows carry frame numbers (frame, request_frame, answer_frame, ...): cite
 them, and check a claim with packet_detail. expert_info lists tshark's warnings
 and malformed packets. find_fields and check_filter build a display filter, and
 cause_lookup explains a cause or result code with its spec reference; none of
@@ -199,6 +201,16 @@ Redact = Annotated[Literal["off", "ids", "ids+ips"], Field(
 
 _CALL_MODE: contextvars.ContextVar[str] = contextvars.ContextVar("redact_mode", default="off")
 
+# Per-call output shaping on row tools (see output.py); descriptions kept short for the tool list.
+Columns = Annotated[list[str] | None, Field(description="Row keys to keep (frame keys stay)")]
+OutputMode = Annotated[Literal["rows", "summary"], Field(
+    description="summary: all but rows, plus 3 rows (<4 KB)")]
+MaxOutputKb = Annotated[float | None, Field(description="Lower output cap, KB")]
+_SHAPING_ARGS = ("columns", "output", "max_output_kb")
+
+_CALL_OUTPUT: contextvars.ContextVar[shaping.OutputOptions] = contextvars.ContextVar(
+    "output_options", default=shaping.OutputOptions())
+
 
 def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """``app.tool`` plus redaction: every tool takes a ``redact`` argument, and
@@ -206,10 +218,24 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     before it runs (a call that passes a token is redacted at least at ``ids``)."""
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
         sig = inspect.signature(fn, eval_str=True)
-        extra = inspect.Parameter("redact", inspect.Parameter.KEYWORD_ONLY, default="off", annotation=Redact)
+        extra = [inspect.Parameter("redact", inspect.Parameter.KEYWORD_ONLY, default="off", annotation=Redact)]
+        shaped = "limit" in sig.parameters  # row tools: columns, output and max_output_kb
+        known_columns = shaping.row_keys(sig.return_annotation) if shaped else None
+        if shaped:
+            extra = [inspect.Parameter("columns", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Columns),
+                     inspect.Parameter("output", inspect.Parameter.KEYWORD_ONLY, default="rows", annotation=OutputMode),
+                     inspect.Parameter("max_output_kb", inspect.Parameter.KEYWORD_ONLY, default=None,
+                                       annotation=MaxOutputKb), *extra]
 
         @functools.wraps(fn)
         def wrapper(*args: Any, redact: str | None = "off", **kw: Any) -> Any:
+            shape = {name: kw.pop(name) for name in _SHAPING_ARGS if shaped and name in kw}
+            try:
+                options = shaping.parse(shape.get("columns"), shape.get("output"), shape.get("max_output_kb"),
+                                        known_columns)
+            except ValueError as exc:
+                problem = exc
+                return _guarded(fn.__name__, shape, lambda: _raise(problem))
             try:
                 mode = redaction.check_mode(redact)
                 found = False
@@ -224,11 +250,13 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 problem = exc
                 return _guarded(fn.__name__, {"redact": redact}, lambda: _raise(problem))
             token = _CALL_MODE.set(redaction.stronger(mode, "ids" if found else "off"))
+            out_token = _CALL_OUTPUT.set(options)
             try:
                 return fn(*args, **kw)
             finally:
+                _CALL_OUTPUT.reset(out_token)
                 _CALL_MODE.reset(token)
-        wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), extra])  # type: ignore[attr-defined]
+        wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), *extra])  # type: ignore[attr-defined]
 
         @functools.wraps(wrapper)
         def entry(*args: Any, ctx: Context | None = None, **kw: Any) -> Any:
@@ -380,6 +408,12 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     if isinstance(result.get("error"), dict):
         _add_fix(result["error"], tool, args)
     rows_key = result.pop(_ROWS_KEY, None)
+    options = _CALL_OUTPUT.get()
+    if "error" not in result and rows_key and isinstance(result.get(rows_key), list):
+        result = _shape(result, rows_key, options)
+        if isinstance(result.get("error"), dict):
+            status = result["error"]["type"]
+            _add_fix(result["error"], tool, args)
     mode = _redact_mode()
     block = None
     if mode != "off":
@@ -403,12 +437,31 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
         result["redaction"] = block
     try:
         limits = state().limits
-        result = _fit(result, limits.max_output_bytes, rows_key)
+        result = _fit(result, shaping.cap_bytes(limits.max_output_bytes, options), rows_key)
     except ToolError:
         pass
     duration_ms = int((time.monotonic() - started) * 1000)
     payload_bytes = len(json.dumps(result, separators=(",", ":")).encode())
+    if "error" not in result:
+        result[shaping.TOKENS_KEY] = shaping.tokens_estimate(payload_bytes)
     _audit(tool, args, duration_ms, status, payload_bytes)
+    return result
+
+
+def _shape(result: dict[str, Any], rows_key: str, options: shaping.OutputOptions) -> dict[str, Any]:
+    """Apply ``columns`` and ``output`` to the row list of a successful result."""
+    if options.columns:
+        rows, missing = shaping.project(result[rows_key], options.columns)
+        if missing and len(missing) == len(options.columns):
+            valid = sorted({k for row in result[rows_key] if isinstance(row, dict) for k in row})
+            return ToolError("invalid_argument", f"no row has the column(s) {echo(list(missing))}; "
+                                                 f"valid columns: {', '.join(valid)}").to_dict()
+        result[rows_key] = rows
+        result["columns"] = list(options.columns)
+    if options.output == "summary":
+        if len(result[rows_key]) > shaping.SUMMARY_ROWS:
+            _drop_note(result, _PAGING_PREFIX)
+        shaping.summarise(result, rows_key, _note)
     return result
 
 

@@ -68,8 +68,9 @@
 2. Before writing a display filter, look the field up with `find_fields` and check the filter with `check_filter`.
 3. `trace_subscriber` for the subscriber (or `compare_captures` when a working capture exists too), then the protocol tool whose row needs more detail, using the structured filters (`imsi`, `session_id`, `call_id`, `teid`, `apn`, `method`) before raw display filters.
 4. List tools return one page: `total_matched`, `returned`, `dropped` after the page, and `next_offset` when more rows exist. Call again with `offset=next_offset` and the same arguments for the next page. `truncated: true` always comes with a `truncated_reason` saying how to get the rest; `total_is_lower_bound: true` means a packet or frame cap stopped the scan, so narrow the filter instead of paging. Never conclude something is absent from a truncated result.
-5. Cite frame numbers for every claim and open the ones that matter with `packet_detail` before concluding.
-6. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`. One the capture stopped too soon after to tell is `unanswered` with `near_capture_end` (counted in `summary.unanswered_near_capture_end`): do not call it a failure without a later retry or timeout to back it.
+5. Save tokens: on any tool with `limit`, `output="summary"` returns the summary blocks and the first three rows (under 4 KB), `columns=[...]` keeps only those row keys (frame keys stay), and `max_output_kb` lowers the output cap for one call. Each result carries `tokens_estimate`.
+6. Cite frame numbers for every claim and open the ones that matter with `packet_detail` before concluding.
+7. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`. One the capture stopped too soon after to tell is `unanswered` with `near_capture_end` (counted in `summary.unanswered_near_capture_end`): do not call it a failure without a later retry or timeout to back it.
 
 ## Prompts
 

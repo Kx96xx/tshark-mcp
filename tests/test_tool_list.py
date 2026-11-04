@@ -19,7 +19,8 @@ from .conftest import TSHARK, requires_tshark
 
 # Budgets for the compact tools/list. They scale with the number of tools; a new tool whose
 # description runs past DESCRIPTION_MAX moves its detail into a `Details:` paragraph.
-AVERAGE_TOOL_BYTES_MAX = 2_750
+# 2,750 until the row tools took columns / output / max_output_kb (about 260 bytes each on 33 tools).
+AVERAGE_TOOL_BYTES_MAX = 2_900
 TOOL_BYTES_MAX = 4_608
 DESCRIPTION_MAX = 1_500
 INSTRUCTIONS_MAX = 3_900

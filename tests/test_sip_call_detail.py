@@ -63,7 +63,7 @@ class TestSipCallDetail:
 
     def test_unknown_call_and_lint(self, server, pcap_dir):
         out = server.sip_call_detail(_voice(pcap_dir, "voice_call.pcap"), "nobody@example.invalid")
-        assert out == {"found": False, "packets_scanned": 0}
+        assert {k: v for k, v in out.items() if k != "tokens_estimate"} == {"found": False, "packets_scanned": 0}
         assert server.sip_call_detail(_voice(pcap_dir, "voice_call.pcap"), 'x"y')["error"]["type"] == "invalid_argument"
 
     def test_existing_sip_capture(self, server, pcap_dir):
