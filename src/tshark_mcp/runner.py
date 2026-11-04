@@ -33,7 +33,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .limits import Limits, ToolError
 
@@ -241,6 +241,12 @@ class Runner:
     def list_fields(self) -> RunResult:
         return self._execute(self.tshark, ["-G", "fields"])
 
+    def list_values(self, keep: Callable[[bytes], bool]) -> RunResult:
+        """``tshark -G values`` (the value strings of every field, about 100 MB with
+        tshark 4.6), keeping only the lines ``keep`` accepts. The filter runs while
+        tshark writes, so the stdout cap applies to the kept lines, not the whole dump."""
+        return self._execute(self.tshark, ["-G", "values"], keep_line=keep)
+
     def compile_filter(self, display_filter: str) -> RunResult:
         """Compile the filter by running tshark on an empty capture fed on stdin; no file is read."""
         return self._execute(self.tshark, ["-n", "-r", "-", "-Y", display_filter], stdin=EMPTY_PCAP)
@@ -271,7 +277,8 @@ class Runner:
     # ---------------------------------------------------------------- internals
     def _execute(self, program: str, args: Sequence[str], *, stdin: bytes | None = None,
                  read_only_check: bool = True, timeout: float | None = None,
-                 capture: tuple[Path, tuple[int, int]] | None = None) -> RunResult:
+                 capture: tuple[Path, tuple[int, int]] | None = None,
+                 keep_line: Callable[[bytes], bool] | None = None) -> RunResult:
         if read_only_check:
             assert_read_only(args)
         started = time.monotonic()
@@ -281,12 +288,14 @@ class Runner:
             raise ToolError("busy", f"{self.limits.max_concurrent_runs} tshark runs are already in progress and none "
                                     f"finished within {round(wait, 3)}s", max_concurrent_runs=self.limits.max_concurrent_runs)
         try:
-            return self._run(program, args, stdin=stdin, limit=limit, started=started, capture=capture)
+            return self._run(program, args, stdin=stdin, limit=limit, started=started, capture=capture,
+                             keep_line=keep_line)
         finally:
             self._slots.release()
 
     def _run(self, program: str, args: Sequence[str], *, stdin: bytes | None, limit: float, started: float,
-             capture: tuple[Path, tuple[int, int]] | None) -> RunResult:
+             capture: tuple[Path, tuple[int, int]] | None,
+             keep_line: Callable[[bytes], bool] | None = None) -> RunResult:
         argv = [program, *args]
         # The wait for a slot does not eat into the run's own time limit.
         deadline = time.monotonic() + limit
@@ -320,6 +329,7 @@ class Runner:
 
         stdout_chunks: list[bytes] = []
         total = 0
+        partial = b""  # an unfinished line, when lines are filtered
         failure: ToolError | None = None
         assert proc.stdout is not None
         with selectors.DefaultSelector() as sel:
@@ -334,7 +344,14 @@ class Runner:
                     continue
                 chunk = os.read(proc.stdout.fileno(), 1 << 16)
                 if not chunk:
+                    if keep_line is not None and partial and keep_line(partial):
+                        stdout_chunks.append(partial)
+                        total += len(partial)
                     break
+                if keep_line is not None:
+                    lines = (partial + chunk).split(b"\n")
+                    partial = lines.pop()
+                    chunk = b"".join(line + b"\n" for line in lines if keep_line(line))
                 total += len(chunk)
                 if total > self.limits.max_stdout_bytes:
                     failure = ToolError("output_too_large",

@@ -18,6 +18,12 @@ the project uses [semantic versioning](https://semver.org/).
   the Interface Statistics Block drop counters that tshark has no field for, read by a pure-Python
   block walker that never decodes a packet; `pcap_info` reports `metadata_available` and
   `interface_drops`.
+- `cause_lookup`: what a telecom cause or result code means, with the spec reference, typical
+  causes, related codes and the tool calls that find it in a capture. Names come from tshark's
+  own value strings (`tshark -G values`), so they match the other tools; a test fails when a
+  tshark release names a code that has neither curated text nor an `unexplained` listing.
+  Diameter codes are read as Result-Code or, with `application`, as that application's
+  Experimental-Result-Code. No capture is read.
 
 ### Changed
 

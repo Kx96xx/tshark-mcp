@@ -504,6 +504,49 @@ class CheckFilterResult(ToolResult, total=False):
     fields: list[FieldRow]
 
 
+class CauseCode(TypedDict, total=False):
+    """One code from a ``cause_lookup`` search."""
+    __pydantic_config__ = _EXTRA_OK
+    code: int | str
+    name: str
+    avp: str
+    explained: bool
+    meaning: str
+
+
+class CauseLookupResult(RowsResult, total=False):
+    """One code looked up (``code`` given) or a page of ``codes`` (``query`` given).
+    ``name_source`` is "tshark" (its value strings) or "curated" (the server's table);
+    ``known`` is false for a code nobody names or one marked reserved; ``explained``
+    is false when only the name is known. ``avp`` (Diameter) says whether the code was
+    read as a Result-Code or an Experimental-Result-Code; ``also`` gives the other
+    reading when the same number exists in both. ``check_next`` names the tool calls
+    that find the code in a capture."""
+    protocol: str
+    code: int | str
+    name: str | None
+    name_source: str | None
+    known: bool
+    explained: bool
+    avp: str
+    application: str
+    application_note: str
+    by_application: dict[str, str]
+    message: str
+    message_note: str
+    by_message: dict[str, str]
+    tshark_field: str
+    meaning: str
+    ref: str
+    typical_causes: list[str]
+    related: list[str]
+    check_next: list[str]
+    also: dict[str, str]
+    note: str
+    codes: list[CauseCode]
+    query: str
+
+
 class FilterPacketsResult(RowsResult, total=False):
     packets: list[dict[str, str]]
     fields: list[str]

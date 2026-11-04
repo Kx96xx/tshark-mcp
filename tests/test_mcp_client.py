@@ -20,7 +20,7 @@ from .conftest import TSHARK, requires_tshark
 
 pytestmark = requires_tshark
 
-CAPTURE_FREE_TOOLS = {"find_fields", "check_filter"}  # they read tshark's glossary, never a capture
+CAPTURE_FREE_TOOLS = {"find_fields", "check_filter", "cause_lookup"}  # they read tshark's glossary, never a capture
 
 EXPECTED_TOOLS = {
     "pfcp_sessions",
@@ -31,6 +31,7 @@ EXPECTED_TOOLS = {
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
     "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "ims_registration", "sms_over_ims", "find_fields", "check_filter",
+    "cause_lookup",
 }
 
 
@@ -78,6 +79,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
         ("find_fields", {"query": "result code", "protocol": "diameter", "limit": 5}),
         ("check_filter", {"filter": "gtp.teid == 0x100000000"}),
+        ("cause_lookup", {"protocol": "diameter", "code": 5004, "application": "s6a"}),
         ("compare_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         # Error paths must come back as structured errors, never as protocol failures.
         ("pcap_info", {"path": "/definitely/not/allowed.pcap"}),
@@ -230,6 +232,9 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert "by_kind" in icmp["summary"] and isinstance(icmp["errors"], list)
     meta = by_name[("capture_metadata", ("path",))]
     assert meta["metadata_available"] is False and meta["file"]["format"] == "pcap"
+    cause = by_name[("cause_lookup", ("application", "code", "protocol"))]
+    assert cause["name"] == "DIAMETER_ERROR_ROAMING_NOT_ALLOWED" and cause["avp"] == "Experimental-Result-Code"
+    assert cause["ref"].startswith("TS 29.272") and "Error-Diagnostic" in cause["application_note"]
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")
