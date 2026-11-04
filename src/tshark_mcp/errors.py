@@ -47,6 +47,9 @@ STATIC_FIXES: dict[str, str] = {
     "exec_failed": "the operator must check that tshark is installed and executable (TSHARK_MCP_TSHARK)",
     "forbidden_flag": "this server only reads existing captures; no tool argument can capture, write or export",
     "parse_error": "tshark output could not be parsed; retry with a narrower filter and report the arguments as a bug",
+    "busy": ("the server is already running its maximum number of tshark processes; wait for your other calls "
+             "to finish and call again, one at a time"),
+    "capture_changed": "the capture file was replaced while it was read; call again once the file stops changing",
     "internal_error": "retry once with narrower arguments; if it fails again report the tool name and arguments as a bug",
 }
 
@@ -163,6 +166,8 @@ def add_fix(error: dict[str, Any], tool: str, args: dict[str, Any], *, allowlist
                 close = close_fields(unknown, catalogue())
                 if close:
                     error["suggestions"] = close
+        elif kind == "tshark_failed" and error.get("out_of_memory"):
+            error["fix"] = _narrow_fix("tshark ran out of memory", args)
         elif kind == "timeout":
             error["fix"] = _narrow_fix("tshark ran out of time", args)
         elif kind == "output_too_large":
