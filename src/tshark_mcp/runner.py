@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from . import progress
-from .limits import Limits, ToolError
+from .limits import Limits, ToolError, echo
 
 # Messages tshark prints when a capture ends early or has a damaged record. The
 # packets before the bad record are still dissected and printed, so a run that
@@ -118,12 +118,12 @@ def check_decode_as(value: str) -> None:
     """Raise unless ``value`` is a decode-as rule on an allowed selector."""
     m = _DECODE_AS.match(value or "")
     if not m or m.group("sel") not in DECODE_AS_SELECTORS:
-        raise ToolError("forbidden_flag", f"refusing decode-as rule {value!r}; allowed: "
+        raise ToolError("forbidden_flag", f"refusing decode-as rule {echo(value)}; allowed: "
                         f"<{'|'.join(sorted(DECODE_AS_SELECTORS))}>==<number>[-<number>],<protocol>")
     lo, hi = int(m.group("lo")), int(m.group("hi") or m.group("lo"))
     top = 0xFFFFFFFF if m.group("sel") == "sctp.ppi" else 65535
     if lo > hi or hi > top:
-        raise ToolError("forbidden_flag", f"refusing decode-as rule {value!r}: bad number or range")
+        raise ToolError("forbidden_flag", f"refusing decode-as rule {echo(value)}: bad number or range")
 
 
 # Variables kept from the server's environment for the child; everything else (including
@@ -171,16 +171,16 @@ def assert_read_only(args: Sequence[str]) -> None:
         if arg == "-z":
             stat = args[index + 1] if index + 1 < len(args) else ""
             if stat.split(",", 1)[0] not in ALLOWED_STATS:
-                raise ToolError("forbidden_flag", f"refusing statistic -z {stat.split(',', 1)[0]!r}")
+                raise ToolError("forbidden_flag", f"refusing statistic -z {echo(stat.split(',', 1)[0])}")
         head = arg.split("=", 1)[0] if arg.startswith("--") else arg
         if arg == "-o" and index + 1 < len(args) and args[index + 1] in ALLOWED_PREFERENCES:
             continue
         if head in FORBIDDEN_FLAGS:
-            raise ToolError("forbidden_flag", f"refusing to run tshark with {arg!r}")
+            raise ToolError("forbidden_flag", f"refusing to run tshark with {echo(arg)}")
         # Combined short options such as "-qw" are refused outright.
         if arg.startswith("-") and not arg.startswith("--") and len(arg) > 2 and not arg[1:].isdigit():
             if arg not in ("-2",):
-                raise ToolError("forbidden_flag", f"refusing combined short option {arg!r}")
+                raise ToolError("forbidden_flag", f"refusing combined short option {echo(arg)}")
     if "-G" in args:
         return  # glossary dump, no input file
     if "-r" not in args:

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .fields import to_int
-from .limits import ToolError, lint_digits, lint_quoted_value
+from .limits import ToolError, echo, lint_digits, lint_quoted_value
 
 KINDS = ("auto", "imsi", "msisdn", "ip", "call_id", "session_id")
 
@@ -38,7 +38,7 @@ def classify(identifier: str) -> str:
     if "@" in text:
         return "call_id"
     raise ToolError("invalid_argument",
-                    f"cannot tell what kind of identifier {identifier!r} is; pass kind=imsi, msisdn, ip, call_id or session_id")
+                    f"cannot tell what kind of identifier {echo(identifier)} is; pass kind=imsi, msisdn, ip, call_id or session_id")
 
 
 def _tbcd(digits: str) -> str:
@@ -60,7 +60,7 @@ def build_filter(identifier: str, kind: str) -> tuple[str, str]:
         try:
             addr = ipaddress.ip_address(identifier.strip())
         except ValueError:
-            raise ToolError("invalid_argument", f"not an IP address: {identifier!r}") from None
+            raise ToolError("invalid_argument", f"not an IP address: {echo(identifier)}") from None
         field = "ip.addr" if addr.version == 4 else "ipv6.addr"
         return "ip", f"{field} == {addr.compressed}"
     if resolved in ("imsi", "msisdn", "subscriber"):
@@ -93,7 +93,7 @@ def build_filter(identifier: str, kind: str) -> tuple[str, str]:
     if resolved == "session_id":
         value = lint_quoted_value(identifier, "identifier")
         return "session_id", f'diameter.Session-Id == "{value}"'
-    raise ToolError("invalid_argument", f"unsupported identifier kind {resolved!r}")  # pragma: no cover
+    raise ToolError("invalid_argument", f"unsupported identifier kind {echo(resolved)}")  # pragma: no cover
 
 
 def list_captures(directory: Path) -> list[Path]:

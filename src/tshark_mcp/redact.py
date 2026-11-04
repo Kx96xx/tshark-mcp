@@ -58,6 +58,8 @@ import secrets
 import threading
 from typing import Any, Iterable
 
+from .limits import echo
+
 MODES = ("off", "ids", "ids+ips")
 _RANK = {mode: i for i, mode in enumerate(MODES)}
 
@@ -114,7 +116,7 @@ def stronger(a: str | None, b: str | None) -> str:
 def check_mode(value: Any, what: str = "redact") -> str:
     text = "off" if value is None else str(value).strip().lower()
     if text not in _RANK:
-        raise ValueError(f"{what} must be one of {', '.join(MODES)}, got {value!r}")
+        raise ValueError(f"{what} must be one of {', '.join(MODES)}, got {echo(value)}")
     return text
 
 

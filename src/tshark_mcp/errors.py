@@ -163,7 +163,8 @@ def add_fix(error: dict[str, Any], tool: str, args: dict[str, Any], *, allowlist
                             "names; structured selectors (imsi, teid, call_id) avoid hand-written filters")
             if catalogue is not None:
                 unknown = list(error.get("unknown_fields") or []) or unknown_names(
-                    error.get("display_filter") or args.get("filter") or args.get("display_filter"), catalogue())
+                    # The caller's own filter first: the display_filter detail is cut to MESSAGE_MAX_CHARS.
+                    args.get("filter") or args.get("display_filter") or error.get("display_filter"), catalogue())
                 close = close_fields(unknown, catalogue())
                 if close:
                     error["suggestions"] = close

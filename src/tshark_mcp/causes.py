@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import causedata as data
-from .limits import ToolError
+from .limits import ToolError, echo
 from .runner import Runner, check_result
 from .sigtran import MAP_ERRORS
 
@@ -179,7 +179,7 @@ def _entry(raw: Any) -> dict[str, Any]:
 
 def _int_code(code: Any) -> int:
     if isinstance(code, bool):
-        raise ToolError("invalid_argument", f"code must be a number, got {code!r}")
+        raise ToolError("invalid_argument", f"code must be a number, got {echo(code)}")
     if isinstance(code, int):
         value = code
     else:
@@ -187,7 +187,7 @@ def _int_code(code: Any) -> int:
         try:
             value = int(text, 0) if text.lower().startswith("0x") else int(text)
         except ValueError:
-            raise ToolError("invalid_argument", f"code must be a number such as 78 or 0x4e, got {code!r}") from None
+            raise ToolError("invalid_argument", f"code must be a number such as 78 or 0x4e, got {echo(code)}") from None
     if value < 0 or value > 0xFFFFFFFF:
         raise ToolError("invalid_argument", f"code {value} is out of range")
     return value
@@ -201,7 +201,7 @@ def _group_code(protocol: str, code: Any) -> tuple[str, int]:
                                             f"or 'nas:2'; groups: {', '.join(_S1AP_GROUPS)}")
     group = next((g for g in _S1AP_GROUPS if g.lower() == m.group(1).lower()), None)
     if group is None:
-        raise ToolError("invalid_argument", f"unknown {protocol} cause group {m.group(1)!r}; groups: {', '.join(_S1AP_GROUPS)}")
+        raise ToolError("invalid_argument", f"unknown {protocol} cause group {echo(m.group(1))}; groups: {', '.join(_S1AP_GROUPS)}")
     return group, int(m.group(2))
 
 
@@ -215,7 +215,7 @@ def check_protocol(protocol: Any) -> str:
     if key in NOT_CODES:
         raise ToolError("invalid_argument", f"{NOT_CODES[key]}. cause_lookup protocols: {', '.join(PROTOCOLS)}")
     if key not in PROTOCOLS:
-        raise ToolError("invalid_argument", f"unknown protocol {protocol!r}; one of: {', '.join(PROTOCOLS)}")
+        raise ToolError("invalid_argument", f"unknown protocol {echo(protocol)}; one of: {', '.join(PROTOCOLS)}")
     return key
 
 
@@ -224,7 +224,7 @@ def check_application(application: Any) -> str | None:
         return None
     key = str(application).strip().lower()
     if key not in APPLICATIONS:
-        raise ToolError("invalid_argument", f"unknown Diameter application {application!r}; one of: {', '.join(APPLICATIONS)}")
+        raise ToolError("invalid_argument", f"unknown Diameter application {echo(application)}; one of: {', '.join(APPLICATIONS)}")
     return key
 
 

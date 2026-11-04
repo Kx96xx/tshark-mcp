@@ -15,6 +15,34 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+ECHO_MAX_CHARS = 80
+"""How much of a caller's argument an error message quotes back."""
+
+MESSAGE_MAX_CHARS = 1000
+"""Cap on an error message and on each text detail of an error (tshark stderr, the filter)."""
+
+
+def echo(value: Any, *, quote: bool = True, limit: int = ECHO_MAX_CHARS) -> str:
+    """``value`` as an error message quotes it: ``repr`` (or ``str`` with ``quote=False``)
+    cut to ``limit`` characters, with the full length after the cut. An over-long argument
+    is then named in a few dozen bytes instead of being sent back whole."""
+    try:
+        text = repr(value) if quote else str(value)
+    except Exception:  # noqa: BLE001 - an argument that cannot be printed is still an error to report
+        return f"<{type(value).__name__}>"
+    if len(text) <= limit:
+        return text
+    size = len(value) if isinstance(value, str) else len(text)
+    return f"{text[:limit]}... ({size} characters)"
+
+
+def clip(text: str, limit: int = MESSAGE_MAX_CHARS) -> str:
+    """``text`` cut to ``limit`` characters, saying how long it was."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... (cut at {limit} of {len(text)} characters)"
+
+
 class ToolError(Exception):
     """A structured, model-readable failure.
 
@@ -23,6 +51,8 @@ class ToolError(Exception):
     """
 
     def __init__(self, type_: str, message: str, **details: Any) -> None:
+        message = clip(message)
+        details = {key: clip(value) if isinstance(value, str) else value for key, value in details.items()}
         super().__init__(message)
         self.type = type_
         self.message = message
@@ -161,7 +191,7 @@ class Allowlist:
             # not it exists: the server never reveals what lies outside the allowlist.
             resolved = candidate.resolve(strict=False)
         except (OSError, RuntimeError) as exc:
-            raise ToolError("invalid_path", f"cannot resolve {path}: {exc}") from None
+            raise ToolError("invalid_path", f"cannot resolve {echo(path, quote=False)}: {exc}") from None
         if not any(_is_within(resolved, root) for root in self.roots):
             raise ToolError(
                 "path_not_allowed",
@@ -171,9 +201,9 @@ class Allowlist:
         try:
             present = resolved.exists()
         except OSError as exc:  # a name too long for the filesystem, a loop of symlinks, ...
-            raise ToolError("invalid_path", f"cannot access {path}: {exc.strerror or exc}") from None
+            raise ToolError("invalid_path", f"cannot access {echo(path, quote=False)}: {exc.strerror or exc}") from None
         if not present:
-            raise ToolError("not_found", f"no such file: {path}")
+            raise ToolError("not_found", f"no such file: {echo(path, quote=False)}")
         return resolved
 
     def resolve_dir(self, path: str) -> Path:
@@ -182,9 +212,9 @@ class Allowlist:
         try:
             is_dir = resolved.is_dir()
         except OSError as exc:
-            raise ToolError("invalid_path", f"cannot access {path}: {exc.strerror or exc}") from None
+            raise ToolError("invalid_path", f"cannot access {echo(path, quote=False)}: {exc.strerror or exc}") from None
         if not is_dir:
-            raise ToolError("not_a_directory", f"{path} is not a directory")
+            raise ToolError("not_a_directory", f"{echo(path, quote=False)} is not a directory")
         return resolved
 
     def resolve(self, path: str, limits: Limits) -> Path:
@@ -195,9 +225,9 @@ class Allowlist:
             is_file = resolved.is_file()
             size = resolved.stat().st_size if is_file else 0
         except OSError as exc:
-            raise ToolError("invalid_path", f"cannot access {path}: {exc.strerror or exc}") from None
+            raise ToolError("invalid_path", f"cannot access {echo(path, quote=False)}: {exc.strerror or exc}") from None
         if not is_file:
-            raise ToolError("not_a_file", f"{path} is not a regular file")
+            raise ToolError("not_a_file", f"{echo(path, quote=False)} is not a regular file")
         if size > limits.max_file_bytes:
             raise ToolError(
                 "file_too_large",
@@ -262,9 +292,12 @@ def lint_display_filter(text: str) -> str:
 _FIELD_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
 
 
+_FIELD_NAME_MAX_LEN = 200  # the longest abbreviation tshark 4.x knows is under 100 characters
+
+
 def lint_field_name(name: str) -> str:
-    if not isinstance(name, str) or not _FIELD_NAME.match(name):
-        raise ToolError("invalid_field", f"not a plausible tshark field name: {name!r}")
+    if not isinstance(name, str) or len(name) > _FIELD_NAME_MAX_LEN or not _FIELD_NAME.match(name):
+        raise ToolError("invalid_field", f"not a plausible tshark field name: {echo(name)}")
     return name
 
 
@@ -277,7 +310,7 @@ def lint_digits(value: str, what: str) -> str:
         raise ToolError("invalid_argument", f"{what} must be a string of digits")
     cleaned = value.strip().lstrip("+").replace(" ", "")
     if not _DIGITS.match(cleaned):
-        raise ToolError("invalid_argument", f"{what} must be 5 to 16 digits, got {value!r}")
+        raise ToolError("invalid_argument", f"{what} must be 5 to 16 digits, got {echo(value)}")
     return cleaned
 
 
@@ -309,7 +342,7 @@ _APN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,99}$")
 def lint_apn(value: str) -> str:
     """An APN network identifier: labels of letters, digits and hyphens joined by dots."""
     if not isinstance(value, str) or not _APN.match(value.strip()):
-        raise ToolError("invalid_argument", f"apn must be a dotted name of letters, digits and hyphens, got {value!r}")
+        raise ToolError("invalid_argument", f"apn must be a dotted name of letters, digits and hyphens, got {echo(value)}")
     return value.strip()
 
 
@@ -319,7 +352,7 @@ _HOSTNAME = re.compile(r"^(?=.{1,253}\.?$)[A-Za-z0-9_](?:[A-Za-z0-9_\-]{0,62})(?
 def lint_hostname(value: Any, what: str = "name") -> str:
     """A DNS name or TLS server name: dot-separated labels of letters, digits, hyphens and underscores."""
     if not isinstance(value, str) or not _HOSTNAME.match(value.strip()):
-        raise ToolError("invalid_argument", f"{what} must be a DNS name such as example.com, got {value!r}")
+        raise ToolError("invalid_argument", f"{what} must be a DNS name such as example.com, got {echo(value)}")
     return value.strip().rstrip(".").lower()
 
 
@@ -328,7 +361,7 @@ _SIP_METHOD = re.compile(r"^[A-Za-z]{2,16}$")
 
 def lint_sip_method(value: str) -> str:
     if not isinstance(value, str) or not _SIP_METHOD.match(value.strip()):
-        raise ToolError("invalid_argument", f"method must be a SIP method token such as INVITE or REGISTER, got {value!r}")
+        raise ToolError("invalid_argument", f"method must be a SIP method token such as INVITE or REGISTER, got {echo(value)}")
     return value.strip().upper()
 
 
@@ -337,9 +370,9 @@ def lint_teid(value: Any) -> int:
     try:
         teid = int(value) if isinstance(value, int) else int(str(value).strip(), 0)
     except (TypeError, ValueError):
-        raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {value!r}") from None
+        raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {echo(value)}") from None
     if teid < 0 or teid > 0xFFFFFFFF:
-        raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {value!r}")
+        raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {echo(value)}")
     return teid
 
 
@@ -348,5 +381,5 @@ def clamp_limit(limit: Any, cap: int, default: int) -> int:
     try:
         value = int(limit) if limit is not None else default
     except (TypeError, ValueError):
-        raise ToolError("invalid_argument", f"limit must be an integer, got {limit!r}") from None
+        raise ToolError("invalid_argument", f"limit must be an integer, got {echo(limit)}") from None
     return max(1, min(value, cap))
