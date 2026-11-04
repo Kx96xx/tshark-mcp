@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import packets
-from .copies import CopyTracker, copy_key, has_ip_id
+from .copies import CopyTracker, copy_distinct, copy_key, has_ip_id
 from .fields import iso
 from .tcpflow import FlowTracker, ahead
 
@@ -131,7 +131,8 @@ def analyse(recs: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         key = _copy_key(rec)
         if key is not None:
-            is_copy, first = tracker.check(key, has_ip_id(rec), rec["time"], _copy_info(rec))
+            is_copy, first = tracker.check(key, has_ip_id(rec), rec["time"], _copy_info(rec),
+                                           distinct=copy_distinct(rec, has_ip_id(rec)))
             if is_copy:
                 copies += 1
                 cause = _copy_cause(first, rec)
