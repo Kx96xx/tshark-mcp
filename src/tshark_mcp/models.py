@@ -45,7 +45,9 @@ class ToolResult(TypedDict, total=False):
     counts the ones cut) and every string is stripped of control and bidi characters.
     ``redaction`` is present when identifiers were pseudonymised: the mode, how tokens are
     made, how long they stay stable, ``replaced`` (distinct tokens per kind) and ``complete``
-    (false when a capture could not be pre-scanned in full; a warning names it)."""
+    (false when a capture could not be pre-scanned in full; a warning names it).
+    ``tokens_estimate`` is the result's JSON size divided by 3.6; ``columns`` and ``output``
+    echo the row projection and the summary mode when the call asked for them."""
     __pydantic_config__ = _EXTRA_OK
     error: ErrorInfo
     truncated: bool
@@ -55,6 +57,9 @@ class ToolResult(TypedDict, total=False):
     untrusted_text_fields: list[str]
     text_values_shortened: int
     redaction: dict[str, Any]
+    tokens_estimate: int
+    columns: list[str]
+    output: str
 
 
 class RowsResult(ToolResult, total=False):

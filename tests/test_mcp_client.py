@@ -158,16 +158,18 @@ def test_list_tools_names_and_schemas(client_run):
     def props(name: str) -> dict[str, Any]:
         return _attr(tools[name], "input_schema", "inputSchema")["properties"]
 
+    SHAPING = ("columns", "output", "max_output_kb")  # every row tool (one with limit) takes them
     assert {"path", "identifier", "kind", "max_files", "offset", "redact"} == set(props("find_identifier"))
-    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset", "redact"} == set(props("diameter_sessions"))
-    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset", "redact"} == set(props("gtp_sessions"))
-    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "redact"} == set(props("sip_dialogs"))
-    assert {"path", "layer", "filter", "limit", "offset", "redact"} == set(props("conversations"))
+    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset", "redact", *SHAPING} == set(props("diameter_sessions"))
+    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset", "redact", *SHAPING} == set(props("gtp_sessions"))
+    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "redact", *SHAPING} == set(props("sip_dialogs"))
+    assert {"path", "layer", "filter", "limit", "offset", "redact", *SHAPING} == set(props("conversations"))
     # The paging contract: every tool that takes a row limit also takes an offset and
     # reports total_matched / returned / dropped / next_offset.
     for name in tools:
         if "limit" in props(name):
             assert "offset" in props(name), name
+            assert set(SHAPING) <= set(props(name)), name
             assert {"total_matched", "returned", "dropped", "offset", "next_offset"} <= set(
                 _attr(tools[name], "output_schema", "outputSchema")["properties"]), name
 

@@ -13,6 +13,12 @@ the project uses [semantic versioning](https://semver.org/).
   Claude Code lists them as `/mcp__tshark-mcp__<name>`. Their `path` arguments complete
   (`completion/complete`) to capture files and subdirectories inside the allowed directories,
   at most 50 per answer.
+- Token-aware output on every tool with `limit`: `columns` keeps only the named row keys (frame
+  keys always stay; an unknown name is an `invalid_argument` error listing the valid ones),
+  `output="summary"` returns everything but the rows plus the first three rows in under 4 KB with
+  paging pointing at the rest, and `max_output_kb` lowers the server's output cap for one call
+  (it can never raise it). Every successful result carries `tokens_estimate` (JSON bytes / 3.6).
+  The compact tool list writes an optional list argument as `"type": ["array", "null"]`.
 
 ### Fixed
 

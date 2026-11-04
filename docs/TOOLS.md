@@ -7,6 +7,20 @@ and the redaction rules.
 
 ## Every tool, its arguments and what it returns
 
+Every tool with `limit` also takes three output arguments, left out of the table below:
+
+- `columns`: the row keys to keep, such as `["message", "response"]`. Frame keys (`frame`,
+  `*_frame`, `frames`) always stay, so a row can still be opened with `packet_detail`. A name
+  the rows never have is an `invalid_argument` error that lists the valid ones (for
+  `filter_packets` the columns are the `fields` asked for).
+- `output`: `"rows"` (default) or `"summary"`: everything but the row list plus its first three
+  rows, fitted into 4 KB, with `output: "summary"` in the result and `next_offset` /
+  `truncated_reason` pointing at the rest. Call it first on a big capture.
+- `max_output_kb`: lowers the server's output cap (`--max-output-kb`) for this call, at least
+  1 KB; a larger value than the server cap changes nothing.
+
+Every successful result carries `tokens_estimate`: its JSON size divided by 3.6.
+
 | Tool | What it returns |
 | --- | --- |
 | `find_identifier(path, identifier, kind, max_files, offset)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned`. Hits count packets that carry the identifier, so for Diameter they count requests (answers carry no User-Name) |
@@ -426,7 +440,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 853 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 872 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
