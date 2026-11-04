@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, capmeta, compare, diameter, dns, dtmf, expert, gtp, gtpv1, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -74,6 +74,8 @@ With a working and a failing capture of the same procedure, compare_captures
 reports where they first diverge. dns_transactions pairs DNS queries with
 their answers and shows unanswered queries, rcodes and slow resolvers;
 tls_handshakes shows why a TLS or QUIC handshake failed, without decrypting.
+capture_metadata reads the pcapng writer, interfaces, capture filter and the
+interface drop counters tshark cannot show.
 Before reading missing packets or retransmissions as network faults,
 capture_quality says whether the capture itself can be trusted (copies,
 capture drops, truncation, clocks); tcp_health tells real TCP loss, resets
@@ -703,9 +705,46 @@ def pcap_info(path: str) -> models.PcapInfoResult:
         if "packets" not in info and hierarchy:
             info["packets"] = max(r["frames"] for r in hierarchy)
         info["protocol_hierarchy"] = sorted(hierarchy, key=lambda r: -r["frames"])[:15]
+        meta = _capture_metadata(capture)
+        info["metadata_available"] = bool(meta.get("metadata_available"))
+        if meta.get("drops_total") is not None:
+            info["interface_drops"] = meta["drops_total"]
         info["limits"] = st.limits.describe()
         return info
     return _guarded("pcap_info", {"path": path}, run)
+
+
+CAPTURE_METADATA_MAX_BLOCKS = 5_000_000
+
+
+def _capture_metadata(capture: Path) -> dict[str, Any]:
+    try:
+        return capmeta.read(capture, state().limits.timeout_seconds, CAPTURE_METADATA_MAX_BLOCKS)
+    except OSError as exc:
+        raise ToolError("read_failed", f"cannot read {capture}: {exc}") from None
+
+
+@_tool(title="Capture file metadata (writer, interfaces, drops)", annotations=READ_ONLY)
+def capture_metadata(path: str) -> models.CaptureMetadataResult:
+    """What the capture file says about itself, read from the pcapng blocks without
+    decoding a packet: did the capture box drop packets, which snaplen and capture filter
+    were used, which tool and OS wrote the file, which interfaces are in it. `file`:
+    format, version, byte order, compression, section count. `writer`: the section
+    header's application, OS, hardware and comment. `interfaces[]`: id, name,
+    description, link type, snaplen, timestamp resolution and offset, capture filter, and
+    from the Interface Statistics Block (tshark has no field for it) `statistics.received`,
+    `dropped_by_interface`, `dropped_by_os`, `accepted_by_filter`, `delivered` with their
+    timestamps; plus packets, bytes, first/last packet, packets cut to the snaplen,
+    timestamps going backwards, and when the first packet came relative to interface 0.
+    `drops_total` sums the drop counters (absent when no statistics block was written).
+    `packet_comments`: count and the first five. `issues` in plain words (drops, a tiny
+    snaplen, a capture filter, no statistics block, concatenated sections). A legacy pcap
+    returns its header with `metadata_available: false`. Bounded by the file size cap and
+    the run timeout; strings come from the file's writer and are untrusted."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        return {"path": str(capture), **_capture_metadata(capture)}
+    return _guarded("capture_metadata", {"path": path}, run)
 
 
 CONVERSATION_LAYERS = ("ip", "ipv6", "tcp", "udp", "sctp", "eth")

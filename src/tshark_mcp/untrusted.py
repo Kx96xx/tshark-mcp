@@ -34,6 +34,8 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({
     # IMS registration and SMS over IMS
     "impu", "impi", "associated_uris", "service_route", "path_header", "contact", "application_server", "warning",
     "feature_tags", "sec_agree", "reason_phrase",
+    # capture_metadata: strings the capture file's writer stored (interface names are under "name")
+    "description", "capture_filter", "comment",
 })
 """Keys whose string values are copied from packets (anywhere in a result)."""
 
@@ -42,6 +44,7 @@ PACKET_CONTAINERS: frozenset[str] = frozenset({
     "packets",                         # filter_packets: values of the fields asked for
     "request_avps", "answer_avps",     # diameter_avps, trace and compare rows
     "differences",                     # compare_captures: values from both captures
+    "writer",                          # capture_metadata: application, OS, hardware of the file's writer
 })
 """Keys under which every string is packet content."""
 

@@ -100,6 +100,8 @@ class PcapInfoResult(ToolResult, total=False):
     capinfos: str
     protocol_hierarchy: list[ProtocolHierarchyEntry]
     limits: dict[str, Any]
+    metadata_available: bool
+    interface_drops: int
 
 
 class CopyExample(TypedDict, total=False):
@@ -366,6 +368,41 @@ class IcmpErrorsResult(RowsResult, total=False):
     issues: list[str]
     display_filter: str
     summary: dict[str, Any]
+class CaptureInterface(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    id: int
+    section: int
+    name: str
+    description: str
+    link_type: int
+    link_type_name: str
+    snaplen: int
+    timestamp_resolution: str
+    timestamp_offset_s: int
+    capture_filter: str
+    statistics: dict[str, Any]
+    packets: int
+    bytes: int
+    first: str
+    last: str
+    truncated_packets: int
+    timestamps_backwards: int
+    first_packet_after_interface_0_s: float
+
+
+class CaptureMetadataResult(ToolResult, total=False):
+    path: str
+    file: dict[str, Any]
+    metadata_available: bool
+    sections: list[dict[str, Any]]
+    writer: dict[str, Any]
+    interfaces: list[CaptureInterface]
+    packets: int
+    drops_total: int
+    packet_comments: dict[str, Any]
+    issues: list[str]
+    read_warnings: list[str]
+    note: str
 
 
 class ConversationRow(TypedDict, total=False):

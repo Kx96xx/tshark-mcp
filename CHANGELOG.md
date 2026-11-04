@@ -14,6 +14,10 @@ the project uses [semantic versioning](https://semver.org/).
 - `icmp_errors`: every ICMP and ICMPv6 error grouped per sender, kind and quoted flow, with the
   MTU of fragmentation-needed errors, whether the quoted packet is in the capture, the sender's
   hop distance, echo loss and RTT, and issues that tell a routing loop from a traceroute.
+- `capture_metadata`: the pcapng writer, interfaces, snaplen, capture filter, packet comments and
+  the Interface Statistics Block drop counters that tshark has no field for, read by a pure-Python
+  block walker that never decodes a packet; `pcap_info` reports `metadata_available` and
+  `interface_drops`.
 
 ### Changed
 

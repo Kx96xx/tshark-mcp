@@ -26,6 +26,7 @@ EXPECTED_TOOLS = {
     "pfcp_sessions",
     "tcp_connections",
     "icmp_errors",
+    "capture_metadata",
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
@@ -63,6 +64,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("message_rates", {"path": f"{d}/all.pcap", "interval": 10}),
         ("gtpv1_sessions", {"path": f"{d}/gtpv2.pcap"}),
         ("capture_quality", {"path": f"{d}/all.pcap"}),
+        ("capture_metadata", {"path": f"{d}/diameter.pcap"}),
         ("rtp_streams", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
         ("tcp_health", {"path": f"{d}/sip.pcap"}),
         ("tcp_connections", {"path": f"{d}/sip.pcap", "view": "destinations"}),
@@ -226,6 +228,8 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert conns["view"] == "destinations" and "by_outcome" in conns["summary"]
     icmp = by_name[("icmp_errors", ("kind", "path"))]
     assert "by_kind" in icmp["summary"] and isinstance(icmp["errors"], list)
+    meta = by_name[("capture_metadata", ("path",))]
+    assert meta["metadata_available"] is False and meta["file"]["format"] == "pcap"
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")

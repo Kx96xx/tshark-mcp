@@ -83,6 +83,67 @@ def frames_to_pcapng(path: Path, frames: list[tuple[float, bytes, int]], interfa
     return path
 
 
+def _pcapng_opt(code: int, value: bytes) -> bytes:
+    return struct.pack("<HH", code, len(value)) + value + b"\0" * (-len(value) % 4)
+
+
+def _pcapng_str(code: int, text: str) -> bytes:
+    return _pcapng_opt(code, text.encode())
+
+
+def write_pcapng_metadata(path: Path, frames: list[tuple[float, bytes, int, str | None]],
+                          interfaces: list[dict], shb: dict | None = None, isbs: list[dict] | None = None,
+                          sections: int = 1) -> Path:
+    """A pcapng file with writer options in the section header, interface options (name,
+    description, snaplen, if_tsresol, capture filter), packets with optional comments and
+    Interface Statistics Blocks. ``frames`` are ``(time, raw Ethernet bytes, interface, comment)``;
+    an interface dict has ``name``, ``description``, ``snaplen``, ``filter`` and ``tsresol``
+    (the if_tsresol byte, default 6); an ISB dict has ``iface``, ``time`` and the counters
+    ``received``, ``if_drop``, ``os_drop``, ``accepted``, ``delivered``. ``sections`` repeats the
+    whole section (header, interfaces, packets, statistics) that many times."""
+    shb = shb or {}
+    section = []
+    opts = b""
+    for code, key in ((1, "comment"), (2, "hardware"), (3, "os"), (4, "application")):
+        if shb.get(key):
+            opts += _pcapng_str(code, shb[key])
+    if opts:
+        opts += struct.pack("<HH", 0, 0)
+    section.append(_pcapng_block(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1) + opts))
+    for spec in interfaces:
+        opts = b""
+        if spec.get("name"):
+            opts += _pcapng_str(2, spec["name"])
+        if spec.get("description"):
+            opts += _pcapng_str(3, spec["description"])
+        resol = spec.get("tsresol", 6)
+        opts += _pcapng_opt(9, bytes([resol]))
+        if spec.get("filter"):
+            opts += _pcapng_opt(11, b"\0" + spec["filter"].encode())
+        opts += struct.pack("<HH", 0, 0)
+        section.append(_pcapng_block(1, struct.pack("<HHI", 1, 0, spec.get("snaplen", 65535)) + opts))
+    for ts, raw, iface, comment in sorted(frames, key=lambda f: f[0]):
+        resol = interfaces[iface].get("tsresol", 6)
+        units = round(ts * 10 ** resol)
+        snap = interfaces[iface].get("snaplen", 65535)
+        data = raw[:snap]
+        opts = (_pcapng_str(1, comment) + struct.pack("<HH", 0, 0)) if comment else b""
+        body = struct.pack("<IIIII", iface, units >> 32, units & 0xFFFFFFFF, len(data), len(raw))
+        body += data + b"\0" * (-len(data) % 4) + opts
+        section.append(_pcapng_block(6, body))
+    for isb in isbs or []:
+        resol = interfaces[isb["iface"]].get("tsresol", 6)
+        units = round(isb["time"] * 10 ** resol)
+        opts = b""
+        for code, key in ((4, "received"), (5, "if_drop"), (6, "accepted"), (7, "os_drop"), (8, "delivered")):
+            if key in isb:
+                opts += _pcapng_opt(code, struct.pack("<Q", isb[key]))
+        opts += struct.pack("<HH", 0, 0)
+        section.append(_pcapng_block(5, struct.pack("<III", isb["iface"], units >> 32, units & 0xFFFFFFFF) + opts))
+    path.write_bytes(b"".join(section) * sections)
+    return path
+
+
 def _tbcd(digits: str) -> bytes:
     if len(digits) % 2:
         digits += "F"
