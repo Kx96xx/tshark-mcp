@@ -211,7 +211,7 @@ def _fteids(msg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def extract_messages(packets: list[Json]) -> list[Message]:
+def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Message]:
     messages: list[Message] = []
     for packet in packets:
         ts = frame_time(packet)
@@ -240,6 +240,8 @@ def extract_messages(packets: list[Json]) -> list[Message]:
                 "ebi": to_int(first(msg, "gtpv2.ebi")),
                 "fteids": fteids,
             }
+            if keep_raw:
+                fields["raw"] = msg
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=not is_response,
                 key=seq, name=message_name(mtype), fields=fields, interface=iface,

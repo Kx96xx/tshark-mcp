@@ -126,7 +126,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Thirty-nine tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Forty tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -147,6 +147,7 @@ examples: [docs/TOOLS.md](docs/TOOLS.md).
 | `diameter_sessions` | The same grouped by Session-Id, with per-session counts |
 | `diameter_avps` | The AVPs behind each transaction: flags with bit names, Subscription-Data digest, full tree |
 | `gtp_sessions` | GTPv2-C requests paired with responses across NATs and proxy chains, cause names, PAA |
+| `gtp_ies` | The IEs behind each GTPv2-C transaction: APN, PDN type, QoS, ULI, PCO names, offending IE, likely causes of a reject |
 | `gtpv1_sessions` | GTPv1-C (Gn/Gp) PDP contexts paired, with cause names |
 | `gtp_user_plane` | GTP-U packets, bytes and inner addresses per tunnel |
 | `gtp_tunnel_health` | Inner TCP loss, reordering, MSS/MTU and ICMP per GTP-U tunnel |

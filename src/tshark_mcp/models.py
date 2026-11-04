@@ -657,6 +657,33 @@ class CallKpisResult(RowsResult, total=False):
     summary: CallKpis
     worst_calls: list[WorstCall]
     method: dict[str, str]
+class GtpIeTransaction(TypedDict, total=False):
+    """One paired GTPv2-C transaction with its IEs (``request_ies``/``response_ies``:
+    key view or full tree); ``likely_causes`` explains a reject from the request."""
+    __pydantic_config__ = _EXTRA_OK
+    time: str
+    message: str
+    response: str
+    seq: int
+    teid: str
+    request_frame: int
+    answer_frame: int
+    rtt_ms: float
+    cause: int
+    cause_name: str
+    accepted: bool
+    unanswered: bool
+    request_ies: dict[str, Any]
+    response_ies: dict[str, Any]
+    request_ies_dropped: int
+    response_ies_dropped: int
+    likely_causes: list[str]
+
+
+class GtpIesResult(RowsResult, total=False):
+    detail: str
+    selection: str | None
+    transactions: list[GtpIeTransaction]
 
 
 class FilterPacketsResult(RowsResult, total=False):

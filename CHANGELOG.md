@@ -35,6 +35,10 @@ more and the hardening landed the same day (listed under Added, Changed and Secu
   ACD per peer, trunk, number prefix, user agent or interval, with failure codes, Q.850 causes and
   the worst calls by Call-ID and frame. Calls still open when the capture stopped are counted as
   `near_capture_end` and left out of the ratios; `method` states every definition.
+- `gtp_ies`: the GTPv2-C information elements behind each transaction (APN, PDN type, PAA,
+  serving network, RAT, ULI, indication flags, AMBR, F-TEIDs, PCO option names, bearer QoS, cause
+  with offending IE and source, RAN/NAS cause) and `likely_causes` for a reject, built from the
+  request. PAP and CHAP payloads in the PCO are never returned. `detail="full"` gives the IE tree.
 
 ### Changed
 
