@@ -127,8 +127,9 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 ## Tools
 
 Forty-one tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
-and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
-examples: [docs/TOOLS.md](docs/TOOLS.md).
+and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
+compact by default (102 KB instead of 263 KB at 41 tools); each tool's full schema is the resource `schema://tools/<name>`, and
+`--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](docs/TOOLS.md).
 
 | Tool | One line |
 | --- | --- |
@@ -212,7 +213,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 818 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 835 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
