@@ -64,4 +64,5 @@
 ## Links
 
 - Source and README: https://github.com/Kx96xx/tshark-mcp
+- Conventions for agents (which tool for which question, argument rules, contributing): https://github.com/Kx96xx/tshark-mcp/blob/main/AGENTS.md
 - Worked example with real output shapes: https://github.com/Kx96xx/tshark-mcp/blob/main/docs/EXAMPLE.md
