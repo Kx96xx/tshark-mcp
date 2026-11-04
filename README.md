@@ -175,6 +175,22 @@ compact by default (102 KB instead of 263 KB at 41 tools); each tool's full sche
 | `roaming_attach_check` | Why a roamer cannot attach or get a bearer: each attempt's steps, the ULA subscription held against the Create Session, checks and a verdict |
 | `compare_captures` | A working and a failing capture side by side, with the first divergence |
 
+## Prompts
+
+Six MCP prompts turn the common investigations into guided workflows: the tool calls in
+order, what to cite, when to stop and the shape of the answer. Claude Code shows them as
+`/mcp__tshark-mcp__<name>`. The `path` arguments complete to capture files under the allowed
+directories (at most 50 names per answer, never outside the allowlist).
+
+| Prompt | Arguments | Walks through |
+| --- | --- | --- |
+| `one_way_audio` | `path`, `call_id` | media_path_check, sip_call_detail, rtp_streams |
+| `subscriber_cannot_attach` | `path`, `imsi` / `msisdn`, `home_plmn` | trace_subscriber, diameter_sessions, roaming_attach_check, gtp_sessions, gtp_ies, cause_lookup |
+| `trust_this_capture` | `path` | pcap_info, capture_metadata, capture_quality, expert_info |
+| `working_vs_failing` | `path_a`, `path_b`, `imsi` | compare_captures, then the protocol tool at the first divergence |
+| `ims_registration_or_sms` | `path`, `imsi` / `impu` / `number` | ims_registration, sms_over_ims, sip_dialogs |
+| `slow_data_session` | `path`, `teid` / `ue_ip` | capture_quality, gtp_user_plane, gtp_tunnel_health, pfcp_sessions, tcp_health |
+
 ## Redaction
 
 Telecom captures carry IMSIs, MSISDNs, IMEIs, SIP users and UE addresses. Start the server
@@ -213,7 +229,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 844 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 853 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

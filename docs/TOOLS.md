@@ -107,6 +107,24 @@ written) is read up to the damage, and the result carries `"warnings"` saying so
 [EXAMPLE.md](EXAMPLE.md) for a worked investigation with real output, and
 [../llms.txt](../llms.txt) for a one-page description aimed at agents.
 
+## Prompts
+
+The server also publishes six prompts (`prompts/list`, `prompts/get`). Each returns one user
+message with the ordered tool calls, the stop conditions (`near_capture_end`,
+`total_is_lower_bound`, redaction tokens) and the shape of the final answer. `completion/complete`
+on a prompt's `path`, `path_a` or `path_b` argument lists capture files (`.pcap`, `.pcapng`,
+`.cap`) and subdirectories that start with the typed value, inside the allowed directories only
+(symlinks resolved, hidden files skipped, at most 50 values with `hasMore`).
+
+| Prompt | Arguments | Walks through |
+| --- | --- | --- |
+| `one_way_audio` | `path`, `call_id` | media_path_check, sip_call_detail, rtp_streams |
+| `subscriber_cannot_attach` | `path`, `imsi` / `msisdn`, `home_plmn` | trace_subscriber, diameter_sessions, roaming_attach_check, gtp_sessions, gtp_ies, cause_lookup |
+| `trust_this_capture` | `path` | pcap_info, capture_metadata, capture_quality, expert_info |
+| `working_vs_failing` | `path_a`, `path_b`, `imsi` | compare_captures, then the protocol tool at the first divergence |
+| `ims_registration_or_sms` | `path`, `imsi` / `impu` / `number` | ims_registration, sms_over_ims, sip_dialogs |
+| `slow_data_session` | `path`, `teid` / `ue_ip` | capture_quality, gtp_user_plane, gtp_tunnel_health, pfcp_sessions, tcp_health |
+
 ## Examples
 
 ### Diagnosing one-way audio, step by step
@@ -408,7 +426,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 844 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 853 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

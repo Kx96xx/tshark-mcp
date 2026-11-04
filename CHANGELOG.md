@@ -5,6 +5,15 @@ the project uses [semantic versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Six MCP prompts as guided workflows: `one_way_audio`, `subscriber_cannot_attach`,
+  `trust_this_capture`, `working_vs_failing`, `ims_registration_or_sms` and `slow_data_session`.
+  Each returns the tool calls in order, what to cite, when to stop and the shape of the answer;
+  Claude Code lists them as `/mcp__tshark-mcp__<name>`. Their `path` arguments complete
+  (`completion/complete`) to capture files and subdirectories inside the allowed directories,
+  at most 50 per answer.
+
 ### Fixed
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared

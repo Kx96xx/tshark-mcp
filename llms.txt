@@ -71,6 +71,10 @@
 5. Cite frame numbers for every claim and open the ones that matter with `packet_detail` before concluding.
 6. Pairing follows what is in the file. A request whose answer was captured elsewhere is reported as `unanswered`. One the capture stopped too soon after to tell is `unanswered` with `near_capture_end` (counted in `summary.unanswered_near_capture_end`): do not call it a failure without a later retry or timeout to back it.
 
+## Prompts
+
+Six prompts give the tool order for common investigations: `one_way_audio(path, call_id)`, `subscriber_cannot_attach(path, imsi, msisdn, home_plmn)`, `trust_this_capture(path)`, `working_vs_failing(path_a, path_b, imsi)`, `ims_registration_or_sms(path, imsi, impu, number)`, `slow_data_session(path, teid, ue_ip)`. Their path arguments complete to captures inside the allowed directories.
+
 ## Links
 
 - Source and README: https://github.com/Kx96xx/tshark-mcp

@@ -36,6 +36,7 @@ from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_i
 from . import redact as redaction
 from . import pfcp
 from . import progress
+from . import prompts as guided
 from . import schemas
 from .errors import add_fix
 from .runner import Runner, begin_warnings, check_result, collect_warnings
@@ -118,6 +119,25 @@ class _TsharkServer(_Server):  # type: ignore[misc,valid-type]
 
 
 app = _TsharkServer("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
+
+
+# ------------------------------------------------------------------ prompts and completion
+guided.register(app)
+
+if hasattr(app, "completion"):
+    from mcp.types import Completion, PromptReference
+
+    @app.completion()
+    async def _complete(ref: Any, argument: Any, context: Any) -> Any:
+        """Path arguments of the prompts complete to captures under the allowed directories."""
+        if not isinstance(ref, PromptReference) or ref.name not in guided.PROMPTS:
+            return None
+        if argument.name not in guided.PATH_ARGUMENTS:
+            return None
+        st = _STATE
+        values, more = guided.complete_path(st.allowlist if st else None, argument.value or "",
+                                            search.CAPTURE_SUFFIXES)
+        return Completion(values=values, has_more=more)
 
 
 def _register_schema_resource(name: str, title: str | None) -> None:
