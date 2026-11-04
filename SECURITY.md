@@ -12,6 +12,13 @@ than a bounded `tshark -r`.
   `-f`, `-a`, `-b`, `-X`, `-o`, `--export-*`, ...) are refused before a process is created;
   the one `-o` the server sets itself is checksum validation in `capture_quality`. `-z` is
   limited to a fixed list of read-only statistics.
+- **No code from the user's Wireshark profile.** tshark runs with an empty, read-only
+  personal configuration directory and a scrubbed environment, so a personal `init.lua`, Lua
+  script, plugin or extcap binary is never loaded (`--allow-user-profile` opts back in). `-d`
+  decode-as rules are limited to port and PPI selectors.
+- **Bounded processes.** At most two tshark processes run at once (`--max-concurrent-runs`),
+  each at nice +10 and, on Linux, under a 2 GB address-space limit. A capture whose inode
+  changes between the allowlist check and the end of the run is refused.
 - **Path allowlist.** Every path an agent passes must resolve, symlinks followed, to a file
   under one of the `--allow-dir` directories. Paths outside are refused before existence is
   checked, so the server cannot be used to probe the filesystem. It refuses to start without
@@ -51,6 +58,11 @@ front of captures you would not hand to anyone who can reach that port.
   advisories; keep tshark updated and treat captures from unknown sources as hostile. The caps
   above bound the damage a crashing or looping dissector can do (time, memory, output), but
   cannot prevent a dissector bug from being reached.
+- Stronger isolation. For captures from unknown sources, run the server inside a sandbox
+  that also bounds memory on every OS: a container (`docker run --read-only --cap-drop ALL
+  --memory 2g -v /pcaps:/captures:ro ...`) or `bwrap --ro-bind / / --unshare-all` on Linux.
+  macOS `sandbox-exec` is deprecated and macOS ignores RLIMIT_AS, so use a container or VM
+  there.
 - The host the server runs on. The server reads the files it is pointed at with the
   permissions of the user who started it; run it as a user who can read the captures and
   nothing more.

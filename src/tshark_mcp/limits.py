@@ -62,6 +62,15 @@ class Limits:
     max_files: int = 50
     """Upper bound on capture files one multi-file call (find_identifier) will open."""
 
+    max_concurrent_runs: int = 2
+    """tshark (and capinfos, dftest) processes the server runs at once, across all calls."""
+
+    busy_wait_seconds: float = 30.0
+    """How long a run waits for a free slot before the call fails with ``busy``."""
+
+    max_tshark_memory_bytes: int = 2 * 1024 * 1024 * 1024
+    """Address-space limit (RLIMIT_AS) of each tshark run, applied on Linux."""
+
     def __post_init__(self) -> None:
         for name, value in self.__dict__.items():
             if not isinstance(value, (int, float)) or value <= 0:
@@ -90,6 +99,9 @@ class Limits:
         take("TSHARK_MCP_MAX_STDOUT_MB", "max_stdout_bytes", 1024 * 1024, int)
         take("TSHARK_MCP_TIMEOUT", "timeout_seconds", 1, float)
         take("TSHARK_MCP_MAX_FILES", "max_files", 1, int)
+        take("TSHARK_MCP_MAX_CONCURRENT_RUNS", "max_concurrent_runs", 1, int)
+        take("TSHARK_MCP_BUSY_WAIT", "busy_wait_seconds", 1, float)
+        take("TSHARK_MCP_MAX_TSHARK_MEMORY_MB", "max_tshark_memory_bytes", 1024 * 1024, int)
         return replace(base, **overrides)
 
     def describe(self) -> dict[str, Any]:
@@ -100,6 +112,9 @@ class Limits:
             "max_output_kb": round(self.max_output_bytes / 1024, 1),
             "timeout_seconds": self.timeout_seconds,
             "max_files": self.max_files,
+            "max_concurrent_runs": self.max_concurrent_runs,
+            "busy_wait_seconds": self.busy_wait_seconds,
+            "max_tshark_memory_mb": round(self.max_tshark_memory_bytes / (1024 * 1024), 2),
         }
 
 
