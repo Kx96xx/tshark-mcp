@@ -31,7 +31,7 @@ from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid, outside_quotes,
 )
-from .pairing import Message, annotate_legs, session_identity
+from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_identity
 from . import redact as redaction
 from . import pfcp
 from .runner import Runner, begin_warnings, check_result, collect_warnings
@@ -1090,8 +1090,11 @@ def diameter_transactions(path: str, filter: str | None = None, limit: int = 200
     against Session-Id). Each transaction gives command code and name (ULR/ULA, AIR/AIA,
     CCR/CCA, ...), application, origin/destination host and realm, User-Name (IMSI),
     Result-Code or Experimental-Result-Code with its name, round-trip ms and
-    `unanswered: true` for requests with no answer. `filter` is an optional display
-    filter ANDed with `diameter`, e.g. `diameter.cmd.code == 316`."""
+    `unanswered: true` for requests with no answer. An unanswered request whose capture
+    stops before its answer was due (the last packet on its interface comes before the
+    slowest answer to the same command in the capture plus 0.2 s, at most 2 s) also gets
+    `near_capture_end` and a `note`; `summary.unanswered_near_capture_end` counts those.
+    `filter` is an optional display filter ANDed with `diameter`, e.g. `diameter.cmd.code == 316`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1100,7 +1103,9 @@ def diameter_transactions(path: str, filter: str | None = None, limit: int = 200
         packets, scan = _json_run(capture, flt, diameter.JSON_LAYERS, st.limits.max_packets)
         txs = diameter.pair(diameter.extract_messages(packets))
         rows = [diameter.transaction_row(t) for t in txs]
+        mark_unanswered_near_end(txs, rows, _capture_end(capture))
         summary = _summarise(rows, "request", "unanswered", lambda r: r.get("success") is False)
+        summary.update(_leg_summary(rows))
         return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary)
     return _guarded("diameter_transactions", {"path": path, "filter": filter, "limit": limit, "offset": offset}, run)
 
@@ -1111,8 +1116,10 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
     """Group Diameter traffic by Session-Id. Each session gives the application, origin
     and destination hosts and realms, User-Name (IMSI), first/last timestamp and duration,
     the request and answer command codes seen, every Result-Code or Experimental-Result-Code,
-    counts of unanswered and failed transactions, the worst round-trip, and the list of
-    transactions (request paired with its answer by Hop-by-Hop id, with RTT). Narrow with
+    counts of unanswered and failed transactions (with `unanswered_near_capture_end` for
+    those the capture stopped too soon after to tell, as in diameter_transactions), the
+    worst round-trip, and the list of transactions (request paired with its answer by
+    Hop-by-Hop id, with RTT). Narrow with
     `session_id` (exact), `imsi` (User-Name digits) or `command_code` (e.g. 316 for ULR):
     matching messages select the sessions, then every message of those sessions is
     fetched so answers are not lost. `filter` is an extra display filter ANDed with
@@ -1135,7 +1142,7 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
             return _envelope("sessions", [], cap, scan, offset=offset, summary={"sessions": 0, "unanswered": 0, "failed": 0,
                                                                   "without_session_id": 0}, selection=select)
         txs = diameter.pair(messages)
-        rows, without = diameter.session_rows(txs)
+        rows, without = diameter.session_rows(txs, _capture_end(capture))
         if sid:
             rows = [r for r in rows if r["session_id"] == sid]
         if imsi_d:
@@ -1146,10 +1153,12 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         summary = {
             "sessions": len(rows),
             "unanswered": sum(r["unanswered"] for r in rows),
+            "unanswered_near_capture_end": sum(r.get("unanswered_near_capture_end", 0) for r in rows) or None,
             "failed": sum(r["failed"] for r in rows),
             "without_session_id": without,
             "by_application": _count(rows, "application"),
         }
+        summary = {k: v for k, v in summary.items() if v is not None}
         return _envelope("sessions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("diameter_sessions", {"path": path, "session_id": session_id, "imsi": imsi,
                                           "command_code": command_code, "filter": filter, "limit": limit, "offset": offset}, run)
@@ -1290,8 +1299,11 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
     response would only have come after the capture on its interface stopped (the
     last packet on that side came before the answer on the next leg plus 0.2 s) gets
     `near_capture_end` and a `note` instead: the capture says nothing about it. A request
-    captured twice within 50 ms gets `duplicate_of_frame`. `summary` counts
-    `legs_without_response`, `legs_near_capture_end` and `duplicates`."""
+    captured twice within 50 ms gets `duplicate_of_frame`. A request no leg answered stays
+    `unanswered`; when the capture on its interface stops before its answer was due (the
+    slowest answer to the same message in the capture plus 0.2 s, at most 2 s) it also gets
+    `near_capture_end` and a `note`. `summary` counts `legs_without_response`,
+    `legs_near_capture_end`, `unanswered_near_capture_end` and `duplicates`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1315,7 +1327,9 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         scan = _merge_scans(pre, scan)
         txs = gtp.pair(gtp.extract_messages(packets))
         rows = [gtp.transaction_row(t) for t in txs]
-        annotate_legs(txs, rows, session_identity(txs, gtp.announced_teids), _capture_end(capture))
+        ends = _capture_end(capture)
+        annotate_legs(txs, rows, session_identity(txs, gtp.announced_teids), ends)
+        mark_unanswered_near_end(txs, rows, ends)
         if select:
             rows = [r for r in rows if gtp.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
@@ -1350,8 +1364,11 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
     response would only have come after the capture on its interface stopped (the
     last packet on that side came before the answer on the next leg plus 0.2 s) gets
     `near_capture_end` and a `note` instead: the capture says nothing about it. A request
-    captured twice within 50 ms gets `duplicate_of_frame`. `summary` counts
-    `legs_without_response`, `legs_near_capture_end` and `duplicates`."""
+    captured twice within 50 ms gets `duplicate_of_frame`. A request no leg answered stays
+    `unanswered`; when the capture on its interface stops before its answer was due (the
+    slowest answer to the same message in the capture plus 0.2 s, at most 2 s) it also gets
+    `near_capture_end` and a `note`. `summary` counts `legs_without_response`,
+    `legs_near_capture_end`, `unanswered_near_capture_end` and `duplicates`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1375,7 +1392,9 @@ def gtpv1_sessions(path: str, imsi: str | None = None, apn: str | None = None, t
         scan = _merge_scans(pre, scan)
         txs = gtpv1.pair(gtpv1.extract_messages(packets))
         rows = [gtpv1.transaction_row(t) for t in txs]
-        annotate_legs(txs, rows, session_identity(txs, gtpv1.announced_teids), _capture_end(capture))
+        ends = _capture_end(capture)
+        annotate_legs(txs, rows, session_identity(txs, gtpv1.announced_teids), ends)
+        mark_unanswered_near_end(txs, rows, ends)
         if select:
             rows = [r for r in rows if gtpv1.row_matches(r, imsi_d, apn_s, teid_i)]
         summary = _summarise(rows, "message", "unanswered", lambda r: r.get("accepted") is False)
@@ -1405,7 +1424,9 @@ def pfcp_sessions(path: str, seid: str | int | None = None, ue_ip: str | None = 
     Recovery Time Stamp change (the peer restarted and lost its sessions). Narrow with
     `seid` (decimal or 0x hex, either side's) or `ue_ip`: the matching messages give
     the session's SEIDs, then every message carrying them is fetched. `filter` is ANDed
-    with `pfcp`."""
+    with `pfcp`. An unanswered request the capture stopped too soon after to tell (as in
+    gtp_sessions) gets `near_capture_end` in the transactions view, counted in
+    `summary.unanswered_near_capture_end`."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1448,8 +1469,10 @@ def pfcp_sessions(path: str, seid: str | int | None = None, ue_ip: str | None = 
         txs = pfcp.pair(pfcp.extract_messages(packets))
         tx_rows = [pfcp.transaction_row(t) for t in txs]
         pfcp.mark_copies(txs, tx_rows)
+        mark_unanswered_near_end(txs, tx_rows, _capture_end(capture))
         sess = pfcp.sessions(txs)
         summary = _summarise(tx_rows, "message", "unanswered", lambda r: r.get("accepted") is False)
+        summary.update(_leg_summary(tx_rows))
         summary.update({"sessions": len(sess), "sessions_with_issues": sum(1 for r in sess if r.get("issues")),
                         "by_state": _count(sess, "state")})
         node_rows = [] if select else pfcp.nodes(txs)
@@ -1597,7 +1620,9 @@ def dns_transactions(path: str, name: str | None = None, filter: str | None = No
     which tshark's own dns.time cannot show. Each transaction gives name, type (A,
     AAAA, NAPTR, SRV, HTTPS, ...), client, server, rcode and its name (NOERROR,
     NXDOMAIN, SERVFAIL, REFUSED, ...), answers and addresses, round-trip ms,
-    `unanswered` (with `near_capture_end` when the capture may simply have stopped),
+    `unanswered` (with `near_capture_end` and a `note` when the capture on its interface
+    stops before the answer was due: the resolver's slowest answer plus 0.2 s, at most 2 s;
+    counted in `summary.unanswered_near_capture_end`),
     `retransmissions` (the same query resent with the same id and port), `retry_of`
     (a new query for a name whose last query was unanswered or failed),
     `truncated_tc` and `tcp_fallback_frame` (a TC answer followed by the same query
@@ -1616,7 +1641,7 @@ def dns_transactions(path: str, name: str | None = None, filter: str | None = No
         flt = _filter(filter, base=dns.display_filter())
         stdout, scan = _fields_run(capture, flt, dns.FIELDS, st.limits.max_scan_packets, aggregator=dns.AGGREGATOR)
         messages, icmp = dns.parse(stdout)
-        out = dns.summarise(messages, icmp, wanted)
+        out = dns.summarise(messages, icmp, wanted, capture_end=_interface_end(capture))
         rows = sorted(out.pop("transactions"), key=lambda r: (0 if dns.is_problem(r) else 1, r.get("frame") or 0))
         return _envelope("transactions", rows, cap, scan, offset=offset, display_filter=flt, **out)
     return _guarded("dns_transactions", {"path": path, "name": name, "filter": filter, "limit": limit,
@@ -2285,7 +2310,9 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
     both as digit strings. The whole call shares one time budget (the per-run timeout);
     when it runs out the timeline found so far is returned with `truncated` and the pass
     that stopped marked `timed_out`. GTP rows carry the proxy-chain fields of
-    gtp_sessions (`chain`, `leg_without_response`, `near_capture_end`, `duplicate_of_frame`, `note`).
+    gtp_sessions (`chain`, `leg_without_response`, `near_capture_end`, `duplicate_of_frame`, `note`);
+    unanswered Diameter and GTP rows the capture stopped too soon after get `near_capture_end`,
+    counted in `unanswered_near_capture_end`.
     Start here for "why did subscriber X fail" questions."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
@@ -2301,8 +2328,10 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
         for r in timeline:
             by_protocol[r["protocol"]] = by_protocol.get(r["protocol"], 0) + 1
         failures = [r for r in timeline if r.get("unanswered") or r.get("failed")]
+        near_end = sum(1 for r in timeline if r.get("unanswered") and r.get("near_capture_end"))
         out = _envelope("timeline", timeline, cap, None, offset=offset, identity={"imsi": imsi_d, "msisdn": msisdn_d},
-                        by_protocol=by_protocol, failures=len(failures), passes=notes)
+                        by_protocol=by_protocol, failures=len(failures), passes=notes,
+                        **({"unanswered_near_capture_end": near_end} if near_end else {}))
         reasons = _trace_reasons(notes, stopped, st.limits.timeout_seconds)
         if reasons:
             out["truncated"] = True
@@ -2346,8 +2375,10 @@ def _trace_timeline(capture: Path, imsi_d: str | None, msisdn_d: str | None, dea
             messages = diameter.extract_messages(packets, keep_raw=with_avps)
             mine = diameter.subscriber_sessions(messages, imsi_d, msisdn_d)
             notes["diameter"]["sessions"] = len(mine)
-            for tx in diameter.pair(messages):
-                row = diameter.transaction_row(tx)
+            txs = diameter.pair(messages)
+            rows = [diameter.transaction_row(tx) for tx in txs]
+            mark_unanswered_near_end(txs, rows, _capture_end(capture, deadline))
+            for tx, row in zip(txs, rows):
                 if row.get("session_id") not in mine:
                     continue
                 timeline.append(_diameter_step(tx, row, with_avps))
@@ -2572,7 +2603,9 @@ def _trace_gtp(module: Any, key: str, capture: Path, imsi_d: str | None, msisdn_
         # still meets the response that pass two fetched by sequence number.
         txs = module.pair(list(collected.values()))
         rows = [module.transaction_row(tx) for tx in txs]
-        annotate_legs(txs, rows, session_identity(txs, module.announced_teids), _capture_end(capture, deadline))
+        ends = _capture_end(capture, deadline)
+        annotate_legs(txs, rows, session_identity(txs, module.announced_teids), ends)
+        mark_unanswered_near_end(txs, rows, ends)
         for row in rows:
             if _gtp_row_belongs(row, imsi_d, msisdn_d, teids, seqs):
                 timeline.append(_gtp_step(row) if key == "gtpv2" else _gtpv1_step(row))
@@ -2709,26 +2742,34 @@ def _timeline_row(protocol: str, row: dict[str, Any], *, message: str | None, de
 
 def _leg_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
     out = {"legs_without_response": sum(1 for r in rows if r.get("leg_without_response")),
-           "legs_near_capture_end": sum(1 for r in rows if r.get("near_capture_end")),
+           "legs_near_capture_end": sum(1 for r in rows if r.get("near_capture_end") and not r.get("unanswered")),
+           "unanswered_near_capture_end": sum(1 for r in rows if r.get("near_capture_end") and r.get("unanswered")),
            "duplicates": sum(1 for r in rows if r.get("duplicate_of_frame"))}
     return {k: v for k, v in out.items() if v}
 
 
 def _capture_end(capture: Path, deadline: float | None = None) -> Callable[[Message], float | None]:
-    """Time of the last packet read on a message's capture interface, for :func:`annotate_legs`.
+    """Time of the last packet read on a message's capture interface, for :func:`annotate_legs`
+    and :func:`mark_unanswered_near_end` (see :func:`_interface_end`)."""
+    end_of = _interface_end(capture, deadline)
+    return lambda msg: end_of(msg.interface)
+
+
+def _interface_end(capture: Path, deadline: float | None = None) -> Callable[[int | None], float | None]:
+    """Time of the last packet read on a capture interface (by pcapng interface id).
 
     One extra pass over the whole capture (every protocol, under the frame-read cap, with
     dissection off: only the interface and timestamp are read), made the first time a
-    leg without a response asks. Interfaces are told apart by name when they have one,
+    request without a response asks. Interfaces are told apart by name when they have one,
     so a merged capture that lists one interface once per input file still has one end
-    for it. A message without an interface gets the end of the whole capture. When the
-    pass fails, no end is known and the legs stay as they are.
+    for it. No interface id gives the end of the whole capture. When the pass fails, no
+    end is known and the requests stay as they are.
     """
     ends: dict[Any, float] = {}
     names: dict[int, Any] = {}
     done = False
 
-    def lookup(msg: Message) -> float | None:
+    def lookup(iface: int | None) -> float | None:
         nonlocal done
         if not done:
             done = True
@@ -2741,16 +2782,16 @@ def _capture_end(capture: Path, deadline: float | None = None) -> Callable[[Mess
                 return None
             for line in stdout.splitlines():
                 cols = line.split("\t") + ["", ""]
-                ts, iface = parse_time(cols[0]), to_int(cols[1])
+                ts, iface_id = parse_time(cols[0]), to_int(cols[1])
                 if ts is None:
                     continue
-                side = cols[2] or iface
-                if iface is not None:
-                    names[iface] = side
+                side = cols[2] or iface_id
+                if iface_id is not None:
+                    names[iface_id] = side
                 for key in (side, None):
                     if ts > ends.get(key, float("-inf")):
                         ends[key] = ts
-        side = names.get(msg.interface) if msg.interface is not None else None
+        side = names.get(iface) if iface is not None else None
         return ends.get(side, ends.get(None))
     return lookup
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import ipaddress
 from typing import Any
 
-from .fields import Json, compact, endpoints, first, frame_number, frame_time, iso, iter_values, protocol_messages, to_int
+from .fields import Json, compact, endpoints, first, frame_interface, frame_number, frame_time, iso, iter_values, protocol_messages, to_int
 from .pairing import Message, Transaction, base_row, pair_messages
 
 LAYER = "pfcp"
@@ -209,7 +209,7 @@ def extract_messages(packets: list[Json]) -> list[Message]:
             }
             messages.append(Message(
                 frame=frame, time=ts, src=src, dst=dst, is_request=mtype not in RESPONSE_TYPES,
-                key=fields["seq"], name=message_name(mtype), fields=fields,
+                key=fields["seq"], name=message_name(mtype), fields=fields, interface=frame_interface(packet),
                 expects_answer=mtype in REQUEST_TO_RESPONSE,
             ))
     return messages

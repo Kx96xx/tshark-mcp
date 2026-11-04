@@ -17,12 +17,13 @@ counted once (``duplicate_copies``) rather than as retransmissions.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Any
+from typing import Any, Callable
 
 from .fields import compact, iso, parse_time, split_fields_line, to_int
+from .pairing import ANSWER_WINDOW_S, answer_window, near_end_note
 
 FIELDS = [
-    "frame.number", "frame.time_epoch", "frame.protocols",
+    "frame.number", "frame.time_epoch", "frame.protocols", "frame.interface_id",
     "ip.src", "ip.dst", "ipv6.src", "ipv6.dst",
     "udp.srcport", "udp.dstport", "tcp.srcport", "tcp.dstport",
     "dns.id", "dns.flags.response", "dns.flags.rcode", "dns.flags.truncated",
@@ -49,7 +50,7 @@ COPY_WINDOW = 0.05     # seconds: the same packet seen again this soon is a capt
 RETRY_WINDOW = 10.0    # seconds: a new query for the same name this soon after a failed one is a retry
 PARALLEL_WINDOW = 0.2  # seconds: queries this close together went out in parallel (to several resolvers), not as a retry
 SLOW_MS = 1000.0       # an answer slower than this is called slow
-END_GRACE = 2.0        # seconds: a query this close to the end of the capture may simply have been cut off
+END_GRACE = ANSWER_WINDOW_S  # seconds: a query this close to the end of the capture may simply have been cut off
 ISSUE_SHARE = 0.05     # unanswered or failed share that is worth an issue
 
 
@@ -131,6 +132,7 @@ def parse(stdout: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             msg = {
                 "frame": frame, "time": ts, "src": src, "dst": dst, "sport": sport, "dport": dport,
                 "transport": transport, "id": dns_id, "response": response,
+                "interface": to_int(_nth(raw["frame.interface_id"], 0)),
                 "name": _nth(raw["dns.qry.name"], i), "qtype": qtype,
             }
             if response:
@@ -187,6 +189,7 @@ def pair(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
                 "frame": m["frame"], "time": m["time"], "last_query_time": m["time"], "client": m["src"],
                 "client_port": m["sport"], "server": m["dst"], "server_port": m["dport"], "transport": m["transport"],
                 "id": m["id"], "name": m["name"], "qtype": m["qtype"], "retransmissions": 0,
+                "interface": m.get("interface"),
             }
             open_by_key[key] = tx
             txs.append(tx)
@@ -232,8 +235,14 @@ def _mark_retries_and_fallback(txs: list[dict[str, Any]]) -> None:
 
 
 def summarise(messages: list[dict[str, Any]], icmp: list[dict[str, Any]], name: str | None = None,
-              slow_ms: float = SLOW_MS) -> dict[str, Any]:
-    """Transactions, per-name and per-server summaries, and issues in plain words."""
+              slow_ms: float = SLOW_MS, capture_end: Callable[[int | None], float | None] | None = None) -> dict[str, Any]:
+    """Transactions, per-name and per-server summaries, and issues in plain words.
+
+    An unanswered query gets ``near_capture_end`` when the capture on its interface stops
+    before its answer was due: the slowest answer from the same resolver plus 0.2 s, at
+    most END_GRACE (as for GTP and Diameter, see :func:`pairing.answer_window`).
+    ``capture_end(interface id)`` gives that end (the server reads it from the last packet
+    on each interface, as gtp_sessions does); without it the last DNS message stands in."""
     kept, copies = _drop_copies(messages)
     txs, orphans = pair(kept)
     _mark_retries_and_fallback(txs)
@@ -241,6 +250,10 @@ def summarise(messages: list[dict[str, Any]], icmp: list[dict[str, Any]], name: 
         txs = [t for t in txs if matches_name(t["name"], name)]
         icmp = [e for e in icmp if e.get("name") and matches_name(e["name"], name)]
     last_seen = max((m["time"] for m in kept if m["time"] is not None), default=None)
+    slowest: dict[str, float] = {}  # per resolver, the slowest answer: how long an answer may still come
+    for t in txs:
+        if t.get("response_time") is not None and t["time"] is not None:
+            slowest[t["server"]] = max(slowest.get(t["server"], 0.0), t["response_time"] - t["time"])
 
     rows = []
     for tx in txs:
@@ -265,8 +278,12 @@ def summarise(messages: list[dict[str, Any]], icmp: list[dict[str, Any]], name: 
         }
         if not answered:
             row["unanswered"] = True
-            if last_seen is not None and tx["time"] is not None and last_seen - tx["time"] < END_GRACE:
+            seen = slowest.get(tx["server"])
+            window = answer_window(seen, END_GRACE)
+            end = capture_end(tx.get("interface")) if capture_end is not None else last_seen
+            if end is not None and tx["time"] is not None and end < tx["time"] + window:
                 row["near_capture_end"] = True
+                row["note"] = near_end_note(tx["time"], end, window, seen)
         rows.append(compact(row))
 
     servers = _per_server(txs, icmp)
@@ -275,6 +292,7 @@ def summarise(messages: list[dict[str, Any]], icmp: list[dict[str, Any]], name: 
         "queries": len(txs),
         "answered": sum(1 for t in txs if t.get("response_time") is not None),
         "unanswered": sum(1 for t in txs if t.get("response_time") is None),
+        "unanswered_near_capture_end": sum(1 for r in rows if r.get("near_capture_end")),
         "rcodes": dict(Counter(rcode_name(t["rcode"]) for t in txs if t.get("rcode") is not None)),
         "retransmissions": sum(t["retransmissions"] for t in txs),
         "retries": sum(1 for t in txs if t.get("retry_of")),
