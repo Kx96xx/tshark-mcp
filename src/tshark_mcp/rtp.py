@@ -34,7 +34,10 @@ FIELDS = [
     "rtcp.xr.voipmetrics.rtdelay",
 ]
 AGGREGATOR = ","
-DISPLAY_FILTER = "rtp || rtcp"
+# RTP over IP only: RTP carried by Bluetooth AVDTP or other non-IP transports has no addresses or
+# ports to key a stream on, and tshark's own rtp,streams lists it with NONE endpoints.
+RTP_OR_RTCP = "rtp || rtcp"
+DISPLAY_FILTER = f"({RTP_OR_RTCP}) && (ip || ipv6)"
 # Heuristic RTP/RTCP decoding for captures without the SDP that would set the streams up.
 HEURISTIC_ARGS = ("--enable-heuristic", "rtp_udp", "--enable-heuristic", "rtcp_udp")
 
@@ -90,6 +93,8 @@ def parse(stdout: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         r = dict(zip(FIELDS, cols))
         src = _last(r["ip.src"]) or _last(r["ipv6.src"])
         dst = _last(r["ip.dst"]) or _last(r["ipv6.dst"])
+        if not src or not dst:
+            continue  # not over IP (Bluetooth AVDTP, for one): no endpoints to key a stream on
         base = {
             "frame": to_int(r["frame.number"]),
             "time": parse_time(r["frame.time_epoch"]),
@@ -472,4 +477,4 @@ def rtp_filter(addresses: set[str]) -> str:
         parts.append("ip.addr in {" + ", ".join(v4) + "}")
     if v6:
         parts.append("ipv6.addr in {" + ", ".join(v6) + "}")
-    return f"({DISPLAY_FILTER}) && ({' || '.join(parts)})" if parts else DISPLAY_FILTER
+    return f"({RTP_OR_RTCP}) && ({' || '.join(parts)})" if parts else DISPLAY_FILTER
