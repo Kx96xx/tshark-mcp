@@ -49,6 +49,7 @@ and the redaction rules.
 | `sigtran_messages(path, filter, limit, offset)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
 | `compare_captures(path_a, path_b, imsi, msisdn, imsi_b, msisdn_b, collapse_repeats, limit, offset)` | A working and a failing capture of the same procedure side by side: both message ladders (the subscriber trace, or every transaction without an identity), keepalives dropped, identical retries merged with a `repeat` count, aligned by protocol and message; `first_divergence`, every step as same, changed, replaced, only_a or only_b, the `differences` of changed steps (result, pairing, key Diameter AVPs, GTP IEs; identities ignored) and the largest round-trip and offset gaps |
 | `trace_subscriber(path, imsi, msisdn, limit, offset)` | One time-ordered timeline for a subscriber across Diameter, GTPv2-C and GTPv1-C (following control-plane TEIDs), PFCP (by IMSI or the UE address GTP allocated, then by SEID), MAP and SIP, each row with protocol, message, result and pairing; all passes share one time budget and a spent budget returns the partial timeline with `truncated` |
+| `roaming_attach_check(path, imsi, msisdn, home_plmn, limit, offset)` | Why a roamer cannot attach or get a bearer. The subscriber's steps (S6a AIR/AIA and ULR/ULA, MAP sendAuthenticationInfo, updateLocation and updateGprsLocation, GTPv2-C Create Session and Modify Bearer, Gx CCR-I/CCA-I, PFCP Session Establishment) grouped into `attempts` in time order (a new attempt when authentication or a location update follows a location update or PDN step, or a Create Session repeats an APN). Each attempt: `visited_plmn` (ULR Visited-PLMN-Id, GTPv2 Serving Network, or the MAP peer GT) with `visited_source`, `roaming`, `access` (RAT, TAI, ECGI), `steps` with result, code, `ref`, `cause_lookup` call, Error-Diagnostic, offending IE and `likely_causes` of a GTP reject, the ULA `subscription` digest (`subscription_from_earlier_attempt` when this attempt had no ULA), the Create Session `request`, `checks` (`pass`, `warn`, `fail` or `unknown`: authentication, location update, Create Session, ODB, RAT against Access-Restriction-Data, APN subscribed or wildcard, PDN type requested against subscribed, routing: home routed or local breakout from the APN operator identifier against VPLMN-Dynamic-Address-Allowed, APN-AMBR within the subscription), `first_failure` and a one-sentence `verdict`. `home_plmn` ("MCC-MNC") overrides the home network read from the IMSI (the MNC length follows the MCC). Content-free: authentication vectors are counted, never returned |
 
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
 annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false`. Failures come back
@@ -359,6 +360,22 @@ gtp_ies(path="/pcaps/gtpv2.pcap", message="Create Session Request")
       "likely_causes": ["the gateway does not know the APN 'bogus.apn': check the APN configured on this PGW, ..."]}]}
 ```
 
+Why a roamer gets no bearer, held against the subscription:
+
+```
+roaming_attach_check(path="/pcaps/roaming.pcap", imsi="001010123456789")
+-> {"home_plmn": "001-01", "summary": {"attempts": 1, "failed": 1, ...},
+    "attempts": [{"visited_plmn": "001-02", "roaming": true, "access": {"rat": "EUTRAN (1004)"},
+      "steps": [{"step": "AIR/AIA", "result": "DIAMETER_SUCCESS", "vectors_returned": 1, ...},
+                {"step": "ULR/ULA", "result": "DIAMETER_SUCCESS", ...},
+                {"step": "Create Session", "result": "Missing or unknown APN", "code": 78, "ref": "TS 29.274 8.4 (Table 8.4-1)", ...}],
+      "subscription": {"apns": [{"apn": "data.test", "pdn_type": "IPv4 (0)", "vplmn_dynamic_address": "NOTALLOWED (0)", ...}], ...},
+      "request": {"apn": "internet", "pdn_type": "IPv4v6 (3)", "serving_network": "001-02", ...},
+      "checks": [{"check": "apn_subscribed", "result": "fail", "detail": "'internet' requested but the subscription holds ['data.test']"}, ...],
+      "verdict": "Create Session failed: Missing or unknown APN (TS 29.274 8.4 (Table 8.4-1)): 'internet' requested but the subscription holds ['data.test']"}],
+    "verdict": "1 attempt(s), 1 with a failure; latest: Create Session failed: ..."}
+```
+
 Top talkers on the Diameter port only:
 
 ```
@@ -369,7 +386,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 680 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 818 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

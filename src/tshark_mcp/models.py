@@ -1561,6 +1561,63 @@ class TraceSubscriberResult(RowsResult, total=False):
     passes: dict[str, Any]
 
 
+class RoamingStep(TypedDict, total=False):
+    """One attach or PDN step: S6a AIR/ULR, MAP SAI/UL/UGL, Create Session, Modify Bearer,
+    Gx CCR-I or PFCP establishment, with its result, code, reference and frames."""
+    __pydantic_config__ = _EXTRA_OK
+    step: str
+    protocol: str
+    time: str
+    request_frame: int
+    answer_frame: int
+    rtt_ms: float
+    result: str
+    code: int
+    success: bool
+    unanswered: bool
+    ref: str
+    cause_lookup: str
+    error_diagnostic: str
+
+
+class RoamingCheck(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    check: str
+    result: str
+    detail: str
+    frames: list[int]
+    ref: str
+
+
+class RoamingAttempt(TypedDict, total=False):
+    """One attach or PDN attempt: where, how, the steps, the subscription against the
+    request, the checks, the first failure and a verdict."""
+    __pydantic_config__ = _EXTRA_OK
+    time: str
+    visited_plmn: str
+    visited_source: str
+    roaming: bool
+    access: dict[str, Any]
+    steps: list[RoamingStep]
+    subscription: dict[str, Any]
+    subscription_frame: int
+    subscription_from_earlier_attempt: bool
+    request: dict[str, Any]
+    checks: list[RoamingCheck]
+    first_failure: dict[str, Any]
+    verdict: str
+
+
+class RoamingAttachCheckResult(RowsResult, total=False):
+    attempts: list[RoamingAttempt]
+    imsi: str
+    home_plmn: str
+    home_plmn_source: str
+    summary: dict[str, Any]
+    verdict: str
+    passes: dict[str, Any]
+
+
 # ----------------------------------------------------------------- identifier search
 class FileHits(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK

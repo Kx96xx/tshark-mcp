@@ -46,6 +46,7 @@ PACKET_CONTAINERS: frozenset[str] = frozenset({
     "packets",                         # filter_packets: values of the fields asked for
     "request_avps", "answer_avps",     # diameter_avps, trace and compare rows
     "request_ies", "response_ies",     # gtp_ies
+    "subscription",                    # roaming_attach_check: the ULA subscription digest
     "differences",                     # compare_captures: values from both captures
     "writer",                          # capture_metadata: application, OS, hardware of the file's writer
 })

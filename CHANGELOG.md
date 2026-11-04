@@ -39,6 +39,11 @@ more and the hardening landed the same day (listed under Added, Changed and Secu
   serving network, RAT, ULI, indication flags, AMBR, F-TEIDs, PCO option names, bearer QoS, cause
   with offending IE and source, RAN/NAS cause) and `likely_causes` for a reject, built from the
   request. PAP and CHAP payloads in the PCO are never returned. `detail="full"` gives the IE tree.
+- `roaming_attach_check`: why a roamer cannot attach or get a bearer. The subscriber's S6a, MAP,
+  GTPv2-C, Gx and PFCP steps grouped into attempts, the ULA subscription held against the Create
+  Session request (APN subscribed, PDN type, home routing or local breakout, RAT against
+  Access-Restriction-Data, ODB, AMBR), the first failure with its reference and a one-sentence
+  verdict. Authentication vectors are counted, never returned.
 
 ### Changed
 
