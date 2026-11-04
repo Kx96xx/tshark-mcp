@@ -124,7 +124,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Thirty-five tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Thirty-six tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -132,6 +132,7 @@ examples: [docs/TOOLS.md](docs/TOOLS.md).
 | --- | --- |
 | `find_identifier` | Which captures in a directory mention an IMSI, MSISDN, IP, Call-ID or Session-Id |
 | `pcap_info` | Packet count, duration, link type, protocol hierarchy, active limits |
+| `capture_metadata` | pcapng writer, interfaces, snaplen, capture filter and the drop counters tshark cannot show |
 | `capture_quality` | Can loss and timing conclusions be drawn from this file? Verdict with reasons |
 | `conversations` | Top talkers at IP, TCP, UDP, SCTP or Ethernet level |
 | `filter_packets` | Rows of fields for any display filter (the escape hatch) |
