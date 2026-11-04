@@ -47,7 +47,7 @@ class Direction:
     __slots__ = ("isn", "next", "gaps", "acked", "segments", "data_segments", "bytes", "lost_before", "after",
                  "out_of_order", "missed", "missed_bytes", "untracked", "keepalives", "syn_retrans", "last_id",
                  "id_steps", "id_near", "packets", "first_frame", "max_len", "retrans_frames", "events", "last_zero_seq",
-                 "last_fill")
+                 "last_fill", "next_time")
 
     def __init__(self) -> None:
         self.isn: int | None = None
@@ -67,6 +67,7 @@ class Direction:
         self.events: list[dict[str, Any]] = []
         self.last_zero_seq: int | None = None
         self.last_fill: tuple[int, float | None, str] | None = None  # (end, time, kind) of the last gap filler
+        self.next_time: float | None = None  # when the segment that last advanced ``next`` was seen
 
     @property
     def sequential_ids(self) -> bool:
@@ -174,9 +175,10 @@ class FlowTracker:
                 self._note(d, rec, seq, length, "syn_retransmission")
                 return "syn_retransmission"
             d.isn, d.next, d.gaps = seq, end, []
+            d.next_time = rec.get("time")
             return None
         if d.next is None:
-            d.next = end
+            d.next, d.next_time = end, rec.get("time")
             if length == 0 and not tcp["fin"]:
                 d.last_zero_seq = seq
             return None
@@ -191,16 +193,16 @@ class FlowTracker:
                 d.gaps.append([d.next, seq, rec.get("time"), ip_id, rec.get("frame"), None, tcp.get("tsval")])
             else:
                 d.untracked += 1
-            d.next = end
+            d.next, d.next_time = end, rec.get("time")
             return "gap"
         if seq == d.next:
-            d.next = end
+            d.next, d.next_time = end, rec.get("time")
             return None
         # Behind the highest byte seen: fills a gap, or repeats bytes the capture already saw.
         kind = self._fill(d, seq, end, rec, ip_id, rtt)
         d.last_fill = (end, rec.get("time"), kind)
         if ahead(end, d.next):
-            d.next = end
+            d.next, d.next_time = end, rec.get("time")
         if kind == "lost_before_capture":
             d.lost_before += 1
         elif kind == "out_of_order":
@@ -226,6 +228,13 @@ class FlowTracker:
             else:
                 kept.append(gap)
         if hit is None:
+            t = rec.get("time")
+            if (ahead(end, d.next) and t is not None and d.next_time is not None
+                    and t - d.next_time < max(REORDER_WINDOW_S, RTT_SHARE * rtt if rtt else 0.0)):
+                # Repeats the tail of the stream and brings new bytes, less than a round trip after
+                # that tail passed: too soon for a loss-triggered resend, so a sender or capture
+                # artefact (coalescing, overlapping segmentation), not loss after the capture point.
+                return "out_of_order"
             return "retransmitted_after_capture"
         d.gaps = kept
         opened_time, opened_id, opened_ts = hit[2], hit[3], hit[6]
