@@ -67,6 +67,7 @@ questions about the calls, sessions and subscribers in them.
 - "Which capture in this directory mentions IMSI 001010123456789, and when?"
 - "Why did this subscriber's attach fail?" (Diameter result codes and the AVPs behind them)
 - "Was the GTP session created? What cause came back, and which PAA?"
+- "What is our ASR to this destination, and did post-dial delay go up?"
 - "Why is there one-way audio on this call?"
 - "What was the call quality: loss, jitter, MOS?"
 - "Why can't this UE register on IMS?" and "Where did the SMS go?"
@@ -125,7 +126,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Thirty-eight tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Thirty-nine tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -160,6 +161,7 @@ examples: [docs/TOOLS.md](docs/TOOLS.md).
 | `icmp_errors` | Every ICMP/ICMPv6 error by sender, kind and quoted flow: fragmentation needed, rejects, routing loops, lost pings |
 | `sip_dialogs` | Messages grouped by Call-ID with outcome after any challenge |
 | `sip_call_detail` | One call: timings, SDP, Reason headers, who hung up |
+| `call_kpis` | ASR, NER, SER, PDD and ACD per peer, trunk, number prefix, user agent or interval |
 | `media_path_check` | SDP-negotiated media against the RTP seen: one-way audio, NAT, 488 |
 | `rtp_streams` | Per-stream loss, jitter, RTCP and an E-model MOS estimate, linked to the call |
 | `dtmf_events` | RFC 4733 and SIP INFO digits in order, checked against the SDP |

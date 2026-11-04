@@ -1324,6 +1324,91 @@ def write_ims_pcaps(directory: Path) -> dict[str, Path]:
             "ims_sms": write_ims_sms_pcap(directory / "ims_sms.pcap")}
 
 
+SBC_IP = "192.0.2.90"
+CARRIER_X = "203.0.113.10"
+CARRIER_Y = "203.0.113.20"
+CALL_MIX_END = 1_700_007_200.5
+
+
+def write_call_mix_pcap(path: Path) -> Path:
+    """Ten INVITE calls from one SBC to two carriers, for call_kpis. To carrier X
+    (called numbers 447700900xxx, the 4477 prefix): answered after ringing (PDD 800 ms,
+    60 s), answered without ringing (1.2 s, 30 s), busy 486 with Q.850 17 after ringing,
+    cancelled while ringing (487), 503 with Q.850 34 after 300 ms. To carrier Y (1555...):
+    answered after 183 (PDD 2 s, 120 s), 404 with Q.850 1, an INVITE that is never
+    answered (retransmitted once), one challenged with 407 and answered on the retry
+    (10 s), and a last INVITE half a second before the capture ends."""
+    t0 = 1_700_007_000.0
+    frames: list[tuple[float, bytes]] = []
+
+    def call(i: int, carrier: str, called: str, steps: list[tuple], ua: str | None = None) -> None:
+        cid = f"mix-{i}@sbc.example"
+        frm = f"<sip:+15550100{100 + i}@sbc.example>;tag=m{i}"
+        to = f"<sip:{called}@carrier.example>"
+        ruri = f"sip:{called}@carrier.example"
+        via = f"Via: SIP/2.0/UDP {SBC_IP}:5060;branch=z9hG4bKmix{i}"
+        start = t0 + 20.0 * (i - 1) if i < 10 else CALL_MIX_END - 0.5
+        for offset, kind, code, cseq, method, extra in steps:
+            to_hdr = f"To: {to}" + (";tag=far" if kind == "resp" and code > 100 else "")
+            if kind == "req":
+                lines = [f"{method} {ruri} SIP/2.0", via, f"From: {frm}", to_hdr, f"Call-ID: {cid}",
+                         f"CSeq: {cseq} {method}", "Max-Forwards: 70"]
+                if method == "INVITE" and ua:
+                    lines.append(f"User-Agent: {ua}")
+                src, dst = SBC_IP, carrier
+            else:
+                lines = [f"SIP/2.0 {code} {extra.pop(0) if extra else 'X'}", via, f"From: {frm}", to_hdr,
+                         f"Call-ID: {cid}", f"CSeq: {cseq} {method}"]
+                src, dst = carrier, SBC_IP
+            lines += extra or []
+            frames.append((start + offset, _udp_frame(src, dst, 5060, 5060, _sip(lines))))
+
+    def answered(ring: float | None, answer: float, talk: float) -> list[tuple]:
+        steps = [(0.0, "req", 0, 1, "INVITE", None), (0.05, "resp", 100, 1, "INVITE", ["Trying"])]
+        if ring is not None:
+            steps.append((ring, "resp", 180, 1, "INVITE", ["Ringing"]))
+        steps += [(answer, "resp", 200, 1, "INVITE", ["OK"]), (answer + 0.02, "req", 0, 1, "ACK", None),
+                  (answer + talk, "req", 0, 2, "BYE", None), (answer + talk + 0.02, "resp", 200, 2, "BYE", ["OK"])]
+        return steps
+
+    def failed(ring: float | None, at: float, code: int, phrase: str, cause: int | None) -> list[tuple]:
+        steps = [(0.0, "req", 0, 1, "INVITE", None), (0.05, "resp", 100, 1, "INVITE", ["Trying"])]
+        if ring is not None:
+            steps.append((ring, "resp", 180, 1, "INVITE", ["Ringing"]))
+        reason = [phrase] + ([f"Reason: Q.850;cause={cause}"] if cause else [])
+        steps += [(at, "resp", code, 1, "INVITE", reason), (at + 0.02, "req", 0, 1, "ACK", None)]
+        return steps
+
+    call(1, CARRIER_X, "+447700900001", answered(0.8, 5.0, 60.0), ua="SBC-A/1.0")
+    call(2, CARRIER_X, "+447700900002", answered(None, 1.2, 30.0), ua="SBC-A/1.0")
+    call(3, CARRIER_X, "00447700900003", failed(0.5, 4.0, 486, "Busy Here", 17), ua="SBC-A/1.0")
+    call(4, CARRIER_X, "+447700900004", [(0.0, "req", 0, 1, "INVITE", None), (0.6, "resp", 180, 1, "INVITE", ["Ringing"]),
+                                         (10.0, "req", 0, 1, "CANCEL", None),
+                                         (10.02, "resp", 200, 1, "CANCEL", ["OK"]),
+                                         (10.03, "resp", 487, 1, "INVITE", ["Request Terminated"]),
+                                         (10.05, "req", 0, 1, "ACK", None)], ua="SBC-A/1.0")
+    call(5, CARRIER_X, "+447700900005", failed(None, 0.3, 503, "Service Unavailable", 34), ua="SBC-A/1.0")
+    call(6, CARRIER_Y, "+15550100601", [(0.0, "req", 0, 1, "INVITE", None),
+                                        (2.0, "resp", 183, 1, "INVITE", ["Session Progress"]),
+                                        (3.0, "resp", 200, 1, "INVITE", ["OK"]), (3.02, "req", 0, 1, "ACK", None),
+                                        (123.0, "req", 0, 2, "BYE", None), (123.02, "resp", 200, 2, "BYE", ["OK"])],
+         ua="SBC-B/2.1")
+    call(7, CARRIER_Y, "+15550100602", failed(None, 0.2, 404, "Not Found", 1), ua="SBC-B/2.1")
+    call(8, CARRIER_Y, "+15550100603", [(0.0, "req", 0, 1, "INVITE", None), (0.5, "req", 0, 1, "INVITE", None)],
+         ua="SBC-B/2.1")
+    call(9, CARRIER_Y, "+15550100604", [(0.0, "req", 0, 1, "INVITE", None),
+                                        (0.1, "resp", 407, 1, "INVITE", ["Proxy Authentication Required"]),
+                                        (0.12, "req", 0, 1, "ACK", None), (0.2, "req", 0, 2, "INVITE", None),
+                                        (0.9, "resp", 180, 2, "INVITE", ["Ringing"]),
+                                        (2.2, "resp", 200, 2, "INVITE", ["OK"]), (2.22, "req", 0, 2, "ACK", None),
+                                        (12.2, "req", 0, 3, "BYE", None), (12.22, "resp", 200, 3, "BYE", ["OK"])],
+         ua="SBC-B/2.1")
+    call(10, CARRIER_Y, "+15550100605", [(0.0, "req", 0, 1, "INVITE", None)], ua="SBC-B/2.1")
+    frames.append((CALL_MIX_END, _udp_frame(CARRIER_Y, SBC_IP, 5060, 5060, b"\r\n\r\n")))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     """The voice captures, kept in their own directory so the directory scans of the
     signalling captures are unchanged."""
@@ -1333,6 +1418,7 @@ def write_voice_pcaps(directory: Path) -> dict[str, Path]:
         "voice_problems": write_voice_problems_pcap(directory / "voice_problems.pcap"),
         "rtp_no_sdp": write_rtp_without_sdp_pcap(directory / "rtp_no_sdp.pcap"),
         "voice_dtmf": write_voice_dtmf_pcap(directory / "voice_dtmf.pcap"),
+        "call_mix": write_call_mix_pcap(directory / "call_mix.pcap"),
     }
 
 

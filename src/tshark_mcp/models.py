@@ -597,6 +597,66 @@ class CauseLookupResult(RowsResult, total=False):
     note: str
     codes: list[CauseCode]
     query: str
+class Quantiles(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    p50: float
+    p90: float
+    p99: float
+    max: float
+    calls: int
+
+
+class CallKpis(TypedDict, total=False):
+    """The KPIs of a set of calls; ``method`` on the result defines each one."""
+    __pydantic_config__ = _EXTRA_OK
+    calls: int
+    answered: int
+    failed: int
+    no_final_response: int
+    near_capture_end: int
+    asr_pct: float
+    ser_pct: float
+    ser_without_487_pct: float
+    ner_pct: float
+    pdd_ms: Quantiles
+    answer_without_ringing_ms: Quantiles
+    ringing_ms: Quantiles
+    acd_s: dict[str, float]
+    answered_without_bye: int
+    failure_codes: dict[str, int]
+    q850_causes: dict[str, int]
+
+
+class CallKpiGroup(CallKpis, total=False):
+    """One group; the key is named after ``group_by`` (``interval_start`` for intervals)."""
+    peer: str
+    trunk: str
+    destination_prefix: str
+    source_prefix: str
+    user_agent: str
+    interval_start: str
+    first_frame: int
+
+
+class WorstCall(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    call_id: str
+    frame: int
+    time: str
+    group: str
+    user_agent: str
+    status: int
+    q850_cause: int
+    pdd_ms: float
+    no_final_response: bool
+
+
+class CallKpisResult(RowsResult, total=False):
+    group_by: str
+    groups: list[CallKpiGroup]
+    summary: CallKpis
+    worst_calls: list[WorstCall]
+    method: dict[str, str]
 
 
 class FilterPacketsResult(RowsResult, total=False):

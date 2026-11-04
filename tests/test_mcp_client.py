@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
     "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "ims_registration", "sms_over_ims", "find_fields", "check_filter",
     "cause_lookup",
+    "call_kpis",
 }
 
 
@@ -77,6 +78,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("expert_info", {"path": f"{d}/all.pcap", "severity": "note"}),
         ("media_path_check", {"path": f"{d}/voice/voice_problems.pcap", "call_id": pcapgen.CALL_ID_NAT}),
         ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
+        ("call_kpis", {"path": f"{d}/voice/call_mix.pcap", "group_by": "destination_prefix"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
         ("find_fields", {"query": "result code", "protocol": "diameter", "limit": 5}),
@@ -239,6 +241,9 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert cause["ref"].startswith("TS 29.272") and "Error-Diagnostic" in cause["application_note"]
     http = by_name[("http_transactions", ("path", "view"))]
     assert http["view"] == "endpoints" and "status_mix" in http["summary"]
+    kpis = by_name[("call_kpis", ("group_by", "path"))]
+    assert {r["destination_prefix"]: r["asr_pct"] for r in kpis["groups"]} == {"4477": 40.0, "1555": 50.0}
+    assert kpis["summary"]["calls"] == 10 and kpis["worst_calls"][0]["frame"] > 0
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")
