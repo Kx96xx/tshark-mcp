@@ -135,3 +135,13 @@ def test_gtp_and_map_names(server, pcap_dir: Path):
 @pytest.mark.parametrize("kwargs", [{"protocol": "ss7"}, {"interval": 0}, {"interval": "fast"}])
 def test_invalid_arguments(server, pcap_dir: Path, kwargs):
     assert server.message_rates(str(pcap_dir / "all.pcap"), **kwargs)["error"]["type"] == "invalid_argument"
+
+
+@requires_tshark
+def test_storm_min_below_two_does_not_crash(server, pcap_dir):
+    """storm_min=0 or 1 made a single request count as a loop and the median of no gaps raised."""
+    out = server.message_rates(str(pcap_dir / "diameter.pcap"), storm_min=0, burst_min=0)
+    assert "error" not in out, out.get("error")
+    assert all(lp["count"] >= 2 for lp in out["subscriber_loops"])
+    one = server.message_rates(str(pcap_dir / "diameter.pcap"), storm_min=1)
+    assert "error" not in one and all(lp["count"] >= 2 for lp in one["subscriber_loops"])
