@@ -3,7 +3,11 @@
 All notable changes to tshark-mcp. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.0 - 2026-11-04
+
+First release. Everything below was built between 1 and 4 November 2026 in pull requests #1
+to #84; the numbers in brackets are the pull requests. The first 33 tools came first, then six
+more and the hardening landed the same day (listed under Added, Changed and Security).
 
 ### Added
 
@@ -49,11 +53,6 @@ the project uses [semantic versioning](https://semver.org/).
   tshark runs at once (`--max-concurrent-runs`, `--busy-wait`, then a `busy` error); a capture
   replaced during the run fails with `capture_changed`; `-d` decode-as rules are validated.
 
-## 0.1.0 - 2026-11-04
-
-First release. Everything below was built between 1 and 4 November 2026 in pull requests #1
-to #62; the numbers in brackets are the pull requests.
-
 ### The server
 
 - Read-only MCP server over stdio. Every call runs `tshark -r <file>` on a capture inside an
@@ -78,7 +77,7 @@ to #62; the numbers in brackets are the pull requests.
   An IMEI written as TAC-SNR-CD inside a `urn:gsma:imei:` instance id is found too (#60).
 - JSON-lines audit log (`--log-file`).
 
-### Tools (33)
+### Tools (the first 33)
 
 Orientation and capture trust: `pcap_info`, `conversations`, `filter_packets`, `packet_detail`
 (#30), `expert_info` (#36), `find_fields` and `check_filter` (#38), `capture_quality` (#29, #44,
@@ -119,6 +118,33 @@ storms and subscriber loops with the nodes involved, #19, #21, #48).
   (#9, #10); the `apn` filter missed APNs carrying the operator identifier (#11).
 - Requests unanswered only because the capture stopped are marked `near_capture_end` and
   counted apart, for Diameter, GTPv2-C, GTPv1-C, PFCP and DNS (#51, #55).
+
+### Fixed by the bug hunt over public captures (4 November 2026)
+
+Every tool was driven over 16 synthetic edge cases and 245 captures from the Wireshark
+repository through the MCP stdio client, with default and hostile arguments, output
+schemas validated and counts cross-checked against raw tshark.
+
+- `message_rates` crashed (`StatisticsError`) with `storm_min` below 2 (#65).
+- `filter_packets` with an empty `display_filter` escaped the error contract as a bare MCP
+  error; it is now `invalid_argument` (#66).
+- `capture_quality` called every same-sized datagram of a flow a duplicate copy when the
+  sender reuses one IP ID (97% "copies" on the README's own one-way-audio example); verified
+  checksums and SCTP TSNs now break a false match (#67).
+- `tcp_health`, `capture_quality` and `gtp_tunnel_health` reported out-of-order segments as
+  retransmissions "lost before the capture point" when a multi-queue sender emitted them with
+  IP IDs in emission order (45% false retransmissions on an ordinary HTTPS download); a gap
+  filled within one round trip is reordering, and a stack reusing one IP ID falls back to the
+  time window (#70, #75).
+- `pcap_info` reported 1 packet for a capture cut short in the middle of a packet; the
+  readable part is counted (#72).
+- `media_path_check` called a call with `a=recvonly`/`a=sendonly` one-way audio; directions
+  the SDP rules out are "not expected" (#74).
+- `rtp_streams` merged RTP over Bluetooth AVDTP into one bogus stream; RTP over IP only (#77).
+- A tshark crash (SIGSEGV on fuzzed captures) was reported as `tshark exited with -11`; the
+  message now names the signal, says the bug is in tshark's dissectors and what to try (#79).
+- A path the filesystem cannot take (5000-character name) came back as `internal_error`;
+  it is `invalid_path` (#81).
 
 ### Documentation and project
 
