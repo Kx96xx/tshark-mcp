@@ -104,6 +104,8 @@ description and schema of a tool, or start the server with `--schema-profile ful
   include `invalid_argument`, `invalid_filter`, `invalid_path` (outside the allowlist),
   `not_found`, `not_a_file`, `not_a_directory`, `timeout`, `output_too_large`, `tshark_failed`,
   `unknown_field`, `unknown_token`, `busy` (too many tshark runs at once; retry) and `capture_changed` (the file was replaced while being read).
+  A bad argument is quoted in `message` by its first 80 characters and its length; messages
+  and text details are capped at 1,000 characters.
 
 ### Reading the output
 

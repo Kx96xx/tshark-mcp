@@ -29,7 +29,7 @@ from .fields import (
     to_int, validate_fields,
 )
 from .limits import (
-    Allowlist, Limits, ToolError, clamp_limit, lint_apn, lint_digits, lint_display_filter, lint_field_name,
+    Allowlist, Limits, ToolError, clamp_limit, echo, lint_apn, lint_digits, lint_display_filter, lint_field_name,
     lint_hostname, lint_quoted_value, lint_sip_method, lint_teid, outside_quotes,
 )
 from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_identity
@@ -666,9 +666,9 @@ def _offset(value: Any) -> int:
     try:
         start = int(value) if value is not None else 0
     except (TypeError, ValueError):
-        raise ToolError("invalid_argument", f"offset must be a non-negative integer, got {value!r}") from None
+        raise ToolError("invalid_argument", f"offset must be a non-negative integer, got {echo(value)}") from None
     if start < 0:
-        raise ToolError("invalid_argument", f"offset must be a non-negative integer, got {value!r}")
+        raise ToolError("invalid_argument", f"offset must be a non-negative integer, got {echo(value)}")
     return start
 
 
@@ -855,12 +855,12 @@ def tcp_health(path: str, filter: str | None = None, stream: int | None = None, 
         st = state()
         path_mtu = to_int(str(mtu))
         if path_mtu is None or not 576 <= path_mtu <= 65535:
-            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {mtu!r}")
+            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {echo(mtu)}")
         stream_no = None
         if stream is not None and str(stream).strip() != "":
             stream_no = to_int(str(stream))
             if stream_no is None or stream_no < 0:
-                raise ToolError("invalid_argument", f"stream must be a tcp.stream number, got {stream!r}")
+                raise ToolError("invalid_argument", f"stream must be a tcp.stream number, got {echo(stream)}")
         cap = clamp_limit(limit, st.limits.max_packets, 100)
         flt = _filter(filter, base=tcphealth.display_filter(stream_no))
         stdout, scan = _fields_run(capture, flt, tcphealth.FIELDS, st.limits.max_scan_packets,
@@ -876,7 +876,7 @@ def _lint_ip(value: Any, what: str) -> str:
     try:
         return str(ipaddress.ip_address(str(value).strip()))
     except ValueError:
-        raise ToolError("invalid_argument", f"{what} must be an IPv4 or IPv6 address, got {value!r}") from None
+        raise ToolError("invalid_argument", f"{what} must be an IPv4 or IPv6 address, got {echo(value)}") from None
 
 
 def _ip_clause(addr: str) -> str:
@@ -915,14 +915,14 @@ def tcp_connections(path: str, server: str | None = None, port: int | None = Non
         if view not in ("connections", "destinations"):
             raise ToolError("invalid_argument", "view must be 'connections' or 'destinations'")
         if outcome is not None and outcome not in tcpconn.OUTCOMES:
-            raise ToolError("invalid_argument", f"outcome must be one of {', '.join(tcpconn.OUTCOMES)}, got {outcome!r}")
+            raise ToolError("invalid_argument", f"outcome must be one of {', '.join(tcpconn.OUTCOMES)}, got {echo(outcome)}")
         srv = _lint_ip(server, "server") if server not in (None, "") else None
         cli = _lint_ip(client, "client") if client not in (None, "") else None
         port_no = None
         if port is not None and str(port).strip() != "":
             port_no = to_int(str(port))
             if port_no is None or not 0 < port_no < 65536:
-                raise ToolError("invalid_argument", f"port must be a TCP port between 1 and 65535, got {port!r}")
+                raise ToolError("invalid_argument", f"port must be a TCP port between 1 and 65535, got {echo(port)}")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         clauses = [f"({tcpconn.display_filter()})"]
         clauses += [_ip_clause(a) for a in (srv, cli) if a]
@@ -983,7 +983,7 @@ def icmp_errors(path: str, sender: str | None = None, about: str | None = None, 
         capture = _resolve(path)
         st = state()
         if kind is not None and kind not in icmperr.KINDS:
-            raise ToolError("invalid_argument", f"kind must be one of {', '.join(icmperr.KINDS)}, got {kind!r}")
+            raise ToolError("invalid_argument", f"kind must be one of {', '.join(icmperr.KINDS)}, got {echo(kind)}")
         snd = _lint_ip(sender, "sender") if sender not in (None, "") else None
         about_ip = about_port = None
         if about not in (None, ""):
@@ -992,7 +992,7 @@ def icmp_errors(path: str, sender: str | None = None, about: str | None = None, 
             if sep and host and (host.startswith("[") or ":" not in host) and port_text.isdigit():
                 about_ip, about_port = _lint_ip(host.strip("[]"), "about"), port_text
                 if not 0 < int(about_port) < 65536:
-                    raise ToolError("invalid_argument", f"about port must be 1 to 65535, got {about!r}")
+                    raise ToolError("invalid_argument", f"about port must be 1 to 65535, got {echo(about)}")
             else:
                 about_ip = _lint_ip(text, "about")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
@@ -1111,19 +1111,19 @@ def http_transactions(path: str, host: str | None = None, path_prefix: str | Non
         host_l = lint_hostname(host, "host").lower() if host not in (None, "") else None
         meth = str(method).strip().upper() if method not in (None, "") else None
         if meth is not None and not _HTTP_METHOD.match(meth):
-            raise ToolError("invalid_argument", f"method must be an HTTP method such as GET, got {method!r}")
+            raise ToolError("invalid_argument", f"method must be an HTTP method such as GET, got {echo(method)}")
         status_text = str(status).strip().lower() if status not in (None, "") else None
         if status_text is not None and not _STATUS_FILTER.match(status_text):
-            raise ToolError("invalid_argument", f"status must be a code such as 404 or a class such as 5xx, got {status!r}")
+            raise ToolError("invalid_argument", f"status must be a code such as 404 or a class such as 5xx, got {echo(status)}")
         prefix = str(path_prefix) if path_prefix not in (None, "") else None
         if prefix is not None and (not prefix.startswith("/") or len(prefix) > 512):
-            raise ToolError("invalid_argument", f"path_prefix must start with / (at most 512 characters), got {path_prefix!r}")
+            raise ToolError("invalid_argument", f"path_prefix must start with / (at most 512 characters), got {echo(path_prefix)}")
         floor = None
         if min_ms is not None and str(min_ms).strip() != "":
             try:
                 floor = float(min_ms)
             except (TypeError, ValueError):
-                raise ToolError("invalid_argument", f"min_ms must be a number, got {min_ms!r}") from None
+                raise ToolError("invalid_argument", f"min_ms must be a number, got {echo(min_ms)}") from None
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         flt = _filter(filter, base=httptx.BASE_FILTER)
         stdout, scan = _fields_run(capture, flt, httptx.FIELDS, st.limits.max_scan_packets, aggregator=httptx.AGGREGATOR)
@@ -1245,7 +1245,7 @@ def packet_detail(path: str, frame: int, layers: list[str] | None = None, max_fi
         st = state()
         n = to_int(str(frame))
         if n is None or n < 1:
-            raise ToolError("invalid_argument", f"frame must be a positive frame number, got {frame!r}")
+            raise ToolError("invalid_argument", f"frame must be a positive frame number, got {echo(frame)}")
         if n > st.limits.max_scan_packets:
             raise ToolError("invalid_argument", f"frame {n} is past the frame cap of {st.limits.max_scan_packets}; "
                             "slice the capture or raise max_scan_packets")
@@ -1423,7 +1423,7 @@ def check_filter(filter: str) -> models.CheckFilterResult:
         st = state()
         if not isinstance(filter, str):
             raise ToolError("invalid_argument", "filter must be a string")
-        out: dict[str, Any] = {"filter": filter}
+        out: dict[str, Any] = {"filter": echo(filter, quote=False)}  # replaced by the full text once it passes the lint
         try:
             text = lint_display_filter(filter)
         except ToolError as exc:
@@ -1578,7 +1578,7 @@ def diameter_sessions(path: str, session_id: str | None = None, imsi: str | None
         if command_code is not None:
             code = to_int(str(command_code))
             if code is None or code < 0 or code > 0xFFFFFF:
-                raise ToolError("invalid_argument", f"command_code must be a 24-bit integer, got {command_code!r}")
+                raise ToolError("invalid_argument", f"command_code must be a 24-bit integer, got {echo(command_code)}")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         base = _filter(filter, base="diameter")
         select = diameter.session_filter(sid, imsi_d, code)
@@ -1664,12 +1664,12 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
         if command_code is not None:
             code = to_int(str(command_code))
             if code is None or code < 0 or code > 0xFFFFFF:
-                raise ToolError("invalid_argument", f"command_code must be a 24-bit integer, got {command_code!r}")
+                raise ToolError("invalid_argument", f"command_code must be a 24-bit integer, got {echo(command_code)}")
         frame_n = None
         if frame is not None:
             frame_n = to_int(str(frame))
             if frame_n is None or frame_n < 1:
-                raise ToolError("invalid_argument", f"frame must be a positive frame number, got {frame!r}")
+                raise ToolError("invalid_argument", f"frame must be a positive frame number, got {echo(frame)}")
         leaves = clamp_limit(max_avps, avps.HARD_MAX_AVPS, 200)
         cap = clamp_limit(limit, st.limits.max_packets, 20)
         base = _filter(filter, base="diameter")
@@ -1795,13 +1795,13 @@ def _gtp_message_type(message: Any) -> int | None:
     code = to_int(text)
     if code is not None:
         if not 0 < code < 256:
-            raise ToolError("invalid_argument", f"message type must be 1 to 255, got {message!r}")
+            raise ToolError("invalid_argument", f"message type must be 1 to 255, got {echo(message)}")
         return code
     wanted = " ".join(text.lower().replace("_", " ").split())
     for mtype, name in gtp.MESSAGE_TYPES.items():
         if name.lower() == wanted or name.lower() == f"{wanted} request":
             return mtype
-    raise ToolError("invalid_argument", f"unknown GTPv2-C message {message!r}; give the type number or a name "
+    raise ToolError("invalid_argument", f"unknown GTPv2-C message {echo(message)}; give the type number or a name "
                                         "such as 'Create Session Request'")
 
 
@@ -1836,7 +1836,7 @@ def gtp_ies(path: str, imsi: str | None = None, teid: str | int | None = None, f
         if frame is not None:
             frame_n = to_int(str(frame))
             if frame_n is None or frame_n < 1:
-                raise ToolError("invalid_argument", f"frame must be a positive frame number, got {frame!r}")
+                raise ToolError("invalid_argument", f"frame must be a positive frame number, got {echo(frame)}")
         mtype = _gtp_message_type(message)
         budget = clamp_limit(max_ies, gtpies.HARD_MAX_IES, 200)
         cap = clamp_limit(limit, st.limits.max_packets, 20)
@@ -1998,11 +1998,11 @@ def pfcp_sessions(path: str, seid: str | int | None = None, ue_ip: str | None = 
         try:
             seid_i = pfcp.parse_seid(seid) if seid is not None and str(seid).strip() != "" else None
         except (TypeError, ValueError):
-            raise ToolError("invalid_argument", f"seid must be a 64-bit integer (decimal or 0x hex), got {seid!r}") from None
+            raise ToolError("invalid_argument", f"seid must be a 64-bit integer (decimal or 0x hex), got {echo(seid)}") from None
         try:
             ip = pfcp.parse_ip(ue_ip) if ue_ip else None
         except ValueError:
-            raise ToolError("invalid_argument", f"ue_ip must be an IPv4 or IPv6 address, got {ue_ip!r}") from None
+            raise ToolError("invalid_argument", f"ue_ip must be an IPv4 or IPv6 address, got {echo(ue_ip)}") from None
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         base = _filter(filter, base=pfcp.BASE_FILTER)
         select = pfcp.selection_filter(seid_i, ip)
@@ -2064,7 +2064,7 @@ def gtp_user_plane(path: str, teid: str | int | None = None, limit: int = 200, o
         if teid is not None and str(teid).strip() != "":
             teid_int = to_int(str(teid).strip())
             if teid_int is None or teid_int < 0 or teid_int > 0xFFFFFFFF:
-                raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {teid!r}")
+                raise ToolError("invalid_argument", f"teid must be a 32-bit integer (decimal or 0x hex), got {echo(teid)}")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         stdout, scan = _fields_run(capture, gtp.user_plane_filter(teid_int), gtp.USER_PLANE_FIELDS,
                                    st.limits.max_scan_packets)
@@ -2099,7 +2099,7 @@ def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500,
         teid_int = lint_teid(teid) if teid is not None and str(teid).strip() != "" else None
         path_mtu = to_int(str(mtu))
         if path_mtu is None or not 576 <= path_mtu <= 65535:
-            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {mtu!r}")
+            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {echo(mtu)}")
         cap = clamp_limit(limit, st.limits.max_packets, 200)
         stdout, scan = _fields_run(capture, tunnels.display_filter(teid_int), tunnels.FIELDS, st.limits.max_scan_packets,
                                    aggregator=tunnels.AGGREGATOR)
@@ -2150,7 +2150,7 @@ def message_rates(path: str, protocol: str = "auto", interval: float = 1.0, imsi
         try:
             step = float(interval)
         except (TypeError, ValueError):
-            raise ToolError("invalid_argument", f"interval must be a number of seconds, got {interval!r}") from None
+            raise ToolError("invalid_argument", f"interval must be a number of seconds, got {echo(interval)}") from None
         if not 0.001 <= step <= 86400:
             raise ToolError("invalid_argument", "interval must be between 0.001 and 86400 seconds")
         imsi_d = lint_digits(imsi, "imsi") if imsi else None
@@ -2709,9 +2709,9 @@ def _lint_ssrc(value: Any) -> int:
     try:
         n = int(value) if isinstance(value, int) else int(str(value).strip(), 0)
     except (TypeError, ValueError):
-        raise ToolError("invalid_argument", f"ssrc must be a 32-bit integer (decimal or 0x hex), got {value!r}") from None
+        raise ToolError("invalid_argument", f"ssrc must be a 32-bit integer (decimal or 0x hex), got {echo(value)}") from None
     if not 0 <= n <= 0xFFFFFFFF:
-        raise ToolError("invalid_argument", f"ssrc must be a 32-bit integer (decimal or 0x hex), got {value!r}")
+        raise ToolError("invalid_argument", f"ssrc must be a 32-bit integer (decimal or 0x hex), got {echo(value)}")
     return n
 
 
@@ -2991,7 +2991,7 @@ def roaming_attach_check(path: str, imsi: str, msisdn: str | None = None, home_p
         if home_plmn:
             home = roaming.parse_plmn(home_plmn)
             if home is None:
-                raise ToolError("invalid_argument", f"home_plmn must be MCC-MNC such as '001-01', got {home_plmn!r}")
+                raise ToolError("invalid_argument", f"home_plmn must be MCC-MNC such as '001-01', got {echo(home_plmn)}")
             home_source = "home_plmn argument"
         else:
             home = roaming.home_from_imsi(imsi_d)

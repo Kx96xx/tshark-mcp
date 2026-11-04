@@ -3,6 +3,17 @@
 All notable changes to tshark-mcp. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared
+  IMSI/MSISDN check and every other message that names a bad value show its first 80 characters
+  and its length (a 5,000-character value cost about 5 KB of error text before). Error messages
+  and their text details (tshark stderr, the filter) are capped at 1,000 characters,
+  `check_filter` cuts a filter the lint refused, and `find_fields(protocol=...)` refuses a name
+  longer than 200 characters instead of echoing it in the result.
+
 ## 0.1.0 - 2026-11-04
 
 First release. Everything below was built between 1 and 4 November 2026 in pull requests #1
