@@ -658,14 +658,17 @@ def pcap_info(path: str) -> models.PcapInfoResult:
         st = state()
         info: dict[str, Any] = {"path": str(capture), "file_size_bytes": capture.stat().st_size}
         summary = st.runner.capinfos_summary(capture)
-        if summary is not None and summary.returncode == 0:
-            info.update(_parse_capinfos(summary.stdout))
+        parsed = _parse_capinfos(summary.stdout) if summary is not None else {}
+        # On a file cut short in the middle of a packet capinfos exits non-zero but still
+        # prints the totals of the part it read ("will continue anyway"): keep them.
+        if summary is not None and (summary.returncode == 0 or parsed.get("packets")):
+            info.update(parsed)
         else:
             info["capinfos"] = "unavailable; packet totals come from the protocol hierarchy"
         phs = check_result(st.runner.read_capture(capture, ["-q", "-z", "io,phs"]))
         hierarchy = _parse_phs(phs.stdout)
         if "packets" not in info and hierarchy:
-            info["packets"] = hierarchy[0]["frames"]
+            info["packets"] = max(r["frames"] for r in hierarchy)
         info["protocol_hierarchy"] = sorted(hierarchy, key=lambda r: -r["frames"])[:15]
         info["limits"] = st.limits.describe()
         return info
