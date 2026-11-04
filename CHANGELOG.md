@@ -3,6 +3,16 @@
 All notable changes to tshark-mcp. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- Tool errors are returned with `isError: true`, so clients show and count them as failures;
+  the structured `{"error": {...}}` stays in `structuredContent` and the text content. Every
+  error carries a `fix` hint; `not_found` and `not_a_file` list nearby capture files in
+  `candidates`, `invalid_filter` and `unknown_field` list close field names in `suggestions`,
+  `timeout` and `output_too_large` name the arguments that narrow the call.
+
 ## 0.1.0 - 2026-11-04
 
 First release. Everything below was built between 1 and 4 November 2026 in pull requests #1

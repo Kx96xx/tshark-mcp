@@ -34,9 +34,10 @@ from .limits import (
 from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_identity
 from . import redact as redaction
 from . import pfcp
+from .errors import add_fix
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 try:  # mcp >= 2.0 renamed FastMCP to MCPServer; the decorator API is the same.
@@ -182,8 +183,26 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             finally:
                 _CALL_MODE.reset(token)
         wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), extra])  # type: ignore[attr-defined]
-        return app.tool(**kwargs)(wrapper)
+
+        @functools.wraps(wrapper)
+        def entry(*args: Any, **kw: Any) -> Any:
+            return as_call_result(wrapper(*args, **kw))
+        entry.__signature__ = wrapper.__signature__  # type: ignore[attr-defined]
+        app.tool(**kwargs)(entry)
+        # The module-level name stays the plain function returning the dict, for in-process callers.
+        return wrapper
     return decorate
+
+
+def as_call_result(result: Any) -> Any:
+    """An error result becomes a ``CallToolResult`` with ``isError: true`` that keeps the
+    structured ``{"error": {...}}`` and the same JSON as text; anything else is unchanged.
+    The SDK passes a returned ``CallToolResult`` through and does not validate an error
+    against the tool's output schema."""
+    if isinstance(result, dict) and isinstance(result.get("error"), dict):
+        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=result, is_error=True)
+    return result
 
 
 def _unmask(value: Any) -> tuple[Any, bool]:
@@ -291,6 +310,8 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
         touched = _TOUCHED.get() or []
         _TOUCHED.reset(touched_token)
     warnings = collect_warnings(token)
+    if isinstance(result.get("error"), dict):
+        _add_fix(result["error"], tool, args)
     rows_key = result.pop(_ROWS_KEY, None)
     mode = _redact_mode()
     block = None
@@ -322,6 +343,13 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     payload_bytes = len(json.dumps(result, separators=(",", ":")).encode())
     _audit(tool, args, duration_ms, status, payload_bytes)
     return result
+
+
+def _add_fix(error: dict[str, Any], tool: str, args: dict[str, Any]) -> None:
+    st = _STATE
+    add_fix(error, tool, args, allowlist=st.allowlist if st else None,
+            catalogue=(lambda: field_catalogue(st.runner)) if st else None,
+            suffixes=frozenset(search.CAPTURE_SUFFIXES))
 
 
 def _size(obj: Any) -> int:

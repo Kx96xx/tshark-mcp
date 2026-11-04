@@ -124,7 +124,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 ## Tools
 
 Thirty-three tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
-and `offset`, and returns failures as `{"error": {...}}`. Full arguments, fields and
+and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
 | Tool | One line |
