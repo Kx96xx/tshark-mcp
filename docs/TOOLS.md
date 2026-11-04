@@ -22,6 +22,7 @@ and the redaction rules.
 | `expert_info(path, severity, filter, limit, offset)` | tshark's own expert information (`-z expert`): warnings, errors and malformed-packet flags grouped by severity, group (Malformed, Undecoded, Sequence, Protocol, ...), protocol and summary, with the count, first frame and up to five sample frames of each; `summary` counts by severity and protocol and the malformed frames. Check it before trusting a decode |
 | `find_fields(query, protocol, limit, offset)` | Search the fields and protocols this tshark knows (`tshark -G fields`): every word of `query` must appear in the abbreviation, name or description; `protocol` keeps one protocol's fields; rows give the abbreviation, name, type, protocol, display base and description, exact matches first. No capture is read |
 | `check_filter(filter)` | Check a display filter without reading a capture: the server lint, then tshark compiles it against an empty capture and its own error comes back with the offset and length it points at; dftest warnings (deprecated names) when dftest is installed beside tshark (`warnings_checked`); the fields the filter names, with their types |
+| `cause_lookup(protocol, code, application, message, query, limit, offset)` | What a cause or result code means, without a capture: the name from tshark's own value strings (`tshark -G values`; SIP, MAP, CP, TP-Status and SBI causes from the server's table), the meaning, the spec reference (`ref`), `typical_causes`, `related` codes and `check_next` tool calls. Protocols: diameter, gtpv2, gtpv1, pfcp, nas_emm, nas_esm, nas_5gmm, nas_5gsm, s1ap and ngap (`code="radioNetwork:21"`), sip, q850, isup, camel_release, map, tcap_abort, sccp_return, sgsap, rp, cp, tp_status, http_sbi (ProblemDetails cause strings). Diameter: `application` (s6a, gx, rx, cx, sh, ...) reads the code as an Experimental-Result-Code (5004 is DIAMETER_INVALID_AVP_VALUE as a Result-Code and ROAMING_NOT_ALLOWED in S6a), and a code found in both says so in `also`. `message` (REGISTER, INVITE) adds the per-message note. `explained: false` means only the name is known; `known: false` that no table names it or it is reserved. `query` lists codes whose name or meaning holds every word |
 | `diameter_sessions(path, session_id, imsi, command_code, filter, limit, offset)` | Diameter grouped by Session-Id: application, hosts, realms, User-Name, first/last time, request and answer command codes, every Result-Code, unanswered (and near the capture end) and failed counts, worst RTT, and the paired transactions |
 | `diameter_transactions(path, filter, limit, offset)` | Requests paired with answers by Hop-by-Hop/End-to-End id and Session-Id: command name, application, hosts, realms, User-Name, Result-Code or Experimental-Result-Code with name, RTT, `unanswered` (`near_capture_end` too when the capture stopped before the answer was due, counted apart) |
 | `diameter_avps(path, session_id, imsi, command_code, frame, filter, detail, max_avps, limit, offset)` | The AVPs of paired Diameter transactions. `detail="key"`: Result-Code and Experimental-Result, ULR/ULA/CLR/PUR/PUA/IDR/NOR flags with bit names, Cancellation-Type, RAT-Type, Visited-PLMN-Id, AIR vectors, Gx CC-Request-Type, Event-Trigger, rule reports and QoS, and a Subscription-Data digest (MSISDN, status, ODB, access restrictions, AMBR, one line per APN with PDN type, QCI, ARP, AMBR and PGW). `detail="full"`: every AVP as a nested tree, capped at `max_avps` leaves per message (server cap 2000); enumerated values are named |
@@ -324,6 +325,17 @@ dns_transactions(path="/pcaps/dns.pcap")
                       "name": "missing.example.com", "type": "A", "response_frame": 4, "rcode_name": "NXDOMAIN", "rtt_ms": 20.0}, ...]}
 ```
 
+What a code means, with the reference for the vendor ticket (no capture is read):
+
+```
+cause_lookup(protocol="diameter", code=5004, application="s6a")
+-> {"avp": "Experimental-Result-Code", "name": "DIAMETER_ERROR_ROAMING_NOT_ALLOWED", "name_source": "tshark",
+    "ref": "TS 29.272 7.4.3 (Experimental-Result-Code)", "meaning": "Roaming is not allowed.",
+    "application_note": "S6a (TS 29.272 7.4.3.3): the visited PLMN is not allowed; an Error-Diagnostic AVP may say ODB_ALL_APN, ...",
+    "related": ["5420", "EMM 11", "EMM 14"],
+    "check_next": ["diameter_transactions(path, filter='diameter.Experimental-Result-Code == 5004')", ...]}
+```
+
 Top talkers on the Diameter port only:
 
 ```
@@ -334,7 +346,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 645 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 680 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

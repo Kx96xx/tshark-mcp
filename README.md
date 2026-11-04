@@ -75,6 +75,7 @@ questions about the calls, sessions and subscribers in them.
 - "Which DNS resolver is failing, and for which names?"
 - "Is the upload slow because of the network, the server or the receiver?"
 - "Can I trust the loss numbers in this file at all?"
+- "What does Experimental-Result 5420 mean, and which spec section do I quote?"
 
 One real answer, trimmed. The capture is
 [`examples/sip_one_way_audio.pcap`](examples/sip_one_way_audio.pcap): a SIP call where the
@@ -124,7 +125,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Thirty-six tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Thirty-seven tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -140,6 +141,7 @@ examples: [docs/TOOLS.md](docs/TOOLS.md).
 | `expert_info` | tshark's expert warnings, errors and malformed packets, with frames |
 | `find_fields` | Search tshark's field names without reading a capture |
 | `check_filter` | Compile a display filter and name its fields without reading a capture |
+| `cause_lookup` | What a Diameter, GTP, PFCP, NAS, S1AP/NGAP, SIP, Q.850, MAP, SCCP, SGsAP or SMS cause means, with the 3GPP/ITU reference |
 | `diameter_transactions` | Requests paired with answers, result codes named, RTT, unanswered |
 | `diameter_sessions` | The same grouped by Session-Id, with per-session counts |
 | `diameter_avps` | The AVPs behind each transaction: flags with bit names, Subscription-Data digest, full tree |
@@ -205,7 +207,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 645 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 680 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
