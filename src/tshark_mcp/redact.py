@@ -82,6 +82,7 @@ TOKEN_RE = re.compile(
 
 _SCAN = re.compile(
     r"(?P<tok>" + TOKEN_RE.pattern.replace("(?P<hex>", "(?:") + r")"
+    r"|(?P<urn>(?i:urn:gsma:imei:))(?P<udigits>[0-9]{8}-[0-9]{6}-[0-9])(?![0-9])"
     r"|(?P<sip>(?i:(?<![A-Za-z])sips?:))(?P<suser>[^\s@;:>?,\"'<]+)(?=@)"
     r"|(?P<tel>(?i:(?<![A-Za-z])tel:))(?P<tuser>\+?[0-9][0-9().\-]*[0-9])"
     r"|(?P<chex>(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{2}:){5,}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:]))"
@@ -312,6 +313,9 @@ class Redactor:
             whole = m.group(0)
             if m.group("tok") is not None:
                 return whole
+            if m.group("urn") is not None:  # RFC 7254 instance id: the IMEI split as TAC-SNR-CD
+                canonical = m.group("udigits").replace("-", "")
+                return m.group("urn") + note(known(canonical) or self._learn("imei", canonical, local))
             scheme = m.group("sip") or m.group("tel")
             if scheme is not None:
                 user = m.group("suser") or m.group("tuser")

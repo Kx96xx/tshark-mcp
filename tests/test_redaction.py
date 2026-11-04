@@ -86,6 +86,20 @@ class TestWhereIdentifiersAreFound:
         assert out["route"] == "sip:ims.example;lr"
         assert replaced == {"msisdn": 1, "user": 1}
 
+    def test_imei_inside_a_sip_instance_urn(self):
+        # RFC 7254 writes the IMEI as TAC-SNR-CD inside +sip.instance, so no digit run is long enough on its own.
+        r = Redactor(KEY, keep_prefix=True)
+        out, replaced = r.apply({
+            "contact": '<sip:198.51.100.27:5060>;+sip.instance="<urn:gsma:imei:00123456-000001-0>";expires=600',
+            "instance": "URN:GSMA:IMEI:00123456-000001-0;svn=12",
+        }, "ids")
+        assert "00123456-000001" not in json.dumps(out)
+        token = re.search(r'urn:gsma:imei:(imei:00123456:[0-9a-f]{10})>', out["contact"]).group(1)
+        assert out["instance"] == f"URN:GSMA:IMEI:{token};svn=12"
+        assert replaced == {"imei": 1}
+        plain, _ = r.apply({"imei": "001234560000010"}, "ids")  # the same IMEI as digits: the same token
+        assert plain["imei"] == token
+
     def test_nai_and_tshark_field_names(self):
         out, _ = Redactor(KEY).apply({"layers": {
             "diameter.User-Name": f"{pcapgen.IMSI}@nai.epc.mnc001.mcc001.3gppnetwork.org",
