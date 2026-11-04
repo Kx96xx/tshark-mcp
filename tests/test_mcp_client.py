@@ -167,13 +167,21 @@ def test_every_tool_call_returns_structured_content(client_run):
     results = client_run["results"]
     assert len(results) == len(_calls(Path("/x")))
     for name, args, result in results:
-        assert _attr(result, "is_error", "isError") in (None, False), (name, result)
         structured = _attr(result, "structured_content", "structuredContent")
         assert isinstance(structured, dict), (name, result)
         assert result.content and result.content[0].type == "text", name
         if "error" in structured:
+            # Errors are flagged isError and keep the structured error, the fix hint and the same JSON as text.
+            assert _attr(result, "is_error", "isError") is True, (name, result)
             assert args in ({"path": "/definitely/not/allowed.pcap"}, {"path": args.get("path"), "apn": "bad;apn"}), (name, structured)
             assert structured["error"]["type"] in ("path_not_allowed", "invalid_argument")
+            assert structured["error"]["fix"], structured
+            assert json.loads(result.content[0].text) == structured
+        else:
+            assert _attr(result, "is_error", "isError") in (None, False), (name, result)
+    errors = [_attr(r, "structured_content", "structuredContent")["error"] for _, _, r in results[-2:]]
+    assert errors[0]["type"] == "path_not_allowed" and errors[0]["allowed_dirs"]
+    assert errors[1]["type"] == "invalid_argument"
 
     # Every call but the last two is a happy path, one per tool; the last two are the error paths.
     by_name = {(n, tuple(sorted(a))): _attr(r, "structured_content", "structuredContent") for n, a, r in results[:-2]}

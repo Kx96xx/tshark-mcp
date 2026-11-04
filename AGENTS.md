@@ -81,7 +81,10 @@ server publishes an `outputSchema` for each.
   cap stopped the scan: narrow the filter rather than page.
 - Every call may pass `redact="ids"` or `"ids+ips"`; it can raise the server's redaction
   level, never lower it. Tokens such as `imsi:3f2a9c1b0d` work as arguments in later calls.
-- Errors come back as `{"error": {"type": ..., "message": ...}}`, never as exceptions. Types
+- Errors come back as `{"error": {"type": ..., "message": ..., "fix": ...}}` with `isError: true`
+  on the MCP result, never as exceptions. `fix` says what to change next; `not_found` adds
+  `candidates` (capture files in that allowed directory), `invalid_filter` and `unknown_field`
+  add `suggestions` (close field names). Types
   include `invalid_argument`, `invalid_filter`, `invalid_path` (outside the allowlist),
   `not_found`, `not_a_file`, `not_a_directory`, `timeout`, `output_too_large`, `tshark_failed`,
   `unknown_field` and `unknown_token`.
@@ -119,6 +122,7 @@ src/tshark_mcp/
   server.py     the MCP tools (one function per tool, registered with @_tool) and the CLI
   runner.py     the only place that starts tshark: read-only argv checks, caps, timeouts
   limits.py     Limits, Allowlist and the argument linters
+  errors.py     the `fix` hint, candidates and suggestions added to every tool error
   fields.py     tshark field catalogue (tshark -G fields), parsing helpers
   redact.py     identifier redaction and tokens
   untrusted.py  caps and cleans text copied from packets

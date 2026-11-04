@@ -19,9 +19,15 @@ _EXTRA_OK = ConfigDict(extra="allow")
 
 
 class ErrorInfo(TypedDict, total=False):
+    """A tool error, returned with ``isError: true``. ``fix`` says what to change or which
+    tool to call next; ``candidates`` lists capture files in the allowed directory a missing
+    path pointed into and ``suggestions`` field names close to an unknown one."""
     __pydantic_config__ = _EXTRA_OK
     type: str
     message: str
+    fix: str
+    candidates: list[str]
+    suggestions: list[str]
 
 
 class TrimmedList(TypedDict, total=False):
