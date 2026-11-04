@@ -336,6 +336,34 @@ class TcpConnectionsResult(RowsResult, total=False):
     view: str
     connections: list[TcpConnectionRow]
     destinations: list[TcpDestinationRow]
+class IcmpErrorRow(TypedDict, total=False):
+    """ICMP errors from one sender of one kind about one quoted flow (source, destination,
+    protocol); ``quoted.ports`` lists the destination ports. ``quoted_flow_seen`` is the frame
+    of the quoted original packet, false when the capture does not hold it."""
+    __pydantic_config__ = _EXTRA_OK
+    sender: str
+    kind: str
+    error: str
+    family: str
+    type: int
+    code: int
+    count: int
+    mtu: int
+    mtus: list[int]
+    quoted: dict[str, Any]
+    quoted_ip_id: str
+    quoted_flow_seen: int | bool
+    first: str
+    last: str
+    first_frame: int
+    last_frame: int
+
+
+class IcmpErrorsResult(RowsResult, total=False):
+    errors: list[IcmpErrorRow]
+    by_sender: list[dict[str, Any]]
+    echo: list[dict[str, Any]]
+    issues: list[str]
     display_filter: str
     summary: dict[str, Any]
 

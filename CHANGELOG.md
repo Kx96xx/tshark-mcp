@@ -11,6 +11,9 @@ the project uses [semantic versioning](https://semver.org/).
   filtered, ICMP prohibited or unreachable, reset or unfinished handshake), SYN retries, connect
   time, bytes, duration and who closed it; `view="destinations"` gives the success rate per
   server and port and names a client a firewall drops while others connect.
+- `icmp_errors`: every ICMP and ICMPv6 error grouped per sender, kind and quoted flow, with the
+  MTU of fragmentation-needed errors, whether the quoted packet is in the capture, the sender's
+  hop distance, echo loss and RTT, and issues that tell a routing loop from a traceroute.
 
 ### Changed
 

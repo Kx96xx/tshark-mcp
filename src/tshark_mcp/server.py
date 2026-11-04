@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -78,7 +78,9 @@ Before reading missing packets or retransmissions as network faults,
 capture_quality says whether the capture itself can be trusted (copies,
 capture drops, truncation, clocks); tcp_health tells real TCP loss, resets
 and MTU black holes from capture artifacts; tcp_connections says whether each
-connection attempt connected, was refused, filtered or ICMP-prohibited, and who closed it.
+connection attempt connected, was refused, filtered or ICMP-prohibited, and who closed it;
+icmp_errors lists every ICMP error by sender, kind and quoted flow (fragmentation
+needed, rejects, routing loops, lost pings).
 response_times splits slow TCP requests into network, server and receiver time.
 Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
@@ -867,6 +869,121 @@ def tcp_connections(path: str, server: str | None = None, port: int | None = Non
         return _envelope(key, chosen, cap, scan, offset=offset, view=view, display_filter=flt, summary=summary)
     return _guarded("tcp_connections", {"path": path, "server": server, "port": port, "client": client, "outcome": outcome,
                                         "view": view, "filter": filter, "limit": limit, "offset": offset}, run)
+ICMP_ORIGINALS_MAX = 32  # quoted packets looked up in the capture per call
+
+
+@_tool(title="ICMP errors", annotations=READ_ONLY)
+def icmp_errors(path: str, sender: str | None = None, about: str | None = None, kind: str | None = None,
+                filter: str | None = None, limit: int = 200, offset: int = 0) -> models.IcmpErrorsResult:
+    """Every ICMP and ICMPv6 error in the capture: who sends unreachables, about which
+    flows, is a firewall rejecting, is fragmentation needed somewhere, is TTL exceeded a
+    traceroute or a routing loop? Rows group the errors per sender, `kind` and quoted
+    flow (source, destination, protocol; the destination ports are listed): kind is
+    net_unreachable, host_unreachable, protocol_unreachable, port_unreachable,
+    frag_needed (with `mtu`), packet_too_big (ICMPv6, with `mtu`), admin_prohibited,
+    ttl_exceeded, reassembly_timeout, source_quench, redirect, parameter_problem,
+    no_route, address_unreachable or source_route_failed; with count, first/last frame,
+    the quoted IP ID and `quoted_flow_seen` (the frame of the original packet when the
+    capture holds it, IPv4 only). Copies of one error (mirror, second interface) count
+    once (`summary.copies_dropped`). `by_sender` gives each sender's errors, kinds, TTL,
+    hop distance from the capture point and `role` (endpoint: it is the destination the
+    packets were sent to; on_path: a router). `echo` pairs echo requests with replies per
+    source and destination: lost requests and RTT min/p50/max. `issues` in plain words:
+    fragmentation needed with the MTU, routing loops (TTL exceeded from two routers
+    alternating for one flow) told apart from traceroutes, administrative rejects, no
+    route, closed ports, redirects, lost echoes. `sender` is an IP address; `about` an
+    address or address:port of the quoted flow (either end); `kind` keeps one kind;
+    `filter` is a display filter ANDed with the ICMP error and echo types."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if kind is not None and kind not in icmperr.KINDS:
+            raise ToolError("invalid_argument", f"kind must be one of {', '.join(icmperr.KINDS)}, got {kind!r}")
+        snd = _lint_ip(sender, "sender") if sender not in (None, "") else None
+        about_ip = about_port = None
+        if about not in (None, ""):
+            text = str(about).strip()
+            host, sep, port_text = text.rpartition(":")
+            if sep and host and (host.startswith("[") or ":" not in host) and port_text.isdigit():
+                about_ip, about_port = _lint_ip(host.strip("[]"), "about"), port_text
+                if not 0 < int(about_port) < 65536:
+                    raise ToolError("invalid_argument", f"about port must be 1 to 65535, got {about!r}")
+            else:
+                about_ip = _lint_ip(text, "about")
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        clauses = [f"({icmperr.display_filter()})"]
+        clauses += [_ip_clause(a) for a in (snd, about_ip) if a]
+        flt = _filter(filter, base=" && ".join(clauses))
+        stdout, scan = _fields_run(capture, flt, icmperr.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=packets.AGGREGATOR)
+        result = icmperr.analyse(icmperr.parse(stdout))
+        rows = result["rows"]
+
+        def keep(r: dict[str, Any]) -> bool:
+            q = r.get("quoted") or {}
+            if snd is not None and r["sender"] != snd:
+                return False
+            if about_ip is not None and about_ip not in (q.get("src"), q.get("dst")):
+                return False
+            if about_port is not None and about_port not in (q.get("ports") or []):
+                return False
+            return kind is None or r["kind"] == kind
+        rows = [r for r in rows if keep(r)]
+        _icmp_originals(capture, rows)
+        by_sender = [s for s in result["by_sender"] if snd is None or s["sender"] == snd]
+        return _envelope("errors", rows, cap, scan, offset=offset, display_filter=flt, by_sender=by_sender[:50],
+                         echo=result["echo"][:50], issues=result["issues"], summary=result["summary"])
+    return _guarded("icmp_errors", {"path": path, "sender": sender, "about": about, "kind": kind, "filter": filter,
+                                    "limit": limit, "offset": offset}, run)
+
+
+def _icmp_originals(capture: Path, rows: list[dict[str, Any]]) -> None:
+    """Set ``quoted_flow_seen`` to the frame of the packet an error quotes, when the capture
+    holds it: one bounded pass over IPv4 packets with the quoted source, destination and
+    IP ID, ICMP errors themselves excluded."""
+    import ipaddress
+    wanted: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for r in rows:
+        q = r.get("quoted") or {}
+        try:
+            ip_id = int(str(r.get("quoted_ip_id")), 0) if r.get("quoted_ip_id") else None
+        except ValueError:
+            ip_id = None
+        if not ip_id or not q.get("src") or ":" in str(q.get("src")):
+            continue
+        try:
+            src, dst = str(ipaddress.IPv4Address(q["src"])), str(ipaddress.IPv4Address(q.get("dst")))
+        except ValueError:
+            continue
+        key = (src, dst, ip_id)
+        if key in wanted or len(wanted) < ICMP_ORIGINALS_MAX:
+            wanted.setdefault(key, []).append(r)
+    if not wanted:
+        return
+    for rs in wanted.values():
+        for r in rs:
+            r["quoted_flow_seen"] = False
+    clause = " || ".join(f"(ip.src == {s} && ip.dst == {d} && ip.id == {i})" for s, d, i in wanted)
+    flt = f"!({icmperr.ERROR_FILTER}) && ({clause})"
+    try:
+        stdout, _scan = _fields_run(capture, flt, ["frame.number", "ip.src", "ip.dst", "ip.id"],
+                                    state().limits.max_scan_packets, aggregator=packets.AGGREGATOR)
+    except ToolError:
+        return
+    for line in stdout.splitlines():
+        cols = split_fields_line(line)
+        if len(cols) < 4:
+            continue
+        frame = to_int(cols[0])
+        for s, d, i in zip(cols[1].split(packets.AGGREGATOR), cols[2].split(packets.AGGREGATOR),
+                           cols[3].split(packets.AGGREGATOR)):
+            try:
+                key = (s, d, int(i, 0))
+            except ValueError:
+                continue
+            for r in wanted.get(key, []):
+                if r.get("quoted_flow_seen") is False:
+                    r["quoted_flow_seen"] = frame
 
 
 @_tool(title="Conversations (top talkers)", annotations=READ_ONLY)

@@ -25,6 +25,7 @@ CAPTURE_FREE_TOOLS = {"find_fields", "check_filter"}  # they read tshark's gloss
 EXPECTED_TOOLS = {
     "pfcp_sessions",
     "tcp_connections",
+    "icmp_errors",
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
@@ -65,6 +66,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("rtp_streams", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
         ("tcp_health", {"path": f"{d}/sip.pcap"}),
         ("tcp_connections", {"path": f"{d}/sip.pcap", "view": "destinations"}),
+        ("icmp_errors", {"path": f"{d}/all.pcap", "kind": "frag_needed"}),
         ("sip_call_detail", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
         ("packet_detail", {"path": f"{d}/diameter.pcap", "frame": 1, "layers": ["diameter"]}),
         ("expert_info", {"path": f"{d}/all.pcap", "severity": "note"}),
@@ -222,6 +224,8 @@ def test_every_tool_call_returns_structured_content(client_run):
 
     conns = by_name[("tcp_connections", ("path", "view"))]
     assert conns["view"] == "destinations" and "by_outcome" in conns["summary"]
+    icmp = by_name[("icmp_errors", ("kind", "path"))]
+    assert "by_kind" in icmp["summary"] and isinstance(icmp["errors"], list)
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")
