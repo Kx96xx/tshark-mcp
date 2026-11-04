@@ -72,7 +72,7 @@ class TestFakeSubprocess:
             check_result(runner._execute(fake, ["-r", str(tmp_path / "x.pcap")]))
         assert exc.value.type == "tshark_failed"
         assert "tshark crashed (SIGTERM)" in str(exc.value) and "newer tshark" in str(exc.value)
-        assert exc.value.details.get("returncode") == -15 if hasattr(exc.value, "details") else True
+        assert exc.value.details["returncode"] == -15
 
     def test_timeout_kills_child(self, tmp_path: Path):
         fake = _fake_tshark(tmp_path, """
