@@ -8,7 +8,7 @@ the tools.
 
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
-compact JSON. It cannot capture, write, export, resolve names or load code. Thirty-five
+compact JSON. It cannot capture, write, export, resolve names or load code. Thirty-six
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -45,6 +45,7 @@ a `TSHARK_MCP_*` environment variable.
 | --- | --- |
 | Which capture mentions this IMSI / MSISDN / IP / Call-ID / Session-Id? | `find_identifier(path=<directory>, identifier=...)` |
 | What is in this file? | `pcap_info`, then `conversations` or `expert_info` |
+| Did the capture box drop packets? Which snaplen, filter, interfaces, writer? | `capture_metadata` (pcapng interface statistics, read without tshark) |
 | Can I trust loss and retransmission numbers from this file? | `capture_quality` (read its `verdict` before blaming the network) |
 | Everything that happened to one subscriber | `trace_subscriber(path, imsi=... or msisdn=...)` |
 | Why did the attach or Diameter procedure fail? | `diameter_sessions(path, imsi=...)`, then `diameter_avps(path, imsi=..., detail="key")` for the AVPs behind a result code |
