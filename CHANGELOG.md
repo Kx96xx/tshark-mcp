@@ -6,51 +6,51 @@ the project uses [semantic versioning](https://semver.org/).
 ## 0.1.0 - 2026-11-04
 
 First release. Everything below was built between 1 and 4 November 2026 in pull requests #1
-to #84; the numbers in brackets are the pull requests. The first 33 tools came first, then six
-more and the hardening landed the same day (listed under Added, Changed and Security).
+to #87; the numbers in brackets are the pull requests. The first 33 tools came first, then eight
+more (41 in all) and the hardening landed the same day (listed under Added, Changed and Security).
 
 ### Added
 
 - `tcp_connections`: every TCP connection attempt with its outcome (connected, refused,
   filtered, ICMP prohibited or unreachable, reset or unfinished handshake), SYN retries, connect
   time, bytes, duration and who closed it; `view="destinations"` gives the success rate per
-  server and port and names a client a firewall drops while others connect.
+  server and port and names a client a firewall drops while others connect (#68).
 - `icmp_errors`: every ICMP and ICMPv6 error grouped per sender, kind and quoted flow, with the
   MTU of fragmentation-needed errors, whether the quoted packet is in the capture, the sender's
-  hop distance, echo loss and RTT, and issues that tell a routing loop from a traceroute.
+  hop distance, echo loss and RTT, and issues that tell a routing loop from a traceroute (#71).
 - `capture_metadata`: the pcapng writer, interfaces, snaplen, capture filter, packet comments and
   the Interface Statistics Block drop counters that tshark has no field for, read by a pure-Python
   block walker that never decodes a packet; `pcap_info` reports `metadata_available` and
-  `interface_drops`.
+  `interface_drops` (#76).
 - `cause_lookup`: what a telecom cause or result code means, with the spec reference, typical
   causes, related codes and the tool calls that find it in a capture. Names come from tshark's
   own value strings (`tshark -G values`), so they match the other tools; a test fails when a
   tshark release names a code that has neither curated text nor an `unexplained` listing.
   Diameter codes are read as Result-Code or, with `application`, as that application's
-  Experimental-Result-Code. No capture is read.
+  Experimental-Result-Code. No capture is read (#78).
 - `http_transactions`: HTTP/1.x requests paired with responses and HTTP/2 / gRPC streams with
   status, sizes, response time and TTFB, per-endpoint status mix and percentiles, gRPC status
-  names, reset streams, unanswered requests and the ports carrying HTTP that tshark left raw.
+  names, reset streams, unanswered requests and the ports carrying HTTP that tshark left raw (#80).
 - `call_kpis`: ASR, SER (RFC 6076, with and without 487), NER, post-dial delay, ringing time and
   ACD per peer, trunk, number prefix, user agent or interval, with failure codes, Q.850 causes and
   the worst calls by Call-ID and frame. Calls still open when the capture stopped are counted as
-  `near_capture_end` and left out of the ratios; `method` states every definition.
+  `near_capture_end` and left out of the ratios; `method` states every definition (#82).
 - `gtp_ies`: the GTPv2-C information elements behind each transaction (APN, PDN type, PAA,
   serving network, RAT, ULI, indication flags, AMBR, F-TEIDs, PCO option names, bearer QoS, cause
   with offending IE and source, RAN/NAS cause) and `likely_causes` for a reject, built from the
-  request. PAP and CHAP payloads in the PCO are never returned. `detail="full"` gives the IE tree.
+  request. PAP and CHAP payloads in the PCO are never returned. `detail="full"` gives the IE tree (#84).
 - `roaming_attach_check`: why a roamer cannot attach or get a bearer. The subscriber's S6a, MAP,
   GTPv2-C, Gx and PFCP steps grouped into attempts, the ULA subscription held against the Create
   Session request (APN subscribed, PDN type, home routing or local breakout, RAT against
   Access-Restriction-Data, ODB, AMBR), the first failure with its reference and a one-sentence
-  verdict. Authentication vectors are counted, never returned.
+  verdict. Authentication vectors are counted, never returned (#86).
 
 ### Changed
 
 - Cancelling a request kills tshark within a quarter of a second instead of letting it run to
   its timeout; the audit log records `cancelled`. With a `progressToken`, `find_identifier`
   reports files done out of files planned and other tools one notification per finished tshark
-  run, at most one per second.
+  run, at most one per second (#83).
 - `tools/list` is compact by default: 102 KB instead of 263 KB for 41 tools. Output schemas
   keep their top-level keys with JSON types and name the keys of each row list; the keys
   every result may carry are left out; input schemas lose the generated titles and write
@@ -58,12 +58,12 @@ more and the hardening landed the same day (listed under Added, Changed and Secu
   detail to a resource, and the server instructions are rewritten to about 3,100 characters (they
   had grown past the 4,096 some clients keep). Each tool's full description and schemas are
   the resource `schema://tools/<name>`; `--schema-profile full` (`TSHARK_MCP_SCHEMA_PROFILE`)
-  publishes the old list. `tests/test_tool_list.py` keeps the compact list within budget.
+  publishes the old list. `tests/test_tool_list.py` keeps the compact list within budget (#87).
 - Tool errors are returned with `isError: true`, so clients show and count them as failures;
   the structured `{"error": {...}}` stays in `structuredContent` and the text content. Every
   error carries a `fix` hint; `not_found` and `not_a_file` list nearby capture files in
   `candidates`, `invalid_filter` and `unknown_field` list close field names in `suggestions`,
-  `timeout` and `output_too_large` name the arguments that narrow the call.
+  `timeout` and `output_too_large` name the arguments that narrow the call (#69).
 
 ### Security
 
@@ -72,7 +72,7 @@ more and the hardening landed the same day (listed under Added, Changed and Secu
   (`--allow-user-profile` to opt back in); nice +10 and, on Linux, a 2 GB address-space limit
   (`--max-tshark-memory-mb`, out-of-memory runs report `out_of_memory: true`); at most two
   tshark runs at once (`--max-concurrent-runs`, `--busy-wait`, then a `busy` error); a capture
-  replaced during the run fails with `capture_changed`; `-d` decode-as rules are validated.
+  replaced during the run fails with `capture_changed`; `-d` decode-as rules are validated (#73).
 
 ### The server
 
