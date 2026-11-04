@@ -278,6 +278,68 @@ class TcpHealthResult(RowsResult, total=False):
     summary: dict[str, int]
 
 
+class TcpConnectionRow(TypedDict, total=False):
+    """One TCP connection attempt. ``outcome``: connected, refused (reset to the SYN),
+    filtered (no answer), prohibited (ICMP administratively prohibited), unreachable (other
+    ICMP unreachable or time exceeded), reset_during_handshake, handshake_incomplete or
+    seen_midway. ``closed_by``: client_fin, server_fin, client_rst, server_rst or
+    open_at_capture_end."""
+    __pydantic_config__ = _EXTRA_OK
+    stream: int
+    client: str
+    server: str
+    outcome: str
+    near_capture_end: bool
+    syns: int
+    syn_retries: int
+    syn_retry_gaps_s: list[float]
+    connect_ms: float
+    bytes_client_to_server: int
+    bytes_server_to_client: int
+    packets: int
+    duration_s: float
+    closed_by: str
+    completeness: list[str]
+    icmp: list[dict[str, Any]]
+    reset_frame: int
+    first: str
+    first_frame: int
+    last_frame: int
+    copies_dropped: int
+
+
+class TcpDestinationRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    server: str
+    connections: int
+    attempts: int
+    connected: int
+    refused: int
+    filtered: int
+    prohibited: int
+    unreachable: int
+    reset_during_handshake: int
+    handshake_incomplete: int
+    seen_midway: int
+    success_rate: float
+    syn_retries: int
+    connect_ms_p50: float
+    connect_ms_max: float
+    duration_s_p50: float
+    clients: int
+    max_concurrent: int
+    first_frame: int
+    issues: list[str]
+
+
+class TcpConnectionsResult(RowsResult, total=False):
+    view: str
+    connections: list[TcpConnectionRow]
+    destinations: list[TcpDestinationRow]
+    display_filter: str
+    summary: dict[str, Any]
+
+
 class ConversationRow(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     a: str

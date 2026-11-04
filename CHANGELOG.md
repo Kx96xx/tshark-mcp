@@ -5,6 +5,13 @@ the project uses [semantic versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- `tcp_connections`: every TCP connection attempt with its outcome (connected, refused,
+  filtered, ICMP prohibited or unreachable, reset or unfinished handshake), SYN retries, connect
+  time, bytes, duration and who closed it; `view="destinations"` gives the success rate per
+  server and port and names a client a firewall drops while others connect.
+
 ### Changed
 
 - Tool errors are returned with `isError: true`, so clients show and count them as failures;
