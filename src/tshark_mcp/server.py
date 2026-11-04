@@ -36,12 +36,14 @@ from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_i
 from . import redact as redaction
 from . import pfcp
 from . import output as shaping
+from . import incident
 from . import progress
 from . import prompts as guided
 from . import window
 from . import schemas
 from .errors import add_fix
 from .runner import Runner, begin_warnings, check_result, collect_warnings
+from .runner import reset_deadline as runner_deadline_reset, set_deadline as runner_deadline
 
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
@@ -59,6 +61,8 @@ INSTRUCTIONS = """\
 Read-only analysis of existing packet captures with tshark. Captures must live
 inside the allowed directories (see the error message if a path is refused).
 Every call is bounded: file size, packets dissected, output bytes and run time.
+A capture nobody has looked at yet: incident_summary gives ranked findings, each
+with its evidence and the next call to make.
 Which file holds a subscriber: find_identifier on the directory. Start on a file
 with pcap_info (capture_metadata: pcapng writer, interfaces, drop counters).
 Incident at a known time: capture_index on the directory gives the files in time
@@ -258,8 +262,10 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 problem = exc
                 return _guarded(fn.__name__, shape, lambda: _raise(problem))
             start, end = (kw.pop("start", None), kw.pop("end", None)) if windowed else (None, None)
+            # A tool called by another tool (incident_summary) without its own window runs in the caller's.
+            inherited = start is None and end is None and window.active() is not None
             try:
-                spec = window.parse(start, end)
+                spec = None if inherited else window.parse(start, end)
             except ToolError as exc:
                 bad = exc
                 return _guarded(fn.__name__, {"start": start, "end": end}, lambda: _reraise(bad))
@@ -278,11 +284,12 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 return _guarded(fn.__name__, {"redact": redact}, lambda: _raise(problem))
             token = _CALL_MODE.set(redaction.stronger(mode, "ids" if found else "off"))
             out_token = _CALL_OUTPUT.set(options)
-            window_tokens = window.bind(spec)
+            window_tokens = None if inherited else window.bind(spec)
             try:
                 return fn(*args, **kw)
             finally:
-                window.unbind(window_tokens)
+                if window_tokens is not None:
+                    window.unbind(window_tokens)
                 _CALL_OUTPUT.reset(out_token)
                 _CALL_MODE.reset(token)
         wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), *extra])  # type: ignore[attr-defined]
@@ -414,7 +421,20 @@ def _prescan_warning(capture: Path, outcome: Prescan, mode: str) -> str:
 CAPTURE_FREE_TOOLS = frozenset({"find_fields", "check_filter", "cause_lookup"})  # their text comes from tshark, not packets
 
 
+_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("tshark_mcp_call_depth", default=0)
+
+
 def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    depth = _DEPTH.get()
+    depth_token = _DEPTH.set(depth + 1)
+    try:
+        return _guarded_call(tool, args, fn, nested=depth > 0)
+    finally:
+        _DEPTH.reset(depth_token)
+
+
+def _guarded_call(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]], nested: bool) -> dict[str, Any]:
+    """:func:`_guarded`; a tool called by another tool (``nested``) is not audited on its own."""
     started = time.monotonic()
     status = "ok"
     token = begin_warnings()
@@ -426,7 +446,8 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
         collect_warnings(token)
         mode = _redact_mode()
         logged = state().redactor.apply([args], mode)[0][0] if mode != "off" and _STATE else args
-        _audit(tool, logged, int((time.monotonic() - started) * 1000), "cancelled", 0)
+        if not nested:
+            _audit(tool, logged, int((time.monotonic() - started) * 1000), "cancelled", 0)
         raise
     except ToolError as exc:
         status = exc.type
@@ -482,7 +503,8 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     payload_bytes = len(json.dumps(result, separators=(",", ":")).encode())
     if "error" not in result:
         result[shaping.TOKENS_KEY] = shaping.tokens_estimate(payload_bytes)
-    _audit(tool, args, duration_ms, status, payload_bytes)
+    if not nested:
+        _audit(tool, args, duration_ms, status, payload_bytes)
     return result
 
 
@@ -3196,6 +3218,198 @@ def _index_window(spec: window.Spec, first: float | None, last: float | None) ->
 def _capinfos_interfaces(stdout: str) -> int | None:
     m = re.search(r"^Number of interfaces in file:\s*(\d+)", stdout, re.M)
     return int(m.group(1)) if m else None
+
+
+@_tool(title="Incident summary (what is wrong in this capture)", annotations=READ_ONLY)
+def incident_summary(path: str, focus: str = "auto", budget_s: float | None = None) -> models.IncidentSummaryResult:
+    """First call on a capture nobody has looked at yet: "what is wrong here?". Runs
+    pcap_info, capture_quality, conversations and the protocol tools the capture carries
+    under one time budget and returns `findings` ranked by severity (high, medium, low):
+    one plain sentence each, `evidence` (tool, arguments, frames), `confidence` and the
+    `next_call` that shows the detail. Also `capture` (span, packets, protocols, trust
+    verdict, what the capture cannot show), `top_talkers` (5), `timeline` and `not_checked`
+    (passes skipped and why). `focus`: auto (default), web, dns, tls, voip or mobile;
+    `budget_s` caps the whole call (default and maximum: the server's run timeout).
+    Details: Passes after the first three: tcp_connections, tcp_health, dns_transactions,
+    tls_handshakes, http_transactions, icmp_errors (web, dns, tls), call_kpis and
+    rtp_streams (voip), diameter_transactions and gtp_sessions (mobile); each runs only
+    when the protocol hierarchy shows its protocol. Thresholds are fixed so the wording
+    is deterministic: TCP retransmissions above 1% of at least 20 data segments, 5xx
+    above 5% of answered HTTP requests, more than 10% of DNS queries unanswered (not
+    counting those near the capture end), DNS p90 above 500 ms, any failed TLS handshake
+    or certificate problem, a destination where connection attempts failed, ICMP routing
+    loops, path-MTU and prohibited errors, failed calls (high below 80% NER), one-way RTP,
+    failed or unanswered Diameter and GTPv2-C transactions. Loss findings take their
+    `confidence` from capture_quality's verdict. With `start`/`end` every pass reads only
+    that window."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if focus not in incident.FOCUSES:
+            raise ToolError("invalid_argument", f"focus must be one of {', '.join(incident.FOCUSES)}, not {echo(focus)}")
+        try:
+            budget = float(budget_s) if budget_s is not None else st.limits.timeout_seconds
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", f"budget_s must be a number of seconds, got {echo(budget_s)}") from None
+        if budget <= 0:
+            raise ToolError("invalid_argument", "budget_s must be positive")
+        budget = min(budget, st.limits.timeout_seconds)
+        deadline = _now() + budget
+        p = str(capture)
+        base = {"path": p}
+        results: dict[str, dict[str, Any]] = {}
+        not_checked: list[dict[str, Any]] = []
+        passes: list[dict[str, Any]] = []
+
+        def call(name: str, fn: Callable[..., dict[str, Any]], **kw: Any) -> dict[str, Any] | None:
+            if _now() >= deadline:
+                not_checked.append({"pass": name, "reason": f"time budget of {round(budget, 3)}s used up"})
+                return None
+            began = time.monotonic()
+            token = runner_deadline(time.monotonic() + max(0.0, deadline - _now()))
+            try:
+                out = fn(p, **kw)
+            finally:
+                runner_deadline_reset(token)
+            ms = int((time.monotonic() - began) * 1000)
+            if isinstance(out.get("error"), dict):
+                err = out["error"]
+                reason = (f"time budget of {round(budget, 3)}s used up" if err.get("type") == "timeout"
+                          else f"{err.get('type')}: {err.get('message')}")
+                not_checked.append({"pass": name, "reason": reason})
+                passes.append({"pass": name, "ms": ms, "status": err.get("type")})
+                return None
+            passes.append({"pass": name, "ms": ms, "status": "ok"})
+            results[name] = out
+            return out
+
+        info = call("pcap_info", pcap_info) or {}
+        quality = call("capture_quality", capture_quality) or {}
+        talkers = call("conversations", conversations, layer="ip", limit=5) or {}
+        present = incident.protocols(info.get("protocol_hierarchy") or [])
+        confidence = incident.trust_confidence(quality)
+        findings: list[dict[str, Any]] = []
+        if quality:
+            findings += incident.from_quality(quality, base)
+        rules: dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any], Callable[[dict[str, Any], dict[str, Any]], list]]] = {
+            "tcp_connections": (tcp_connections, {"view": "destinations", "limit": 50}, incident.from_tcp_connections),
+            "tcp_health": (tcp_health, {"limit": 50}, lambda r, a: incident.from_tcp_health(r, a, confidence)),
+            "dns_transactions": (dns_transactions, {"limit": 200}, incident.from_dns),
+            "tls_handshakes": (tls_handshakes, {"limit": 50}, incident.from_tls),
+            "http_transactions": (http_transactions, {"view": "endpoints", "limit": 50}, incident.from_http),
+            "icmp_errors": (icmp_errors, {"limit": 20}, incident.from_icmp),
+            "call_kpis": (call_kpis, {"limit": 20}, incident.from_call_kpis),
+            "rtp_streams": (rtp_streams, {"limit": 50}, incident.from_rtp),
+            "diameter_transactions": (diameter_transactions, {"limit": 200},
+                                      lambda r, a: incident.from_signalling(r, a, "diameter_transactions", "Diameter")),
+            "gtp_sessions": (gtp_sessions, {"limit": 200},
+                             lambda r, a: incident.from_signalling(r, a, "gtp_sessions", "GTPv2-C")),
+        }
+        wanted = incident.passes_for(focus)
+        for name in incident.PASSES:
+            proto = incident.PASSES[name][0]
+            if name not in wanted:
+                continue
+            if info and proto not in present:
+                not_checked.append({"pass": name, "reason": f"no {proto} in the capture"})
+                continue
+            fn, kw, rule = rules[name]
+            out = call(name, fn, **kw)
+            if out is not None:
+                findings += rule(out, {**base, **{k: v for k, v in kw.items() if k != "limit"}})
+        findings = incident.rank(findings)
+        if window.active() is not None:
+            for f in findings:
+                f["next_call"]["args"].update(_window_args())
+                f["evidence"]["args"].update(_window_args())
+        frames = sorted({fr for f in findings for fr in f["evidence"].get("frames", [])})
+        times = _frame_times(capture, frames[:200]) if frames and _now() < deadline else {}
+        timeline = _incident_timeline(info, findings, times)
+        cannot = _cannot_show(quality, present)
+        if window.active() is not None:
+            cannot.append("only the start/end window was read")
+        verdict = quality.get("verdict") or {}
+        cap = compact({
+            "path": p, "first": info.get("first_packet"), "last": info.get("last_packet"),
+            "duration_s": info.get("duration_s"), "packets": info.get("packets"),
+            "frames_in_window": info.get("frames_in_window"),
+            "protocols": [r["protocol"].rsplit("/", 1)[-1] for r in (info.get("protocol_hierarchy") or [])][:12],
+            "trust": compact({"loss_conclusions": verdict.get("loss_conclusions"), "summary": verdict.get("summary"),
+                              "reasons": (verdict.get("reasons") or [])[:3]}) or None,
+            "cannot_show": cannot,
+        })
+        top = [compact({k: r.get(k) for k in ("a", "b", "frames_total", "bytes_total", "start_rel_s",
+                                              "duration_s")}) for r in (talkers.get("conversations") or [])[:5]]
+        by_sev = Counter(f["severity"] for f in findings)
+        summary = (f"{len(findings)} finding(s): " + ", ".join(f"{by_sev[s]} {s}" for s in incident.SEVERITIES if by_sev[s])
+                   if findings else "no finding passed the thresholds in the passes that ran")
+        return {"path": p, "focus": focus, "summary": summary, "findings": findings, "capture": cap, "top_talkers": top,
+                "timeline": timeline, "not_checked": not_checked, "passes": passes, "budget_s": round(budget, 3),
+                "thresholds": dict(incident.THRESHOLDS)}
+    return _guarded("incident_summary", {"path": path, "focus": focus, "budget_s": budget_s}, run)
+
+
+def _window_args() -> dict[str, Any]:
+    spec = window.active()
+    out: dict[str, Any] = {}
+    if spec is not None and spec.start is not None:
+        out["start"] = spec.start.text
+    if spec is not None and spec.end is not None:
+        out["end"] = spec.end.text
+    return out
+
+
+def _frame_times(capture: Path, frames: list[int]) -> dict[int, float]:
+    try:
+        stdout, _scan = _fields_run(capture, "frame.number in {" + ", ".join(str(f) for f in frames) + "}",
+                                    ["frame.number", "frame.time_epoch"], len(frames))
+    except ToolError:
+        return {}
+    out: dict[int, float] = {}
+    for line in stdout.splitlines():
+        cols = line.split("\t")
+        n, t = to_int(cols[0]), parse_time(cols[1]) if len(cols) > 1 else None
+        if n is not None and t is not None:
+            out[n] = t
+    return out
+
+
+def _incident_timeline(info: dict[str, Any], findings: list[dict[str, Any]], times: dict[int, float]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if info.get("first_packet"):
+        events.append({"time": info["first_packet"], "event": "first packet of the capture"})
+    marks = []
+    for f in findings:
+        known = [(times[fr], fr) for fr in f["evidence"].get("frames", []) if fr in times]
+        if known:
+            t, fr = min(known)
+            marks.append((t, fr, f))
+    marks.sort(key=lambda m: m[0])
+    if marks:
+        t, fr, f = marks[0]
+        events.append({"time": iso(t), "frame": fr, "event": f"first problem: {f['kind']} ({f['severity']})"})
+        worst = next((m for m in marks if m[2]["severity"] == "high"), None)
+        if worst is not None and worst is not marks[0]:
+            events.append({"time": iso(worst[0]), "frame": worst[1], "event": f"first high finding: {worst[2]['kind']}"})
+        if len(marks) > 1:
+            t, fr, f = max(marks, key=lambda m: m[0])
+            events.append({"time": iso(t), "frame": fr, "event": f"last problem seen: {f['kind']} ({f['severity']})"})
+    if info.get("last_packet"):
+        events.append({"time": info["last_packet"], "event": "last packet of the capture"})
+    return events
+
+
+def _cannot_show(quality: dict[str, Any], present: set[str]) -> list[str]:
+    out = []
+    one = quality.get("one_sided") or {}
+    if one.get("tcp_one_direction") and one.get("tcp_streams") and one["tcp_one_direction"] * 2 >= one["tcp_streams"]:
+        out.append(f"{one['tcp_one_direction']} of {one['tcp_streams']} TCP streams have one direction only: "
+                   "a one-sided capture, loss cannot be checked against ACKs")
+    if "tls" in present and "http" not in present:
+        out.append("application data inside TLS is encrypted: HTTP status codes and errors are not visible")
+    if ("quic" in present):
+        out.append("QUIC is encrypted after the handshake: no application view")
+    return out
 
 
 @_tool(title="SCTP associations", annotations=READ_ONLY)

@@ -28,6 +28,13 @@ the project uses [semantic versioning](https://semver.org/).
 - `capture_index`: a directory of ring-buffer files in time order from capinfos, with per-file
   span, packets, bytes and interfaces, holes and overlaps between files, name-versus-time
   ordering, and which files cover a `start`/`end` window and whether they cover it whole.
+- `incident_summary`: the first call on an unknown capture. Runs the overview and the protocol
+  tools the capture carries under one time budget and returns findings ranked by severity, each
+  one deterministic sentence from a fixed threshold table with its evidence (tool, arguments,
+  frames), confidence (from capture_quality's verdict for loss) and the next call; plus the
+  capture's trust and blind spots, top talkers, a timeline and the passes it skipped and why.
+  Tools called by another tool run in the caller's time window; the runner takes a per-call
+  deadline so every run of a multi-tool call shares one budget.
 
 ### Fixed
 
