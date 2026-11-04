@@ -425,7 +425,7 @@ def _loops(evts: list[dict[str, Any]], storm_min: int) -> list[dict[str, Any]]:
     rows = []
     for (who, proto, msg), ts in times.items():
         fr = frames[(who, proto, msg)]
-        if len(ts) < storm_min:
+        if len(ts) < max(storm_min, 2):  # a loop is at least two repeats, whatever storm_min says
             continue
         sides = {}
         for side, idx in (("from", 0), ("to", 1)):
