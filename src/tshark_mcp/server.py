@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpv1, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -83,7 +83,8 @@ and MTU black holes from capture artifacts; tcp_connections says whether each
 connection attempt connected, was refused, filtered or ICMP-prohibited, and who closed it;
 icmp_errors lists every ICMP error by sender, kind and quoted flow (fragmentation
 needed, rejects, routing loops, lost pings).
-response_times splits slow TCP requests into network, server and receiver time.
+response_times splits slow TCP requests into network, server and receiver time;
+http_transactions lists HTTP requests, status codes and gRPC results per endpoint.
 Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
 when next_offset is present, call again with offset=next_offset and the same
@@ -1025,6 +1026,95 @@ def _icmp_originals(capture: Path, rows: list[dict[str, Any]]) -> None:
             for r in wanted.get(key, []):
                 if r.get("quoted_flow_seen") is False:
                     r["quoted_flow_seen"] = frame
+_STATUS_FILTER = re.compile(r"^[1-5](?:[0-9]{2}|xx)$")
+_HTTP_METHOD = re.compile(r"^[A-Z]{3,10}$")
+
+
+@_tool(title="HTTP transactions", annotations=READ_ONLY)
+def http_transactions(path: str, host: str | None = None, path_prefix: str | None = None, status: str | int | None = None,
+                      method: str | None = None, min_ms: float | None = None, view: str = "requests",
+                      filter: str | None = None, limit: int = 200, offset: int = 0) -> models.HttpTransactionsResult:
+    """Which HTTP endpoints are slow or failing, what status codes came back, how
+    big were the responses, what did gRPC return? HTTP/1.x requests paired with their
+    responses by tshark (pipelining included) and HTTP/2 / gRPC followed per stream.
+    `view="requests"` (default): per request the frame and response_frame, client,
+    server, version, method, host (or :authority), `uri` (the path, with the query cut off and
+    kept apart in `query`, capped), status and reason, Content-Type, request and response bytes
+    (Content-Length for HTTP/1.x, DATA bytes for HTTP/2), `response_ms` (request to the
+    frame that completed the response; for HTTP/2 to the server's END_STREAM),
+    `ttfb_ms` (HTTP/2: request HEADERS to response HEADERS), gRPC status with its
+    name, `stream_reset_by` with the RST_STREAM error, and `unanswered`
+    (`near_capture_end` when the capture stopped less than 5 s later).
+    `view="endpoints"`: per host, method and uri path with ids and UUIDs collapsed to
+    `{id}`: count, status classes, unanswered, response_ms p50/p90/p99/max, response
+    bytes p50/max, gRPC status names, servers and the slowest frame. `summary`: status
+    mix, versions, requests per server, HTTP/2 connections, gRPC calls and `issues`
+    (endpoints answering 5xx, slow p99, unanswered requests, gRPC errors, reset
+    streams). tshark dissects HTTP only on its HTTP ports and by heuristics (HTTP/2 in
+    clear: those ports with tshark 4.2, any port from 4.4.0); `undissected_http` names
+    server ports whose TCP payload starts with an HTTP method or the HTTP/2 preface but
+    which tshark left raw (Decode As is not offered: use response_times or
+    filter_packets there). Copies of the same packet count once. Filters: `host`
+    (the name and its subdomains), `path_prefix`, `method`, `status` (404 or a class
+    such as "5xx"), `min_ms` (response_ms at least); `filter` is a display filter ANDed
+    with `http || http2`. No decryption: HTTPS needs TLS keys tshark already has."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if view not in ("requests", "endpoints"):
+            raise ToolError("invalid_argument", "view must be 'requests' or 'endpoints'")
+        host_l = lint_hostname(host, "host").lower() if host not in (None, "") else None
+        meth = str(method).strip().upper() if method not in (None, "") else None
+        if meth is not None and not _HTTP_METHOD.match(meth):
+            raise ToolError("invalid_argument", f"method must be an HTTP method such as GET, got {method!r}")
+        status_text = str(status).strip().lower() if status not in (None, "") else None
+        if status_text is not None and not _STATUS_FILTER.match(status_text):
+            raise ToolError("invalid_argument", f"status must be a code such as 404 or a class such as 5xx, got {status!r}")
+        prefix = str(path_prefix) if path_prefix not in (None, "") else None
+        if prefix is not None and (not prefix.startswith("/") or len(prefix) > 512):
+            raise ToolError("invalid_argument", f"path_prefix must start with / (at most 512 characters), got {path_prefix!r}")
+        floor = None
+        if min_ms is not None and str(min_ms).strip() != "":
+            try:
+                floor = float(min_ms)
+            except (TypeError, ValueError):
+                raise ToolError("invalid_argument", f"min_ms must be a number, got {min_ms!r}") from None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        flt = _filter(filter, base=httptx.BASE_FILTER)
+        stdout, scan = _fields_run(capture, flt, httptx.FIELDS, st.limits.max_scan_packets, aggregator=httptx.AGGREGATOR)
+        rows, stats = httptx.analyse(httptx.parse(stdout))
+        end_of = _interface_end(capture)
+        rows = httptx.finish(rows, lambda: end_of(None))
+        try:
+            raw_out, _scan = _fields_run(capture, _filter(filter, base=httptx.UNDISSECTED_FILTER), httptx.UNDISSECTED_FIELDS,
+                                         st.limits.max_scan_packets, aggregator=httptx.AGGREGATOR)
+            undissected = httptx.undissected(raw_out, {r.get("stream") for r in rows})
+        except ToolError:
+            undissected = []
+
+        def keep(r: dict[str, Any]) -> bool:
+            h = (r.get("host") or "").split(":")[0].lower()
+            if host_l is not None and not (h == host_l or h.endswith("." + host_l)):
+                return False
+            if prefix is not None and not (r.get("uri") or "").startswith(prefix):
+                return False
+            if meth is not None and r.get("method") != meth:
+                return False
+            if status_text is not None:
+                code = r.get("status")
+                if code is None or (status_text.endswith("xx") and httptx.status_class(code) != status_text) or (
+                        not status_text.endswith("xx") and str(code) != status_text):
+                    return False
+            return floor is None or (r.get("response_ms") is not None and r["response_ms"] >= floor)
+        rows = [r for r in rows if keep(r)]
+        eps = httptx.endpoints(rows)
+        summary = {**httptx.summary(rows, eps, undissected), **compact(stats)}
+        key, chosen = ("endpoints", eps) if view == "endpoints" else ("requests", rows)
+        extra = {"undissected_http": undissected} if undissected else {}
+        return _envelope(key, chosen, cap, scan, offset=offset, view=view, display_filter=flt, summary=summary, **extra)
+    return _guarded("http_transactions", {"path": path, "host": host, "path_prefix": path_prefix, "status": status,
+                                          "method": method, "min_ms": min_ms, "view": view, "filter": filter,
+                                          "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="Conversations (top talkers)", annotations=READ_ONLY)

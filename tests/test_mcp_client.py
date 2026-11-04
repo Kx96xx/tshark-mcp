@@ -27,6 +27,7 @@ EXPECTED_TOOLS = {
     "tcp_connections",
     "icmp_errors",
     "capture_metadata",
+    "http_transactions",
     "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
     "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
     "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
@@ -70,6 +71,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("tcp_health", {"path": f"{d}/sip.pcap"}),
         ("tcp_connections", {"path": f"{d}/sip.pcap", "view": "destinations"}),
         ("icmp_errors", {"path": f"{d}/all.pcap", "kind": "frag_needed"}),
+        ("http_transactions", {"path": f"{d}/all.pcap", "view": "endpoints"}),
         ("sip_call_detail", {"path": f"{d}/voice/voice_call.pcap", "call_id": pcapgen.CALL_ID_VOICE}),
         ("packet_detail", {"path": f"{d}/diameter.pcap", "frame": 1, "layers": ["diameter"]}),
         ("expert_info", {"path": f"{d}/all.pcap", "severity": "note"}),
@@ -235,6 +237,8 @@ def test_every_tool_call_returns_structured_content(client_run):
     cause = by_name[("cause_lookup", ("application", "code", "protocol"))]
     assert cause["name"] == "DIAMETER_ERROR_ROAMING_NOT_ALLOWED" and cause["avp"] == "Experimental-Result-Code"
     assert cause["ref"].startswith("TS 29.272") and "Error-Diagnostic" in cause["application_note"]
+    http = by_name[("http_transactions", ("path", "view"))]
+    assert http["view"] == "endpoints" and "status_mix" in http["summary"]
 
     dialogs = by_name[("sip_dialogs", ("method", "path"))]
     assert dialogs["dialogs"][0]["from"].startswith("sip:+")

@@ -8,7 +8,7 @@ the tools.
 
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
-compact JSON. It cannot capture, write, export, resolve names or load code. Thirty-seven
+compact JSON. It cannot capture, write, export, resolve names or load code. Thirty-eight
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -62,6 +62,7 @@ a `TSHARK_MCP_*` environment variable.
 | TLS handshake failures, certificate problems | `tls_handshakes(path, server_name=...)` |
 | Can this host reach that port? Refused, filtered or prohibited? | `tcp_connections(path, server=..., port=...)`; `view="destinations"` for success rate per server |
 | Who sends unreachables, fragmentation needed, TTL exceeded (loop or traceroute)? | `icmp_errors(path, sender=... or about=...)` |
+| Which HTTP endpoints fail or are slow? Status mix, gRPC status? | `http_transactions(path, view="endpoints")`, then `view="requests"` with `status="5xx"` or `min_ms` |
 | Slow application: network, server or receiver? | `response_times`; `tcp_health` for loss, resets, zero windows, MTU |
 | SS7 over IP: MAP, SCCP, M3UA | `sigtran_messages`; `sctp_associations` for the transport |
 | What does this cause or result code mean, and where is it defined? | `cause_lookup(protocol, code)` (Diameter: add `application="s6a"`, `"gx"`, ...); no capture needed |
