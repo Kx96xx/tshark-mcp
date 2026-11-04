@@ -29,6 +29,20 @@ def _voice(pcap_dir: Path, name: str) -> str:
 
 # ----------------------------------------------------------------- pure helpers
 class TestSdp:
+    def test_rtp_without_ip_addresses_is_left_out(self):
+        """RTP over Bluetooth AVDTP (or any non-IP transport) has no addresses or ports: it
+        used to be merged into one stream keyed ':None' with bogus duplicates and sequence
+        errors. The filter keeps RTP over IP and the parser drops anything without addresses."""
+        assert "(ip || ipv6)" in rtp.DISPLAY_FILTER
+        cols = {f: "" for f in rtp.FIELDS}
+        cols.update({"frame.number": "14", "frame.time_epoch": "1700000000.1", "rtp.ssrc": "0x11223344", "rtp.seq": "1",
+                     "rtp.timestamp": "0", "rtp.p_type": "96", "rtp.marker": "0"})
+        line = "\t".join(cols[f] for f in rtp.FIELDS)
+        assert rtp.parse(line + "\n") == ([], [])
+        cols.update({"ip.src": "192.0.2.1", "ip.dst": "192.0.2.2", "udp.srcport": "4000", "udp.dstport": "5000"})
+        packets, _ = rtp.parse("\t".join(cols[f] for f in rtp.FIELDS) + "\n")
+        assert len(packets) == 1 and packets[0]["src"] == "192.0.2.1"
+
     def test_parse_media_sections_in_order(self):
         parsed = sdp.parse(OFFER)
         audio, video = parsed["media"]
