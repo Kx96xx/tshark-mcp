@@ -173,8 +173,8 @@ diameter_sessions(path="/pcaps/dra.pcap", imsi="001010123456789")
     "redaction": {"mode": "ids", "replaced": {"imsi": 1}, "stable": "for this server run", ...}}
 ```
 
-* `ids` replaces IMSIs, MSISDNs and other E.164 numbers (global titles included), IMEI/IMEISV,
-  SIP and tel URI users, and UE addresses (PAA, PDN address, PFCP UE IP, the inner
+* `ids` replaces IMSIs, MSISDNs and other E.164 numbers (global titles included), IMEI/IMEISV
+  (also split as TAC-SNR-CD inside a `urn:gsma:imei:` instance id), SIP and tel URI users, and UE addresses (PAA, PDN address, PFCP UE IP, the inner
   addresses of GTP-U tunnels). `ids+ips` also replaces every IPv4 and IPv6 address.
 * A token is the first 40 bits of an HMAC-SHA256 of the value. The same value gives the same
   token in every result, so rows from different tools still join. The prefix (`imsi`,
