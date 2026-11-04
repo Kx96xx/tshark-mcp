@@ -35,6 +35,7 @@ from .limits import (
 from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_identity
 from . import redact as redaction
 from . import pfcp
+from . import progress
 from .errors import add_fix
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 
@@ -42,9 +43,9 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 try:  # mcp >= 2.0 renamed FastMCP to MCPServer; the decorator API is the same.
-    from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver import Context, MCPServer as _Server
 except ImportError:  # pragma: no cover - mcp 1.x
-    from mcp.server.fastmcp import FastMCP as _Server  # type: ignore[no-redef]
+    from mcp.server.fastmcp import Context, FastMCP as _Server  # type: ignore[no-redef]
 
 # Every tool reads an existing file and nothing else: the same call on the same
 # file gives the same answer, and no tool reaches outside the allowed directories.
@@ -198,9 +199,22 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), extra])  # type: ignore[attr-defined]
 
         @functools.wraps(wrapper)
-        def entry(*args: Any, **kw: Any) -> Any:
-            return as_call_result(wrapper(*args, **kw))
-        entry.__signature__ = wrapper.__signature__  # type: ignore[attr-defined]
+        def entry(*args: Any, ctx: Context | None = None, **kw: Any) -> Any:
+            # The SDK fills ctx (found by its annotation, hidden from the input schema): it carries
+            # the request's progress token, and the worker thread polls its cancellation.
+            token = progress.bind(ctx)
+            try:
+                return as_call_result(wrapper(*args, **kw))
+            except progress.Cancelled:
+                # Only reached on a cancelled request: the SDK drops this result. Returning (rather than
+                # raising a BaseException out of the worker thread) keeps the server's task group alive.
+                return as_call_result(ToolError("cancelled", "the request was cancelled; tshark was killed").to_dict())
+            finally:
+                progress.unbind(token)
+        ctx_param = inspect.Parameter("ctx", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Context | None)
+        entry.__signature__ = wrapper.__signature__.replace(  # type: ignore[attr-defined]
+            parameters=[*wrapper.__signature__.parameters.values(), ctx_param])
+        entry.__annotations__ = {**getattr(wrapper, "__annotations__", {}), "ctx": Context | None}
         app.tool(**kwargs)(entry)
         # The module-level name stays the plain function returning the dict, for in-process callers.
         return wrapper
@@ -313,6 +327,13 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     touched_token = _TOUCHED.set([])
     try:
         result = fn()
+    except progress.Cancelled:
+        # tshark was killed; nothing is returned to a request nobody waits for, but the audit log says so.
+        collect_warnings(token)
+        mode = _redact_mode()
+        logged = state().redactor.apply([args], mode)[0][0] if mode != "off" and _STATE else args
+        _audit(tool, logged, int((time.monotonic() - started) * 1000), "cancelled", 0)
+        raise
     except ToolError as exc:
         status = exc.type
         result = exc.to_dict()
@@ -2765,7 +2786,9 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
         scanned = 0
         truncated_reason = None
         stopped_early = False
+        planned = min(len(candidates), file_cap)
         for candidate in candidates:
+            progress.report(scanned, planned, f"{scanned}/{planned} files, {len(rows)} with hits")
             if scanned >= file_cap:
                 truncated_reason = (f"more than {file_cap} files; {_PAGING_PREFIX}{start + scanned} (same arguments) for the "
                                     f"next files, or raise max_files (server cap {st.limits.max_files}) or narrow the directory")
@@ -2805,6 +2828,7 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
                 row["truncated"] = True
                 row["truncated_reason"] = f"{scan.reason()}; the count is a lower bound"
             rows.append(row)
+        progress.report(scanned, planned, f"{scanned}/{planned} files, {len(rows)} with hits", final=True)
         rows.sort(key=lambda r: (-r["hits"], r["path"]))
         out = _envelope("files", rows, file_cap, None, identifier=identifier.strip(), kind=resolved_kind,
                         display_filter=flt, files_scanned=scanned, files_found=files_found,

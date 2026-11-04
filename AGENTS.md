@@ -92,6 +92,9 @@ server publishes an `outputSchema` for each.
   cap stopped the scan: narrow the filter rather than page.
 - Every call may pass `redact="ids"` or `"ids+ips"`; it can raise the server's redaction
   level, never lower it. Tokens such as `imsi:3f2a9c1b0d` work as arguments in later calls.
+- Cancelling a request kills tshark within a quarter of a second. With a `progressToken`,
+  `find_identifier` reports files done out of files planned and other tools one progress
+  notification per finished tshark run (at most one a second).
 - Errors come back as `{"error": {"type": ..., "message": ..., "fix": ...}}` with `isError: true`
   on the MCP result, never as exceptions. `fix` says what to change next; `not_found` adds
   `candidates` (capture files in that allowed directory), `invalid_filter` and `unknown_field`
@@ -133,6 +136,7 @@ src/tshark_mcp/
   server.py     the MCP tools (one function per tool, registered with @_tool) and the CLI
   runner.py     the only place that starts tshark: read-only argv checks, caps, timeouts
   limits.py     Limits, Allowlist and the argument linters
+  progress.py   request cancellation (polled by the runner) and progress notifications
   errors.py     the `fix` hint, candidates and suggestions added to every tool error
   fields.py     tshark field catalogue (tshark -G fields), parsing helpers
   redact.py     identifier redaction and tokens

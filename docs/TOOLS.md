@@ -62,6 +62,12 @@ add a list: `path_not_allowed` keeps `allowed_dirs`; `not_found` and `not_a_file
 unknown one); `timeout` and `output_too_large` name the arguments of that tool that narrow
 the call; `unknown_token` says tokens live for one server run.
 
+Cancelling a call (`notifications/cancelled`, a client timeout, Escape in the client) kills
+tshark within a quarter of a second; the audit log records the call as `cancelled`. A client
+that sends a `progressToken` gets `notifications/progress`: `find_identifier` reports files
+done out of files planned (`"3/12 files, 2 with hits"`), every other tool one notification per
+finished tshark run, at most one per second.
+
 Every tool that takes a `limit` also takes an `offset` and returns one page:
 `total_matched` rows were found, `returned` of them are in this page starting at `offset`,
 `dropped` come after it, and `next_offset` (present only when more rows exist) fetches the
