@@ -36,6 +36,7 @@ EXPECTED_TOOLS = {
     "call_kpis",
     "gtp_ies",
     "roaming_attach_check",
+    "capture_index",
 }
 
 
@@ -66,6 +67,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("sigtran_messages", {"path": f"{d}/sigtran.pcap"}),
         ("trace_subscriber", {"path": f"{d}/all.pcap", "imsi": pcapgen.IMSI, "msisdn": pcapgen.MSISDN}),
         ("find_identifier", {"path": d, "identifier": pcapgen.IMSI, "max_files": 3}),
+        ("capture_index", {"path": d, "start": "+1s", "max_files": 5}),
         ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
         ("gtp_tunnel_health", {"path": f"{d}/gtpu.pcap"}),
         ("message_rates", {"path": f"{d}/all.pcap", "interval": 10}),
@@ -159,11 +161,11 @@ def test_list_tools_names_and_schemas(client_run):
         return _attr(tools[name], "input_schema", "inputSchema")["properties"]
 
     SHAPING = ("columns", "output", "max_output_kb")  # every row tool (one with limit) takes them
-    assert {"path", "identifier", "kind", "max_files", "offset", "redact"} == set(props("find_identifier"))
-    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset", "redact", *SHAPING} == set(props("diameter_sessions"))
-    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset", "redact", *SHAPING} == set(props("gtp_sessions"))
-    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "redact", *SHAPING} == set(props("sip_dialogs"))
-    assert {"path", "layer", "filter", "limit", "offset", "redact", *SHAPING} == set(props("conversations"))
+    assert {"path", "identifier", "kind", "max_files", "offset", "start", "end", "redact"} == set(props("find_identifier"))
+    assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("diameter_sessions"))
+    assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("gtp_sessions"))
+    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("sip_dialogs"))
+    assert {"path", "layer", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("conversations"))
     # The paging contract: every tool that takes a row limit also takes an offset and
     # reports total_matched / returned / dropped / next_offset.
     for name in tools:
@@ -215,6 +217,9 @@ def test_every_tool_call_returns_structured_content(client_run):
 
     found = by_name[("find_identifier", ("identifier", "max_files", "path"))]
     assert found["files_scanned"] == 3 and found["kind"] == "subscriber"
+    index = by_name[("capture_index", ("max_files", "path", "start"))]
+    assert index["files_indexed"] == 5 and index["files"][0]["first_epoch"] <= index["files"][-1]["first_epoch"]
+    assert index["summary"]["window_files"] and "window_covered" in index["summary"]
 
     trace = by_name[("trace_subscriber", ("imsi", "msisdn", "path"))]
     assert trace["by_protocol"] == {"diameter": 2, "gtpv2": 2, "sip": 1, "map": 3}

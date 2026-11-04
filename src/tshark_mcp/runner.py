@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import progress
+from . import progress, window
 from .limits import Limits, ToolError, echo
 
 # Messages tshark prints when a capture ends early or has a damaged record. The
@@ -225,16 +225,27 @@ class Runner:
 
     # ---------------------------------------------------------------- public API
     def read_capture(self, capture: Path, args: Sequence[str], *, max_packets: int | None = None,
-                     display_filter: str | None = None, timeout: float | None = None) -> RunResult:
+                     display_filter: str | None = None, timeout: float | None = None,
+                     sentinel: int | None = None, stats_windowed: bool = False) -> RunResult:
         """Run ``tshark -n -r <capture> [-c N] [-Y filter] <args>``.
 
         ``timeout`` can only shorten the configured per-run limit (a caller with a
-        shared budget passes what is left of it)."""
+        shared budget passes what is left of it). The call's time window (``start`` /
+        ``end``, see :mod:`window`) goes ahead of ``display_filter``; frame ``sentinel``
+        (the one just past the read cap) is kept whatever the filter and the window say.
+        ``-Y`` does not reach ``-z`` statistics, so a statistics run under a window must
+        have put the window into its own statistic filter (``stats_windowed``)."""
         argv: list[str] = ["-n", "-r", str(capture)]
         identity = _identity(capture)
         if max_packets is not None:
             # One more than the frame-read cap so a caller can place a sentinel frame just past it.
             argv += ["-c", str(max(1, min(int(max_packets), self.limits.max_scan_packets + 1)))]
+        clause = window.clause(capture, self.capinfos_summary)
+        if clause and "-z" in args and not stats_windowed:
+            raise ToolError("internal_error", "a -z statistic under a time window must carry the window in its filter")
+        display_filter = window.combine(clause, display_filter)
+        if sentinel is not None and display_filter:
+            display_filter = f"({display_filter}) || frame.number == {int(sentinel)}"
         if display_filter:
             argv += ["-Y", display_filter]
         argv += list(args)
@@ -276,6 +287,15 @@ class Runner:
         identity = _identity(capture)
         return self._execute(self.capinfos, ["-M", "-S", "-c", "-u", "-a", "-e", "-s", "-E", "-t", str(capture)],
                              read_only_check=False, capture=(capture, identity) if identity is not None else None)
+
+    def capinfos_index(self, capture: Path, timeout: float | None = None) -> RunResult | None:
+        """capinfos with the interface count (``-I``), for capture_index; None without capinfos."""
+        if not self.capinfos:
+            return None
+        identity = _identity(capture)
+        return self._execute(self.capinfos, ["-M", "-S", "-c", "-a", "-e", "-s", "-E", "-t", "-I", str(capture)],
+                             read_only_check=False, timeout=timeout,
+                             capture=(capture, identity) if identity is not None else None)
 
     # ---------------------------------------------------------------- internals
     def _execute(self, program: str, args: Sequence[str], *, stdin: bytes | None = None,

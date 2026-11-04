@@ -126,8 +126,8 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Forty-one tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
-and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
+Forty-two tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (110 KB instead of 278 KB at 41 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
@@ -137,6 +137,7 @@ what it cost in `tokens_estimate`.
 | Tool | One line |
 | --- | --- |
 | `find_identifier` | Which captures in a directory mention an IMSI, MSISDN, IP, Call-ID or Session-Id |
+| `capture_index` | A directory of ring-buffer files in time order: span, packets, holes and overlaps between files, which files cover an incident window |
 | `pcap_info` | Packet count, duration, link type, protocol hierarchy, active limits |
 | `capture_metadata` | pcapng writer, interfaces, snaplen, capture filter and the drop counters tshark cannot show |
 | `capture_quality` | Can loss and timing conclusions be drawn from this file? Verdict with reasons |
@@ -232,7 +233,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 872 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 895 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

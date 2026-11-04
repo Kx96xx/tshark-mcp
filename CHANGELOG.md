@@ -19,6 +19,15 @@ the project uses [semantic versioning](https://semver.org/).
   paging pointing at the rest, and `max_output_kb` lowers the server's output cap for one call
   (it can never raise it). Every successful result carries `tokens_estimate` (JSON bytes / 3.6).
   The compact tool list writes an optional list argument as `"type": ["array", "null"]`.
+- `start` and `end` on every tool that reads a capture: ISO 8601, epoch seconds, `"+120s"` after
+  the capture start or `"-30s"` before its end. The window goes ahead of the tool's filter on
+  every tshark run, including the `-z` statistics of `conversations`, `expert_info` and
+  `pcap_info`; relative bounds resolve per file; results carry `window` and a warning when the
+  window misses the capture. `pcap_info` adds `window_hint` and `frames_in_window`;
+  `find_identifier` skips files outside the window.
+- `capture_index`: a directory of ring-buffer files in time order from capinfos, with per-file
+  span, packets, bytes and interfaces, holes and overlaps between files, name-versus-time
+  ordering, and which files cover a `start`/`end` window and whether they cover it whole.
 
 ### Fixed
 

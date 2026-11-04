@@ -38,6 +38,7 @@ from . import pfcp
 from . import output as shaping
 from . import progress
 from . import prompts as guided
+from . import window
 from . import schemas
 from .errors import add_fix
 from .runner import Runner, begin_warnings, check_result, collect_warnings
@@ -60,6 +61,10 @@ inside the allowed directories (see the error message if a path is refused).
 Every call is bounded: file size, packets dissected, output bytes and run time.
 Which file holds a subscriber: find_identifier on the directory. Start on a file
 with pcap_info (capture_metadata: pcapng writer, interfaces, drop counters).
+Incident at a known time: capture_index on the directory gives the files in time
+order, holes between them and which cover start..end; every capture tool takes
+start and end (ISO 8601, epoch seconds, "+120s" after the capture start, "-30s"
+before its end) and reads only that window.
 "Why did subscriber X fail": trace_subscriber first, then diameter_sessions,
 diameter_transactions, diameter_avps (the AVPs), gtp_sessions, gtp_ies (the IEs),
 gtpv1_sessions,
@@ -211,6 +216,16 @@ _SHAPING_ARGS = ("columns", "output", "max_output_kb")
 _CALL_OUTPUT: contextvars.ContextVar[shaping.OutputOptions] = contextvars.ContextVar(
     "output_options", default=shaping.OutputOptions())
 
+# The time window every capture tool takes (see :mod:`window`). Not on the tools that read one
+# frame or the file's own blocks, nor on capture_index, whose start and end pick files.
+WindowStart = Annotated[str | float | None, Field(description="ISO 8601, epoch s, +Ns from start, -Ns from end")]
+WindowEnd = Annotated[str | float | None, Field(description="Same forms as start")]
+WINDOWLESS_TOOLS = frozenset({"packet_detail", "capture_metadata", "capture_index"})
+
+
+def _takes_window(name: str, sig: inspect.Signature) -> bool:
+    return name not in WINDOWLESS_TOOLS and ("path" in sig.parameters or "path_a" in sig.parameters)
+
 
 def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """``app.tool`` plus redaction: every tool takes a ``redact`` argument, and
@@ -227,6 +242,12 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                      inspect.Parameter("max_output_kb", inspect.Parameter.KEYWORD_ONLY, default=None,
                                        annotation=MaxOutputKb), *extra]
 
+        windowed = _takes_window(fn.__name__, sig)
+        if windowed:
+            extra = [inspect.Parameter("start", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=WindowStart),
+                     inspect.Parameter("end", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=WindowEnd),
+                     *extra]
+
         @functools.wraps(fn)
         def wrapper(*args: Any, redact: str | None = "off", **kw: Any) -> Any:
             shape = {name: kw.pop(name) for name in _SHAPING_ARGS if shaped and name in kw}
@@ -236,6 +257,12 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             except ValueError as exc:
                 problem = exc
                 return _guarded(fn.__name__, shape, lambda: _raise(problem))
+            start, end = (kw.pop("start", None), kw.pop("end", None)) if windowed else (None, None)
+            try:
+                spec = window.parse(start, end)
+            except ToolError as exc:
+                bad = exc
+                return _guarded(fn.__name__, {"start": start, "end": end}, lambda: _reraise(bad))
             try:
                 mode = redaction.check_mode(redact)
                 found = False
@@ -251,9 +278,11 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 return _guarded(fn.__name__, {"redact": redact}, lambda: _raise(problem))
             token = _CALL_MODE.set(redaction.stronger(mode, "ids" if found else "off"))
             out_token = _CALL_OUTPUT.set(options)
+            window_tokens = window.bind(spec)
             try:
                 return fn(*args, **kw)
             finally:
+                window.unbind(window_tokens)
                 _CALL_OUTPUT.reset(out_token)
                 _CALL_MODE.reset(token)
         wrapper.__signature__ = sig.replace(parameters=[*sig.parameters.values(), *extra])  # type: ignore[attr-defined]
@@ -311,6 +340,10 @@ def _raise(exc: Exception) -> dict[str, Any]:
         raise ToolError("unknown_token", f"{exc.args[0]} is not a redaction token issued by this server run; "
                                          "tokens are valid only while the server that issued them is running")
     raise ToolError("invalid_argument", str(exc))
+
+
+def _reraise(exc: ToolError) -> dict[str, Any]:
+    raise exc
 
 
 def _redact_mode() -> str:
@@ -407,6 +440,11 @@ def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) 
     warnings = collect_warnings(token)
     if isinstance(result.get("error"), dict):
         _add_fix(result["error"], tool, args)
+    else:
+        block, missed = window.report(iso)
+        if block is not None:
+            result["window"] = block
+            warnings.extend(w for w in missed if w not in warnings)
     rows_key = result.pop(_ROWS_KEY, None)
     options = _CALL_OUTPUT.get()
     if "error" not in result and rows_key and isinstance(result.get(rows_key), list):
@@ -615,6 +653,12 @@ def _resolve(path: str) -> Path:
     return capture
 
 
+def _window_clause(capture: Path) -> str | None:
+    """The call's time window on ``capture`` as a display-filter clause (None without one), for
+    the ``-z`` statistics, which a ``-Y`` filter does not reach."""
+    return window.clause(capture, state().runner.capinfos_summary)
+
+
 def _filter(user_filter: str | None, base: str | None = None) -> str | None:
     """Lint, dry-run compile and combine a model-supplied display filter with a base filter."""
     if user_filter is None or str(user_filter).strip() == "":
@@ -663,7 +707,6 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
     st = state()
     read_cap = st.limits.max_scan_packets
     sentinel = read_cap + 1
-    flt = f"({display_filter}) || frame.number == {sentinel}" if display_filter else None
     # tshark prints a field asked for twice only once, so reuse the caller's own frame.number column.
     appended = "frame.number" not in fields
     columns = [*fields, "frame.number"] if appended else list(fields)
@@ -671,7 +714,8 @@ def _fields_core(capture: Path, display_filter: str | None, fields: list[str], m
     args = [*extra_args, "-T", "fields", "-E", "separator=/t", "-E", "occurrence=a", "-E", f"aggregator={aggregator}"]
     for f in columns:
         args += ["-e", f]
-    result = check_result(st.runner.read_capture(capture, args, max_packets=sentinel, display_filter=flt, timeout=timeout))
+    result = check_result(st.runner.read_capture(capture, args, max_packets=sentinel, display_filter=display_filter,
+                                                 timeout=timeout, sentinel=sentinel))
     scan = Scan(match_cap=max_matched, read_cap=read_cap)
     kept: list[tuple[int | None, str]] = []
     for line in result.stdout.splitlines():
@@ -813,15 +857,24 @@ def pcap_info(path: str) -> models.PcapInfoResult:
             info.update(parsed)
         else:
             info["capinfos"] = "unavailable; packet totals come from the protocol hierarchy"
-        phs = check_result(st.runner.read_capture(capture, ["-q", "-z", "io,phs"]))
+        win = _window_clause(capture)
+        phs = check_result(st.runner.read_capture(capture, ["-q", "-z", "io,phs" + (f",{win}" if win else "")],
+                                                  stats_windowed=True))
         hierarchy = _parse_phs(phs.stdout)
-        if "packets" not in info and hierarchy:
+        if win:
+            info["frames_in_window"] = max((r["frames"] for r in hierarchy), default=0)
+        elif "packets" not in info and hierarchy:
             info["packets"] = max(r["frames"] for r in hierarchy)
         info["protocol_hierarchy"] = sorted(hierarchy, key=lambda r: -r["frames"])[:15]
         meta = _capture_metadata(capture)
         info["metadata_available"] = bool(meta.get("metadata_available"))
         if meta.get("drops_total") is not None:
             info["interface_drops"] = meta["drops_total"]
+        if info.get("first_packet") and info.get("last_packet"):
+            # What to pass as start and end on any capture tool to look at part of this file.
+            info["window_hint"] = {"start": info["first_packet"], "end": info["last_packet"],
+                                   "relative": "start=\"+60s\" is a minute after the first packet, "
+                                               "end=\"-30s\" half a minute before the last"}
         info["limits"] = st.limits.describe()
         return info
     return _guarded("pcap_info", {"path": path}, run)
@@ -1248,8 +1301,9 @@ def conversations(path: str, layer: str = "ip", filter: str | None = None, limit
             raise ToolError("invalid_argument", f"layer must be one of {', '.join(CONVERSATION_LAYERS)}")
         cap = clamp_limit(limit, state().limits.max_packets, 200)
         flt = _filter(filter)
-        stat = f"conv,{layer}" + (f",{flt}" if flt else "")
-        result = check_result(state().runner.read_capture(capture, ["-q", "-z", stat]))
+        counted = window.combine(_window_clause(capture), flt)
+        stat = f"conv,{layer}" + (f",{counted}" if counted else "")
+        result = check_result(state().runner.read_capture(capture, ["-q", "-z", stat], stats_windowed=True))
         rows = _parse_conversations(result.stdout)
         rows.sort(key=lambda r: -r["frames_total"])
         return _envelope("conversations", rows, cap, None, offset=offset, layer=layer, display_filter=flt,
@@ -1431,8 +1485,9 @@ def expert_info(path: str, severity: str = "warn", filter: str | None = None, li
             raise ToolError("invalid_argument", f"severity must be one of {', '.join(expert.SEVERITIES)}")
         cap = clamp_limit(limit, st.limits.max_packets, 100)
         flt = _filter(filter)
-        stat = check_result(st.runner.read_capture(capture, ["-q", "-z", expert.stat_arg(severity, flt)],
-                                                   max_packets=st.limits.max_scan_packets))
+        counted = window.combine(_window_clause(capture), flt)
+        stat = check_result(st.runner.read_capture(capture, ["-q", "-z", expert.stat_arg(severity, counted)],
+                                                   max_packets=st.limits.max_scan_packets, stats_windowed=True))
         rows = expert.parse_stat(stat.stdout)
         found_flt = f"_ws.expert && ({flt})" if flt else "_ws.expert"
         stdout, scan = _fields_run(capture, found_flt, expert.FIELDS, st.limits.max_scan_packets,
@@ -2762,6 +2817,11 @@ def _last_packet_time(capture: Path, stdout: str) -> tuple[float | None, str]:
     if summary is not None and summary.returncode == 0:
         end = _parse_capinfos(summary.stdout).get("last_packet_epoch")
         if isinstance(end, float):
+            spec = window.active()
+            if spec is not None:
+                _lo, hi, _span = window.resolve(spec, capture, state().runner.capinfos_summary)
+                if hi is not None and hi < end:
+                    return hi, "end of the time window"
             return end, "capinfos"
     times = [parse_time(split_fields_line(ln)[1]) for ln in stdout.splitlines() if ln.count("\t") >= 1]
     times = [t for t in times if t is not None]
@@ -2884,6 +2944,7 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
         errors: list[dict[str, Any]] = []
         partial: list[str] = []
         scanned = 0
+        outside = 0
         truncated_reason = None
         stopped_early = False
         planned = min(len(candidates), file_cap)
@@ -2902,6 +2963,12 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             scanned += 1
             try:
                 capture = st.allowlist.resolve(str(candidate), st.limits)
+                spec = window.active()
+                if spec is not None:
+                    lo, hi, span = window.resolve(spec, capture, st.runner.capinfos_summary)
+                    if window.overlap(lo, hi, span.first, span.last) is False:
+                        outside += 1  # no packet of this file can be in the window
+                        continue
                 # Each run gets only what is left of the shared budget.
                 stdout, scan = _fields_run(capture, flt, fields, st.limits.max_scan_packets,
                                            timeout=deadline - _now())
@@ -2940,6 +3007,8 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             out["files_not_scanned"] = files_found - start - scanned
         if start and start >= files_found and files_found:
             truncated_reason = f"offset {start} is past the last file ({files_found} found)"
+        if outside:
+            out["files_outside_window"] = outside
         if partial:
             out["partially_scanned"] = partial
             note = (f"{len(partial)} file(s) without hits were only read up to the frame cap of "
@@ -2950,6 +3019,183 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             out["truncated_reason"] = truncated_reason
         return out
     return _guarded("find_identifier", {"path": path, "identifier": identifier, "kind": kind, "max_files": max_files, "offset": offset}, run)
+
+
+@_tool(title="Capture index (ring-buffer files in time order)", annotations=READ_ONLY)
+def capture_index(path: str, start: str | float | None = None, end: str | float | None = None, max_files: int = 50,
+                  min_gap_s: float = 1.0, offset: int = 0) -> models.CaptureIndexResult:
+    """Index a directory of capture files (a ring buffer, a day of rotated files) in time
+    order without decoding a packet: per file the first and last packet time, duration,
+    packets, bytes, interfaces and link type, the hole or overlap against the previous
+    file, and with `start`/`end` (same forms as on every tool) `covers_window`: which files
+    to open for an incident window. `summary` gives the span, totals, `holes` (gaps longer
+    than `min_gap_s` seconds between files, default 1), `overlaps`, `ordering` (whether
+    name order is time order: a wrapped ring or renamed files break it) and for a window
+    `window_files` and `window_covered`.
+    Details: `path` is a directory inside the allowed roots (or one capture file); its
+    .pcap/.pcapng/.cap files are indexed, not subdirectories. At most `max_files` files are
+    read per call (server cap `--max-files`), in name order from `offset`; `next_offset`
+    pages on. Each file is read by capinfos under one shared time budget; files that could
+    not be read carry `error`. A relative window (`"+120s"`, `"-30s"`) is taken from the
+    first packet of the earliest file and the last packet of the latest file indexed."""
+    def run() -> dict[str, Any]:
+        st = state()
+        spec = window.parse(start, end)
+        try:
+            gap_floor = float(min_gap_s)
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", f"min_gap_s must be a number of seconds, got {echo(min_gap_s)}") from None
+        if gap_floor < 0:
+            raise ToolError("invalid_argument", "min_gap_s must not be negative")
+        file_cap = clamp_limit(max_files, st.limits.max_files, st.limits.max_files)
+        target = st.allowlist.resolve_inside(path)
+        candidates = search.list_captures(target) if target.is_dir() else [target]
+        first_index = _offset(offset)
+        files_found = len(candidates)
+        page = candidates[first_index:first_index + file_cap]
+        deadline = _now() + st.limits.timeout_seconds
+        rows: list[dict[str, Any]] = []
+        indexed = 0
+        stopped = None
+        for candidate in page:
+            progress.report(indexed, len(page), f"{indexed}/{len(page)} files")
+            if _now() >= deadline:
+                stopped = f"time budget of {st.limits.timeout_seconds}s used up after {indexed} files"
+                break
+            indexed += 1
+            row: dict[str, Any] = {"path": str(candidate), "name": candidate.name}
+            try:
+                capture = st.allowlist.resolve(str(candidate), st.limits)
+                row["bytes"] = capture.stat().st_size
+                result = st.runner.capinfos_index(capture, timeout=deadline - _now())
+                if result is None:
+                    raise ToolError("capinfos_missing", "capinfos is not installed beside tshark")
+                info = _parse_capinfos(result.stdout)
+                if result.returncode != 0 and "first_packet_epoch" not in info:
+                    raise ToolError("read_failed", (result.stderr.strip().splitlines() or ["capinfos failed"])[-1])
+            except ToolError as exc:
+                row.update({"error": exc.type, "message": exc.message})
+                rows.append(row)
+                if exc.type == "timeout":
+                    stopped = f"time budget of {st.limits.timeout_seconds}s used up while reading {candidate.name}"
+                    break
+                continue
+            first, last = info.get("first_packet_epoch"), info.get("last_packet_epoch")
+            row.update({"first": iso(first), "last": iso(last), "first_epoch": first, "last_epoch": last,
+                        "packets": info.get("packets"), "file_type": info.get("file_type"),
+                        "link_type": info.get("link_type"), "interfaces": _capinfos_interfaces(result.stdout)})
+            if isinstance(first, float) and isinstance(last, float):
+                row["duration_s"] = round(last - first, 6)
+            rows.append({k: v for k, v in row.items() if v is not None})
+        progress.report(indexed, len(page), f"{indexed}/{len(page)} files", final=True)
+        timed = sorted((r for r in rows if "first_epoch" in r), key=lambda r: (r["first_epoch"], r["name"]))
+        untimed = [r for r in rows if "first_epoch" not in r]
+        by_name = [r["name"] for r in rows if "first_epoch" in r]
+        ordering = "name order is time order" if by_name == [r["name"] for r in timed] else \
+            "name order differs from time order (a wrapped ring buffer or renamed files): rows are in time order"
+        holes: list[dict[str, Any]] = []
+        overlaps = 0
+        prev: dict[str, Any] | None = None
+        for r in timed:
+            if prev is not None:
+                delta = r["first_epoch"] - prev["last_epoch"]
+                if delta > 0:
+                    r["gap_before_s"] = round(delta, 6)
+                    if delta > gap_floor:
+                        holes.append({"after": prev["name"], "before": r["name"], "start": prev["last"], "end": r["first"],
+                                      "seconds": round(delta, 6), "_lo": prev["last_epoch"], "_hi": r["first_epoch"]})
+                elif delta < 0:
+                    r["overlap_before_s"] = round(-delta, 6)
+                    overlaps += 1
+            if prev is None or r["last_epoch"] > prev["last_epoch"]:
+                prev = r
+        span_first = min((r["first_epoch"] for r in timed), default=None)
+        span_last = max((r["last_epoch"] for r in timed), default=None)
+        summary: dict[str, Any] = {
+            "first": iso(span_first), "last": iso(span_last),
+            "span_s": round(span_last - span_first, 6) if span_first is not None and span_last is not None else None,
+            "packets": sum(r.get("packets") or 0 for r in timed), "bytes": sum(r.get("bytes") or 0 for r in rows),
+            "holes": holes, "overlaps": overlaps, "ordering": ordering,
+        }
+        issues: list[str] = []
+        if spec is not None:
+            lo, hi = _index_window(spec, span_first, span_last)
+            covering = []
+            for r in timed:
+                r["covers_window"] = bool(window.overlap(lo, hi, r["first_epoch"], r["last_epoch"]))
+                if r["covers_window"]:
+                    covering.append(r["name"])
+            inside = [h for h in holes if window.overlap(lo, hi, h["_lo"], h["_hi"])]
+            for h in inside:
+                h["in_window"] = True
+            whole = bool(covering) and (lo is None or span_first is not None and span_first <= lo) and \
+                (hi is None or span_last is not None and span_last >= hi) and not inside
+            summary["window"] = {k: v for k, v in {"start": iso(lo), "end": iso(hi), "start_epoch": lo,
+                                                   "end_epoch": hi}.items() if v is not None}
+            summary["window_files"] = covering
+            summary["window_covered"] = whole
+            if not covering:
+                issues.append("no indexed file has packets in the window" +
+                              (f"; the files span {iso(span_first)} to {iso(span_last)}" if span_first is not None else ""))
+            elif not whole:
+                parts = []
+                if lo is not None and span_first is not None and span_first > lo:
+                    parts.append(f"the earliest file starts at {iso(span_first)}, after the window start")
+                if hi is not None and span_last is not None and span_last < hi:
+                    parts.append(f"the latest file ends at {iso(span_last)}, before the window end")
+                parts += [f"{h['seconds']}s without a file between {h['after']} and {h['before']}" for h in inside]
+                issues.append("the window is only partly covered: " + "; ".join(parts))
+        for h in holes:
+            h.pop("_lo", None)
+            h.pop("_hi", None)
+            if len(issues) < 10 and not h.get("in_window"):
+                issues.append(f"{h['seconds']}s without a file between {h['after']} (last packet {h['start']}) and "
+                              f"{h['before']} (first packet {h['end']})")
+        if overlaps:
+            issues.append(f"{overlaps} file(s) overlap the previous one in time (merged or copied captures?)")
+        if not ordering.startswith("name order is"):
+            issues.append(ordering)
+        errors = [r for r in rows if "error" in r]
+        if errors:
+            issues.append(f"{len(errors)} file(s) could not be indexed; see error on their rows")
+        out: dict[str, Any] = {
+            "path": str(target), "files": timed + untimed, "count": len(rows), "returned": len(rows),
+            "total_found": files_found, "total_matched": files_found, "files_found": files_found,
+            "files_indexed": indexed, "offset": first_index,
+            "dropped": max(0, files_found - first_index - indexed), "summary": compact(summary), "issues": issues,
+        }
+        if first_index + indexed < files_found:
+            out["next_offset"] = first_index + indexed
+            out["files_not_indexed"] = files_found - first_index - indexed
+            out["truncated"] = True
+            out["truncated_reason"] = (f"{stopped or f'{indexed} files indexed (max_files)'}; {_PAGING_PREFIX}"
+                                       f"{first_index + indexed} (same arguments) for the next files; holes and "
+                                       "overlaps are only computed within one page")
+        return out
+    return _guarded("capture_index", {"path": path, "start": start, "end": end, "max_files": max_files,
+                                      "min_gap_s": min_gap_s, "offset": offset}, run)
+
+
+def _index_window(spec: window.Spec, first: float | None, last: float | None) -> tuple[float | None, float | None]:
+    """A window's bounds against the span of a set of files."""
+    def one(bound: window.Bound | None) -> float | None:
+        if bound is None:
+            return None
+        if bound.kind == "abs":
+            return bound.seconds
+        anchor = first if bound.kind == "from_start" else last
+        if anchor is None:
+            raise ToolError("invalid_argument", f"{bound.text!r} is relative to the files, but none has a packet time")
+        return anchor + bound.seconds if bound.kind == "from_start" else anchor - bound.seconds
+    lo, hi = one(spec.start), one(spec.end)
+    if lo is not None and hi is not None and lo > hi:
+        raise ToolError("invalid_argument", "the window is empty: start resolves after end")
+    return lo, hi
+
+
+def _capinfos_interfaces(stdout: str) -> int | None:
+    m = re.search(r"^Number of interfaces in file:\s*(\d+)", stdout, re.M)
+    return int(m.group(1)) if m else None
 
 
 @_tool(title="SCTP associations", annotations=READ_ONLY)

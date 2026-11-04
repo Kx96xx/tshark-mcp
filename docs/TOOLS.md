@@ -24,7 +24,8 @@ Every successful result carries `tokens_estimate`: its JSON size divided by 3.6.
 | Tool | What it returns |
 | --- | --- |
 | `find_identifier(path, identifier, kind, max_files, offset)` | Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a file-count cap and one shared time budget; files without hits that were only read up to the frame cap are listed in `partially_scanned`. Hits count packets that carry the identifier, so for Diameter they count requests (answers carry no User-Name) |
-| `pcap_info(path)` | Packet count, duration, first/last timestamp, size, link type, top 15 protocol-hierarchy entries, active limits |
+| `capture_index(path, start, end, max_files, min_gap_s, offset)` | A directory of capture files (a ring buffer, rotated files) indexed by capinfos without decoding a packet, in time order: per file `first`/`last` (ISO and epoch), `duration_s`, `packets`, `bytes`, `interfaces`, `file_type`, `link_type`, `gap_before_s` (hole after the previous file's last packet) or `overlap_before_s`, and with a window `covers_window`. `summary`: span, totals, `holes` (gaps longer than `min_gap_s`, default 1 s; `in_window` when inside the window), `overlaps`, `ordering` (name order versus time order: a wrapped ring), and with a window `window_files` and `window_covered`. `max_files` files per call (server cap `--max-files`) from `offset` in name order, under one shared time budget; relative bounds are taken from the earliest and latest file indexed |
+| `pcap_info(path)` | Packet count, duration, first/last timestamp, size, link type, top 15 protocol-hierarchy entries, active limits; `window_hint` (first and last packet to pass as `start`/`end`); with a window, `frames_in_window` |
 | `capture_metadata(path)` | The pcapng blocks walked in pure Python (no tshark run, packet bytes skipped, never decoded; bounded by the file size cap and the run timeout): `file` (format, version, byte order, gzip or other compression, sections), `writer` (the section header's application, OS, hardware and comment), `interfaces[]` (id, section, name, description, link type, snaplen, timestamp resolution and offset, capture filter, FCS length, speed; `statistics` from the last Interface Statistics Block: received, dropped_by_interface, dropped_by_os, accepted_by_filter, delivered and its timestamps; packets, bytes, first and last packet, `truncated_packets` cut to the snaplen, `timestamps_backwards`, `first_packet_after_interface_0_s`), `drops_total`, `packet_comments` (count and the first five with their frame), `issues` (drops, snaplen of 256 or less, a capture filter, no statistics block, several sections) and `read_warnings` when a damaged block ended the walk. A legacy pcap returns its header (version, snaplen, link type, timestamp precision) with `metadata_available: false`; strings from the file are listed in `untrusted_text_fields`. `pcap_info` gains `metadata_available` and `interface_drops` |
 | `capture_quality(path)` | Whether loss and timing conclusions can be drawn from the capture: duplicate copies of the same packet with the likely cause (two VLANs or interfaces, a Linux any capture, tunnelled and decapsulated, rebuilt copies with zeroed TCP headers; without an IP ID a copy also needs to arrive within 5 ms with the same TCP, UDP or ICMP checksum, an ICMP error the same quoted packet, and SCTP the same TSNs, acknowledged TSN and heartbeat information); TCP bytes the receiver acknowledged that the capture never saw (dropped by the capture, or the file was filtered) versus gaps a retransmission filled (lost on the network before the capture point); frames cut to the snapshot length; packets above 1500 bytes (segmentation offload); bad IP/TCP/UDP checksums and whether they are offload artifacts (one sender, data acknowledged anyway); TCP streams seen in one direction only and unanswered SYNs; timestamps going backwards, identical stamps, resolution, longest silence; a `verdict` (trustworthy, use with care, not trustworthy) with the reasons |
 | `tcp_health(path, filter, stream, mtu, limit, offset)` | Per TCP stream, with copies of the same packet dropped first (tshark counts them as retransmissions): handshake with SYN retries, the SYN to SYN-ACK and SYN-ACK to ACK halves of the RTT, MSS, window scale and SACK; per direction data segments and retransmissions split by where the loss happened (`lost_before_capture`, `retransmitted_after_capture`, `missed_by_capture` when the receiver acknowledged bytes the file lacks), reordering told apart by IP ID or TCP timestamp, duplicate ACKs, zero windows, keep-alives; `resets` with `likely_from` endpoint or middlebox from the reset's TTL and source MAC against that side's other packets, and the idle time before it; ICMP errors about the stream (a mirrored copy counts once); MSS above `mtu`, DF packets above it and the PMTUD black-hole pattern (full-size segments retransmitted and never acknowledged while small ones pass); `issues` in plain words |
@@ -97,6 +98,18 @@ tshark within a quarter of a second; the audit log records the call as `cancelle
 that sends a `progressToken` gets `notifications/progress`: `find_identifier` reports files
 done out of files planned (`"3/12 files, 2 with hits"`), every other tool one notification per
 finished tshark run, at most one per second.
+
+Every tool that reads a capture (all but `find_fields`, `check_filter`, `cause_lookup`,
+`packet_detail` and `capture_metadata`) takes `start` and `end`: ISO 8601 (no zone means UTC),
+epoch seconds, `"+120s"` after the capture's first packet or `"-30s"` before its last (units
+ms, s, m, h). The window becomes `frame.time_epoch >= A && frame.time_epoch <= B` ahead of the
+tool's own filter on every tshark run, including the `-z` statistics behind `conversations`,
+`expert_info` and `pcap_info`, and relative bounds are resolved per file (capinfos). The result
+carries `window`: the arguments, the resolved bounds, the filter clause, the capture's first and
+last packet and `overlaps_capture` (`captures` per file when the call read several); a window
+that misses the capture adds a warning. Packets before the window are still dissected for
+context (TCP analysis, request and answer pairing) but not reported. `find_identifier` skips the
+files a window cannot touch (`files_outside_window`).
 
 Every tool that takes a `limit` also takes an `offset` and returns one page:
 `total_matched` rows were found, `returned` of them are in this page starting at `offset`,
@@ -440,7 +453,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 872 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 895 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

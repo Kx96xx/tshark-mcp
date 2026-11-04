@@ -156,6 +156,7 @@ class TestRegistration:
             "call_kpis",
             "gtp_ies",
             "roaming_attach_check",
+            "capture_index",
         ])
         by_name = {t.name: t for t in tools}
 
