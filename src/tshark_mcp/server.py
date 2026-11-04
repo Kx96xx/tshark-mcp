@@ -18,11 +18,12 @@ import re
 import sys
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, compare, diameter, dns, dtmf, expert, gtp, gtpv1, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -76,7 +77,8 @@ tls_handshakes shows why a TLS or QUIC handshake failed, without decrypting.
 Before reading missing packets or retransmissions as network faults,
 capture_quality says whether the capture itself can be trusted (copies,
 capture drops, truncation, clocks); tcp_health tells real TCP loss, resets
-and MTU black holes from capture artifacts.
+and MTU black holes from capture artifacts; tcp_connections says whether each
+connection attempt connected, was refused, filtered or ICMP-prohibited, and who closed it.
 response_times splits slow TCP requests into network, server and receiver time.
 Results are JSON. List tools return one page: total_matched rows found, returned in
 this page from offset, dropped after it;
@@ -782,6 +784,89 @@ def tcp_health(path: str, filter: str | None = None, stream: int | None = None, 
         return _envelope("streams", rows, cap, scan, offset=offset, path_mtu=path_mtu, display_filter=flt, summary=summary)
     return _guarded("tcp_health", {"path": path, "filter": filter, "stream": stream, "mtu": mtu, "limit": limit,
                                    "offset": offset}, run)
+
+
+def _lint_ip(value: Any, what: str) -> str:
+    import ipaddress
+    try:
+        return str(ipaddress.ip_address(str(value).strip()))
+    except ValueError:
+        raise ToolError("invalid_argument", f"{what} must be an IPv4 or IPv6 address, got {value!r}") from None
+
+
+def _ip_clause(addr: str) -> str:
+    return f"ipv6.addr == {addr}" if ":" in addr else f"ip.addr == {addr}"
+
+
+@_tool(title="TCP connections (refused, filtered, who closed)", annotations=READ_ONLY)
+def tcp_connections(path: str, server: str | None = None, port: int | None = None, client: str | None = None,
+                    outcome: str | None = None, view: str = "connections", filter: str | None = None,
+                    limit: int = 200, offset: int = 0) -> models.TcpConnectionsResult:
+    """Can this host reach that port, and if not, is it refused, filtered or
+    prohibited? One row per TCP connection attempt (a SYN with a new initial sequence
+    number is a new attempt, the same one a retry; mirrored copies are dropped first)
+    with `outcome`: connected, refused (the server side answered the SYN with a reset:
+    nothing listens, or a firewall rejects with a reset), filtered (no answer at all: a
+    firewall drops it or the host is down; `near_capture_end` when the capture stopped
+    less than 3 s after the last SYN), prohibited (ICMP administratively prohibited
+    quoting the SYN), unreachable (another ICMP unreachable or TTL exceeded),
+    reset_during_handshake, handshake_incomplete (SYN-ACK never acknowledged) or
+    seen_midway. Per row: SYN retries and the gaps between them, `connect_ms` (first SYN
+    to SYN-ACK at the capture point), payload bytes each way, duration, `closed_by`
+    (client_fin, server_fin, client_rst, server_rst, open_at_capture_end), the flags seen
+    (`completeness`), ICMP errors with their sender, first and last frame. Failed
+    attempts come first. `view="destinations"` groups them per server address and port:
+    attempts, success rate, refused/filtered/prohibited counts, connect time p50/max,
+    median duration, distinct clients, peak concurrent connections and `issues` (one
+    client dropped while others connect: a host firewall or security group; refusals;
+    ICMP rejects; SYN retries; a client opening a new connection per request).
+    `server`, `client` (IP addresses) and `port` (the server port) narrow the
+    attempts; `outcome` keeps one outcome; `filter` is a display filter ANDed with
+    `tcp || icmp errors`. For loss, windows and MTU inside a connection use tcp_health."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if view not in ("connections", "destinations"):
+            raise ToolError("invalid_argument", "view must be 'connections' or 'destinations'")
+        if outcome is not None and outcome not in tcpconn.OUTCOMES:
+            raise ToolError("invalid_argument", f"outcome must be one of {', '.join(tcpconn.OUTCOMES)}, got {outcome!r}")
+        srv = _lint_ip(server, "server") if server not in (None, "") else None
+        cli = _lint_ip(client, "client") if client not in (None, "") else None
+        port_no = None
+        if port is not None and str(port).strip() != "":
+            port_no = to_int(str(port))
+            if port_no is None or not 0 < port_no < 65536:
+                raise ToolError("invalid_argument", f"port must be a TCP port between 1 and 65535, got {port!r}")
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        clauses = [f"({tcpconn.display_filter()})"]
+        clauses += [_ip_clause(a) for a in (srv, cli) if a]
+        if port_no is not None:
+            clauses.append(f"tcp.port == {port_no}")
+        flt = _filter(filter, base=" && ".join(clauses))
+        stdout, scan = _fields_run(capture, flt, tcpconn.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=packets.AGGREGATOR)
+        end_of = _interface_end(capture)
+        rows, summary, times = tcpconn.analyse(packets.parse(stdout, tcpconn.FIELDS), lambda: end_of(None))
+
+        def keep(r: dict[str, Any]) -> bool:
+            s_ip, s_port = r["server"].rsplit(":", 1)
+            c_ip = r["client"].rsplit(":", 1)[0]
+            return ((srv is None or s_ip.strip("[]") == srv) and (cli is None or c_ip.strip("[]") == cli)
+                    and (port_no is None or s_port == str(port_no)))
+        rows = [r for r in rows if keep(r)]
+        dests = tcpconn.destinations(rows, times)
+        summary["connections"] = len(rows)
+        summary["by_outcome"] = dict(Counter(r["outcome"] for r in rows).most_common())
+        summary["destinations"] = len(dests)
+        issues = [i for d in dests for i in d.get("issues", [])]
+        summary["issues"] = issues[:20]
+        if outcome is not None:
+            rows = [r for r in rows if r["outcome"] == outcome]
+            dests = [d for d in dests if d.get(outcome)]
+        key, chosen = ("destinations", dests) if view == "destinations" else ("connections", rows)
+        return _envelope(key, chosen, cap, scan, offset=offset, view=view, display_filter=flt, summary=summary)
+    return _guarded("tcp_connections", {"path": path, "server": server, "port": port, "client": client, "outcome": outcome,
+                                        "view": view, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="Conversations (top talkers)", annotations=READ_ONLY)

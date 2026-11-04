@@ -8,7 +8,7 @@ the tools.
 
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
-compact JSON. It cannot capture, write, export, resolve names or load code. Thirty-three
+compact JSON. It cannot capture, write, export, resolve names or load code. Thirty-four
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -59,6 +59,7 @@ a `TSHARK_MCP_*` environment variable.
 | Working versus failing capture of the same procedure | `compare_captures(path_a, path_b, imsi=...)` |
 | DNS failures, slow resolvers | `dns_transactions(path, name=...)` |
 | TLS handshake failures, certificate problems | `tls_handshakes(path, server_name=...)` |
+| Can this host reach that port? Refused, filtered or prohibited? | `tcp_connections(path, server=..., port=...)`; `view="destinations"` for success rate per server |
 | Slow application: network, server or receiver? | `response_times`; `tcp_health` for loss, resets, zero windows, MTU |
 | SS7 over IP: MAP, SCCP, M3UA | `sigtran_messages`; `sctp_associations` for the transport |
 | Anything else | `filter_packets(path, display_filter, fields)`; `find_fields(query)` and `check_filter(filter)` build the filter without reading a capture; `packet_detail(path, frame)` shows one packet in full |
