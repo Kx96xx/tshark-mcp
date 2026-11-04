@@ -3,7 +3,10 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tshark-mcp"
+# Distribution name on PyPI. "tshark-mcp" there belongs to an unrelated project, so the
+# package is published as tshark-mcp-server; the import name (tshark_mcp) and the command
+# (tshark-mcp) are unchanged.
+name = "tshark-mcp-server"
 version = "0.1.0"
 description = "Read-only MCP server for analysing packet captures with tshark: Diameter, GTP, SIP, SIGTRAN, with hard safety limits"
 readme = "README.md"
