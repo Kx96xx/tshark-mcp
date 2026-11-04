@@ -1233,6 +1233,172 @@ def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     }
 
 
+# --------------------------------------------------------------------------- examples/
+# The captures committed under examples/ in the repository. Each tells one story in a
+# few dozen packets; ``tests/test_examples.py`` regenerates them and checks that the
+# committed files are byte-identical and that the tools still read them as documented.
+
+EXAMPLE_CALL_ID = "one-way-audio-1@ue.example"
+EXAMPLE_IMSI_NO_EPS = "001010222333444"
+
+
+def write_example_sip_one_way_audio(path: Path) -> Path:
+    """One call where the called side never sends media. INVITE with an SDP offer
+    (PCMA and telephone-event), 100, 180, 200 with the answer, ACK; the caller sends
+    5 s of RTP to the address and port the answer named, nothing comes back; the caller
+    hangs up with BYE."""
+    t0 = 1_700_001_000.0
+    frames: list[tuple[float, bytes]] = []
+    req, resp = _voice_sip(EXAMPLE_CALL_ID, "ow1")
+
+    def ue(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, msg)))
+
+    def net(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, msg)))
+
+    offer = _sdp(UE_SIP_IP, 40010, [8, 101], ["8 PCMA/8000", "101 telephone-event/8000"],
+                 ["a=fmtp:101 0-15", "a=ptime:20", "a=sendrecv"])
+    answer = _sdp(MEDIA_GW_IP, 30010, [8, 101], ["8 PCMA/8000", "101 telephone-event/8000"],
+                  ["a=fmtp:101 0-15", "a=ptime:20", "a=sendrecv"])
+    ue(t0, req("INVITE", 1, extra=["Contact: <sip:198.51.100.9:5060>"], body=offer))
+    net(t0 + 0.030, resp(100, "Trying", 1, "INVITE", to_tag=None))
+    net(t0 + 0.900, resp(180, "Ringing", 1, "INVITE"))
+    net(t0 + 2.400, resp(200, "OK", 1, "INVITE", body=answer))
+    ue(t0 + 2.420, req("ACK", 1, to_tag="net"))
+    _audio(frames, t0 + 2.5, UE_SIP_IP, 40010, MEDIA_GW_IP, 30010, 0x6A6A6A6A, 8, 8000, 250, 1, 0)
+    ue(t0 + 7.600, req("BYE", 2, to_tag="net"))
+    net(t0 + 7.625, resp(200, "OK", 2, "BYE"))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
+def write_example_diameter_error_answer(path: Path) -> Path:
+    """S6a between an MME and an HSS: an Update-Location for one subscriber answered
+    DIAMETER_SUCCESS, the same request for a second subscriber answered with
+    Experimental-Result 5420 (DIAMETER_ERROR_UNKNOWN_EPS_SUBSCRIPTION), and a
+    watchdog exchange."""
+    mme = "mme01.epc.mnc001.mcc001.3gppnetwork.org"
+    hss = "hss01.epc.mnc001.mcc001.3gppnetwork.org"
+    realm = "epc.mnc001.mcc001.3gppnetwork.org"
+    t0 = 1_700_002_000.0
+    frames: list[tuple[float, bytes]] = []
+    tsn = 500
+
+    def send(ts: float, msg: bytes, from_mme: bool) -> None:
+        nonlocal tsn
+        if from_mme:
+            frames.append((ts, _sctp_data(MME_IP, HSS_IP, 3868, 3868, 0x1111, tsn, 46, msg)))
+        else:
+            frames.append((ts, _sctp_data(HSS_IP, MME_IP, 3868, 3868, 0x2222, tsn, 46, msg)))
+        tsn += 1
+
+    def ulr(sid: str, imsi: str, hbh: int, e2e: int) -> bytes:
+        return _diameter(316, S6A, hbh, e2e, True, _diam_common(sid, mme, realm, realm) + [
+            _avp(1, imsi.encode()),
+            _avp(1032, struct.pack("!I", 1004), vendor=VENDOR_3GPP),  # RAT-Type EUTRAN
+            _avp(1405, struct.pack("!I", 0x22), vendor=VENDOR_3GPP),  # ULR-Flags
+            _avp(1407, bytes([0x00, 0xF1, 0x10]), vendor=VENDOR_3GPP),  # Visited-PLMN-Id 001/01
+        ])
+
+    sid1 = f"{mme};1700002000;1"
+    ula_ok = _diameter(316, S6A, 0x2001, 0xB001, False, [
+        _avp(263, sid1.encode()),
+        _avp(268, struct.pack("!I", 2001)),
+        _avp(264, hss.encode()),
+        _avp(296, realm.encode()),
+        _avp(258, struct.pack("!I", S6A)),
+        _avp(1406, struct.pack("!I", 1), vendor=VENDOR_3GPP),  # ULA-Flags
+    ])
+    send(t0 + 0.000, ulr(sid1, IMSI, 0x2001, 0xB001), True)
+    send(t0 + 0.052, ula_ok, False)
+
+    sid2 = f"{mme};1700002000;2"
+    ula_err = _diameter(316, S6A, 0x2002, 0xB002, False, [
+        _avp(263, sid2.encode()),
+        _avp(297, _avp(266, struct.pack("!I", VENDOR_3GPP)) + _avp(298, struct.pack("!I", 5420))),
+        _avp(264, hss.encode()),
+        _avp(296, realm.encode()),
+        _avp(258, struct.pack("!I", S6A)),
+    ])
+    send(t0 + 1.000, ulr(sid2, EXAMPLE_IMSI_NO_EPS, 0x2002, 0xB002), True)
+    send(t0 + 1.037, ula_err, False)
+
+    dwr = _diameter(280, 0, 0x2003, 0xB003, True, [_avp(264, hss.encode()), _avp(296, realm.encode())])
+    dwa = _diameter(280, 0, 0x2003, 0xB003, False, [
+        _avp(268, struct.pack("!I", 2001)), _avp(264, mme.encode()), _avp(296, realm.encode()),
+    ])
+    send(t0 + 5.000, dwr, False)
+    send(t0 + 5.003, dwa, True)
+    return _frames_to_pcap(path, frames)
+
+
+def write_example_gtpv2_create_session_rejected(path: Path) -> Path:
+    """S5/S8 between an SGW and a PGW: an Echo exchange, a Create Session accepted with
+    a PDN address, a Create Session for a second subscriber rejected with cause 78
+    (Missing or unknown APN), and the first session deleted cleanly."""
+    t0 = 1_700_003_000.0
+    frames: list[tuple[float, bytes]] = []
+
+    def c(ts: float, msg: bytes, from_sgw: bool = True) -> None:
+        if from_sgw:
+            frames.append((ts, _udp_frame(SGW_IP, PGW_IP, 2123, 2123, msg)))
+        else:
+            frames.append((ts, _udp_frame(PGW_IP, SGW_IP, 2123, 2123, msg)))
+
+    c(t0 + 0.0, _gtpv2(1, None, 1, [_ie(3, bytes([7]))]))
+    c(t0 + 0.002, _gtpv2(2, None, 1, [_ie(3, bytes([9]))]), from_sgw=False)
+
+    csr = _gtpv2(32, 0, 20, [
+        _ie(1, _tbcd(IMSI)),
+        _ie(76, _tbcd(MSISDN)),
+        _ie(82, bytes([6])),  # RAT type EUTRAN
+        _ie(87, _fteid(6, 0x0000A101, SGW_IP)),  # S5/S8 SGW GTP-C
+        _apn_ie(APN),
+        _ie(99, bytes([1])),  # PDN type IPv4
+        _ie(79, bytes([1, 0, 0, 0, 0])),
+        _ie(93, _ie(73, bytes([5])) + _ie(87, _fteid(4, 0x0000B101, SGW_IP), instance=2)),
+    ])
+    csresp = _gtpv2(33, 0x0000A101, 20, [
+        _ie(2, bytes([16, 0])),  # Request accepted
+        _ie(87, _fteid(7, 0x0000C101, PGW_IP), instance=1),
+        _ie(79, bytes([1]) + _ipv4(UE_IP)),
+        _ie(93, _ie(73, bytes([5])) + _ie(2, bytes([16, 0])) + _ie(87, _fteid(5, 0x0000D101, PGW_IP), instance=2)),
+    ])
+    c(t0 + 1.000, csr)
+    c(t0 + 1.095, csresp, from_sgw=False)
+
+    csr2 = _gtpv2(32, 0, 21, [
+        _ie(1, _tbcd(IMSI_OTHER)),
+        _ie(76, _tbcd(MSISDN_OTHER)),
+        _ie(82, bytes([6])),
+        _ie(87, _fteid(6, 0x0000A102, SGW_IP)),
+        _apn_ie("internet.wrong.apn"),
+        _ie(99, bytes([1])),
+        _ie(93, _ie(73, bytes([5])) + _ie(87, _fteid(4, 0x0000B102, SGW_IP), instance=2)),
+    ])
+    csresp2 = _gtpv2(33, 0x0000A102, 21, [_ie(2, bytes([78, 0]))])  # Missing or unknown APN
+    c(t0 + 2.000, csr2)
+    c(t0 + 2.028, csresp2, from_sgw=False)
+
+    dsr = _gtpv2(36, 0x0000C101, 22, [_ie(73, bytes([5]))])
+    dsresp = _gtpv2(37, 0x0000A101, 22, [_ie(2, bytes([16, 0]))])
+    c(t0 + 9.000, dsr)
+    c(t0 + 9.041, dsresp, from_sgw=False)
+    return _frames_to_pcap(path, frames)
+
+
+def write_example_pcaps(directory: Path) -> dict[str, Path]:
+    """The three captures committed under ``examples/``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {
+        "sip_one_way_audio": write_example_sip_one_way_audio(directory / "sip_one_way_audio.pcap"),
+        "diameter_error_answer": write_example_diameter_error_answer(directory / "diameter_error_answer.pcap"),
+        "gtpv2_create_session_rejected": write_example_gtpv2_create_session_rejected(
+            directory / "gtpv2_create_session_rejected.pcap"),
+    }
+
+
 def write_all(directory: Path) -> dict[str, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     return {
