@@ -30,15 +30,23 @@ class CopyTracker:
     def __init__(self, id_window: float | None = None, zero_window: float = DUPLICATE_WINDOW_S) -> None:
         self.id_window = id_window
         self.zero_window = zero_window
-        self._seen: dict[Hashable, tuple[float | None, Any]] = {}
+        self._seen: dict[Hashable, tuple[float | None, Any, Any]] = {}
 
-    def check(self, key: Hashable, nonzero_id: bool, time: float | None, info: Any = None) -> tuple[bool, Any]:
-        """(is a copy, the ``info`` stored with the first sighting). The latest time is kept."""
+    def check(self, key: Hashable, nonzero_id: bool, time: float | None, info: Any = None,
+              distinct: Any = None) -> tuple[bool, Any]:
+        """(is a copy, the ``info`` stored with the first sighting). The latest time is kept.
+
+        ``distinct`` is a value a true copy must share when both packets carry it (a
+        verified transport checksum, see :func:`copy_distinct`): two packets whose
+        ``distinct`` values differ are different packets however alike their headers, as
+        with a stack that reuses one IP ID, and the newer one starts a new sighting."""
         previous = self._seen.get(key)
-        self._seen[key] = (time, previous[1] if previous is not None else info)
+        if previous is not None and distinct is not None and previous[2] is not None and previous[2] != distinct:
+            previous = None
+        self._seen[key] = (time, previous[1] if previous is not None else info, distinct)
         if previous is None:
             return False, None
-        seen_at, first_info = previous
+        seen_at, first_info, _ = previous
         window = self.id_window if nonzero_id else self.zero_window
         if window is None:
             return True, first_info
@@ -58,6 +66,24 @@ def nonzero(*ids: str | None) -> bool:
         except ValueError:
             continue
     return False
+
+
+GOOD_CHECKSUM = "1"
+
+
+def copy_distinct(rec: dict[str, Any], has_id: bool) -> str | None:
+    """The verified TCP or UDP checksum of a generic packet record, for ``CopyTracker.check``.
+
+    With an IP ID the checksum stays out of :func:`copy_key` because a copy taken before
+    checksum offload carries a wrong one. But when tshark verified both checksums as good
+    (``capture_quality`` asks it to) and they differ, the packets differ: a stack that sends
+    every datagram with the same IP ID must not turn a whole RTP stream into copies."""
+    if not has_id:
+        return None
+    transport = rec.get("tcp") or rec.get("udp")
+    if transport and transport.get("checksum") == GOOD_CHECKSUM and transport.get("checksum_value"):
+        return transport["checksum_value"]
+    return None
 
 
 def has_ip_id(rec: dict[str, Any]) -> bool:
@@ -84,14 +110,13 @@ def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
     elif udp:
         transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"))
     elif rec.get("sctp"):
-        # SCTP without an IP ID (Linux sends it with DF and ID 0): two SACKs, DATA packets or
-        # heartbeats of one association a fraction of a millisecond apart are different packets,
-        # and they differ in the TSNs, the acknowledged TSN or the heartbeat information. The
-        # CRC32c is left out: a copy taken before checksum offload carries 0 there and the copy
-        # on the wire the real value.
+        # SCTP: two SACKs, DATA packets or heartbeats of one association are different packets,
+        # and they differ in the TSNs, the acknowledged TSN or the heartbeat information, whether
+        # or not the stack gives them distinct IP IDs (Linux sends SCTP with DF and ID 0; other
+        # stacks reuse one ID). The CRC32c is left out: a copy taken before checksum offload
+        # carries 0 there and the copy on the wire the real value.
         sc = rec["sctp"]
-        transport = ("sctp",) if has_id else ("sctp", sc["vtag"], sc["chunks"], sc["tsns"], sc["cum_tsn"], sc["a_rwnd"],
-                                              sc["heartbeat"])
+        transport = ("sctp", sc["vtag"], sc["chunks"], sc["tsns"], sc["cum_tsn"], sc["a_rwnd"], sc["heartbeat"])
     else:
         # ICMP without an IP ID: the checksum tells an echo or other message from the next one. It
         # cannot tell two errors apart, though: when the quoted packets differ only in fields their

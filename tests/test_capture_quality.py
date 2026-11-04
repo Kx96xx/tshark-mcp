@@ -160,6 +160,30 @@ def test_udp_without_ip_id_same_size_different_payload_is_not_a_copy(configure, 
         "frame": 3, "copy_of": 2, "cause": "identical headers (SPAN or mirror of both directions of a port, or a Linux any capture)"}
 
 
+def test_same_nonzero_ip_id_with_verified_different_checksums_is_not_a_copy(configure, tmp_path: Path):
+    """A stack that sends every datagram with IP ID 1 (scapy's default, and some embedded
+    stacks): the RTP packets differ in payload and verified UDP checksum, so they are not
+    copies; the one byte-for-byte repeat still is."""
+    cap = Cap(step=0.020)
+    for i in range(20):
+        cap.add(Ether() / IP(src=CLI, dst=SRV, id=1) / UDP(sport=40000, dport=30000) / Raw(bytes([0x80, 0, 0, i]) + bytes(36)))
+    cap.add(Ether() / IP(src=CLI, dst=SRV, id=1) / UDP(sport=40000, dport=30000) / Raw(bytes([0x80, 0, 0, 19]) + bytes(36)))
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 1 and out["duplicates"]["examples"][0]["copy_of"] == 20
+    assert out["verdict"]["loss_conclusions"] == "use with care"  # the one copy, not twenty
+
+
+def test_sctp_same_ip_id_different_tsn_is_not_a_copy(configure, tmp_path: Path):
+    """Two Diameter requests of the same size over SCTP, both with IP ID 1: different TSNs,
+    different packets. The byte-for-byte repeat of the second is the only copy."""
+    cap = Cap(step=0.050)
+    for tsn in (100, 101, 101):
+        cap.add(Ether(g._sctp_data(g.MME_IP, g.HSS_IP, 3868, 3868, 0x1111, tsn, 46, b"\x01" + bytes(99))))
+    out = run(configure, tmp_path, cap)
+    assert out["duplicates"]["copies"] == 1
+    assert (out["duplicates"]["examples"][0]["frame"], out["duplicates"]["examples"][0]["copy_of"]) == (3, 2)
+
+
 def test_linux_any_capture_copy_leaving_and_arriving(configure, tmp_path: Path):
     cap = Cap()
     for i in range(3):
