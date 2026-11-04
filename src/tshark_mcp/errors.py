@@ -49,6 +49,7 @@ STATIC_FIXES: dict[str, str] = {
     "parse_error": "tshark output could not be parsed; retry with a narrower filter and report the arguments as a bug",
     "busy": ("the server is already running its maximum number of tshark processes; wait for your other calls "
              "to finish and call again, one at a time"),
+    "cancelled": "the client cancelled the call and tshark was killed; call again if the answer is still needed",
     "capture_changed": "the capture file was replaced while it was read; call again once the file stops changing",
     "internal_error": "retry once with narrower arguments; if it fails again report the tool name and arguments as a bug",
 }

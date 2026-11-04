@@ -47,6 +47,10 @@ more and the hardening landed the same day (listed under Added, Changed and Secu
 
 ### Changed
 
+- Cancelling a request kills tshark within a quarter of a second instead of letting it run to
+  its timeout; the audit log records `cancelled`. With a `progressToken`, `find_identifier`
+  reports files done out of files planned and other tools one notification per finished tshark
+  run, at most one per second.
 - Tool errors are returned with `isError: true`, so clients show and count them as failures;
   the structured `{"error": {...}}` stays in `structuredContent` and the text content. Every
   error carries a `fix` hint; `not_found` and `not_a_file` list nearby capture files in

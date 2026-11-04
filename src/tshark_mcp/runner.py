@@ -14,6 +14,7 @@ The runner is the only place that starts a process. It enforces:
 * a lower CPU priority (nice 10) and, on Linux, an address-space limit for the child;
 * at most ``max_concurrent_runs`` children at once (a later call waits up to
   ``busy_wait_seconds``, then fails with ``busy``);
+* a cancelled MCP request kills the child within a quarter of a second;
 * the capture keeps the same device and inode from before the start to the end of the
   run, so a file swapped in after the allowlist check is never read.
 """
@@ -35,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+from . import progress
 from .limits import Limits, ToolError
 
 # Messages tshark prints when a capture ends early or has a damaged record. The
@@ -128,6 +130,7 @@ def check_decode_as(value: str) -> None:
 # WIRESHARK_*, SSLKEYLOGFILE, LD_PRELOAD, DYLD_*) is dropped.
 KEPT_ENV: tuple[str, ...] = ("PATH", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "WINDIR")
 NICE_INCREMENT = 10
+CANCEL_POLL_SECONDS = 0.25
 # Lines tshark, GLib or a Python fake print when an allocation fails.
 OUT_OF_MEMORY_MARKERS: tuple[str, ...] = ("out of memory", "failed to allocate", "cannot allocate memory",
                                           "bad_alloc", "memoryerror")
@@ -284,14 +287,27 @@ class Runner:
         started = time.monotonic()
         limit = self.limits.timeout_seconds if timeout is None else max(0.0, min(timeout, self.limits.timeout_seconds))
         wait = max(0.0, min(self.limits.busy_wait_seconds, limit))
-        if not self._slots.acquire(timeout=wait):
+        if not self._acquire(wait):
             raise ToolError("busy", f"{self.limits.max_concurrent_runs} tshark runs are already in progress and none "
                                     f"finished within {round(wait, 3)}s", max_concurrent_runs=self.limits.max_concurrent_runs)
         try:
-            return self._run(program, args, stdin=stdin, limit=limit, started=started, capture=capture,
-                             keep_line=keep_line)
+            progress.raise_if_cancelled()
+            result = self._run(program, args, stdin=stdin, limit=limit, started=started, capture=capture,
+                               keep_line=keep_line)
         finally:
             self._slots.release()
+        progress.run_finished(result.duration_ms)
+        return result
+
+    def _acquire(self, wait: float) -> bool:
+        """Wait up to ``wait`` seconds for a run slot, giving up early on cancellation."""
+        end = time.monotonic() + wait
+        while True:
+            if self._slots.acquire(timeout=max(0.0, min(CANCEL_POLL_SECONDS, end - time.monotonic()))):
+                return True
+            progress.raise_if_cancelled()
+            if time.monotonic() >= end:
+                return False
 
     def _run(self, program: str, args: Sequence[str], *, stdin: bytes | None, limit: float, started: float,
              capture: tuple[Path, tuple[int, int]] | None,
@@ -340,7 +356,10 @@ class Runner:
                     failure = ToolError("timeout", f"tshark exceeded {round(limit, 3)}s and was killed",
                                         timeout_seconds=round(limit, 3))
                     break
-                if not sel.select(timeout=min(remaining, 0.5)):
+                if progress.cancelled():
+                    _kill(proc)
+                    raise progress.Cancelled()
+                if not sel.select(timeout=min(remaining, CANCEL_POLL_SECONDS)):
                     continue
                 chunk = os.read(proc.stdout.fileno(), 1 << 16)
                 if not chunk:
