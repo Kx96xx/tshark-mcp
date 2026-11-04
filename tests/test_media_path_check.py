@@ -86,6 +86,25 @@ class TestMediaPathCheck:
         assert "203.0.113.7:61000" in out["verdict"] and "10.0.0.5:40000" in out["verdict"]
         assert [d["status"] for d in out["directions"]] == ["arrives from another source", "as negotiated"]
 
+    def test_one_way_by_signalling_is_not_one_way_media(self):
+        """Offer a=recvonly, answer a=sendonly: only the answerer sends, as negotiated. The
+        missing offerer-to-answerer RTP is expected, not a fault (it used to be one_way_media)."""
+        offer = _sdp("192.0.2.1", 6000, "0", ["0 PCMU/8000"], direction="recvonly")
+        answer = _sdp("192.0.2.2", 7000, "0", ["0 PCMU/8000"], direction="sendonly")
+        out = media.check("c1", _sdps(offer, answer), [_stream("192.0.2.2:7000", "192.0.2.1:6000")])
+        assert [i["kind"] for i in out["issues"]] == ["media_direction", "media_direction"]
+        assert out["directions"][0]["status"] == "not expected (a=recvonly in the offer)"
+        assert out["directions"][1]["status"] == "as negotiated"
+        assert "one-way audio as captured" not in out["verdict"]
+        # the same SDP with the answerer silent too: that one is a real one-way-media finding
+        silent = media.check("c1", _sdps(offer, answer), [])
+        assert "no_rtp" in [i["kind"] for i in silent["issues"]]
+        # inactive on both sides and no RTP: nothing was expected, so no no_rtp either
+        hold = media.check("c1", _sdps(_sdp("192.0.2.1", 6000, "0", ["0 PCMU/8000"], direction="inactive"),
+                                       _sdp("192.0.2.2", 7000, "0", ["0 PCMU/8000"], direction="inactive")), [])
+        assert [i["kind"] for i in hold["issues"]] == ["media_direction", "media_direction"]
+        assert all(d["status"].startswith("not expected") for d in hold["directions"])
+
     def test_one_way(self, server, pcap_dir):
         out = server.media_path_check(_voice(pcap_dir, "voice_problems.pcap"), pcapgen.CALL_ID_ONEWAY)
         assert [i["kind"] for i in out["issues"]] == ["one_way_media"]

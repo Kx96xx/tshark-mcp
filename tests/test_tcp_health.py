@@ -190,6 +190,28 @@ def test_constant_ip_id_falls_back_to_the_time_window(configure, tmp_path: Path)
     assert d.get("out_of_order") == 1 and d["retransmissions"] == 0
 
 
+def test_overlap_with_new_data_within_a_round_trip_is_not_a_retransmission(configure, tmp_path: Path):
+    """A segment that repeats the last 100 bytes and adds 400 new ones 1 ms after the tail
+    passed cannot be a loss-triggered resend on a 32 ms path; the same overlap 0.5 s later is."""
+    cap = Cap()
+    c = Conn(cap)
+    c.handshake()
+    c.down(2)
+    tail = c.sseq - 100
+    cap.add(c.pkt(False, tail, c.cseq, "PA", payload=500), t=round(cap.t + 0.001, 6))
+    cap.t = round(cap.t + 0.001, 6)
+    c.sseq = tail + 500
+    c.ack()
+    c.down(1)
+    tail = c.sseq - 100
+    cap.add(c.pkt(False, tail, c.cseq, "PA", payload=500), t=round(cap.t + 0.5, 6))
+    cap.t = round(cap.t + 0.5, 6)
+    c.sseq = tail + 500
+    c.ack()
+    d = only(run(configure, tmp_path, cap))["server_to_client"]
+    assert d.get("out_of_order") == 1 and d.get("retransmitted_after_capture") == 1 and d["retransmissions"] == 1
+
+
 def test_duplicate_acks_and_zero_window(configure, tmp_path: Path):
     cap = Cap()
     c = Conn(cap)

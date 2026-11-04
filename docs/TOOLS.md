@@ -45,7 +45,14 @@ and the redaction rules.
 
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
 annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false`. Failures come back
-as `{"error": {"type": ..., "message": ...}}` rather than exceptions.
+as `{"error": {"type": ..., "message": ..., "fix": ...}}` with `isError: true` on the MCP
+result (the same JSON is in `structuredContent` and in the text content), never as protocol
+errors. `fix` is one sentence saying what to change or which tool to call next. Some types
+add a list: `path_not_allowed` keeps `allowed_dirs`; `not_found` and `not_a_file` add
+`candidates` (up to 10 capture files in the allowed directory the path pointed into);
+`invalid_filter` and `unknown_field` add `suggestions` (up to 5 field names close to the
+unknown one); `timeout` and `output_too_large` name the arguments of that tool that narrow
+the call; `unknown_token` says tokens live for one server run.
 
 Every tool that takes a `limit` also takes an `offset` and returns one page:
 `total_matched` rows were found, `returned` of them are in this page starting at `offset`,
