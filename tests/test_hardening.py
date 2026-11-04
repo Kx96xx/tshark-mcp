@@ -270,3 +270,13 @@ def test_planted_plugin_does_not_run_through_the_server(pcap_dir: Path, tmp_path
     assert "error" not in structured, structured
     assert structured["returned"] == 1
     assert not marker.exists()
+
+
+def test_new_error_types_have_a_fix():
+    from tshark_mcp import errors
+    for kind in ("busy", "capture_changed"):
+        assert errors.add_fix({"type": kind, "message": "m"}, "pcap_info", {"path": "/x"}, allowlist=None,
+                              catalogue=None, suffixes={".pcap"})["fix"]
+    oom = errors.add_fix({"type": "tshark_failed", "message": "m", "out_of_memory": True}, "gtp_sessions",
+                         {"path": "/x", "imsi": None, "teid": None}, allowlist=None, catalogue=None, suffixes={".pcap"})
+    assert "memory" in oom["fix"] and "imsi" in oom["fix"]
