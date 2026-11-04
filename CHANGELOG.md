@@ -27,6 +27,10 @@ the project uses [semantic versioning](https://semver.org/).
 - `http_transactions`: HTTP/1.x requests paired with responses and HTTP/2 / gRPC streams with
   status, sizes, response time and TTFB, per-endpoint status mix and percentiles, gRPC status
   names, reset streams, unanswered requests and the ports carrying HTTP that tshark left raw.
+- `call_kpis`: ASR, SER (RFC 6076, with and without 487), NER, post-dial delay, ringing time and
+  ACD per peer, trunk, number prefix, user agent or interval, with failure codes, Q.850 causes and
+  the worst calls by Call-ID and frame. Calls still open when the capture stopped are counted as
+  `near_capture_end` and left out of the ratios; `method` states every definition.
 
 ### Changed
 

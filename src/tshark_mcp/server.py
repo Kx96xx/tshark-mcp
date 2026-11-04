@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, callkpi, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -62,7 +62,7 @@ gtpv1_sessions, pfcp_sessions, sigtran_messages or sip_dialogs with a structured
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
 Diameter transaction (subscription data, flags, cancellation type).
 sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
-up). media_path_check explains one-way audio and 488s. For voice quality,
+up); call_kpis gives ASR, NER, PDD and ACD per peer, trunk, prefix or interval. media_path_check explains one-way audio and 488s. For voice quality,
 rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
 linked to the SIP Call-ID; dtmf_events lists the digits sent in RTP or SIP
 INFO. ims_registration gives each UE's IMS registration (challenge, 200 OK,
@@ -2172,6 +2172,55 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
         return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), offset=offset, summary=summary, selection=select)
     return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
                                     "filter": filter, "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="SIP call KPIs (ASR, NER, PDD, ACD)", annotations=READ_ONLY)
+def call_kpis(path: str, group_by: str = "peer", prefix_len: int = 4, interval: float = 300.0,
+              filter: str | None = None, number: str | None = None, limit: int = 100,
+              offset: int = 0) -> models.CallKpisResult:
+    """Call success and timing KPIs for the SIP INVITE calls in a capture, per group:
+    `group_by` is peer (the address the first INVITE went to), trunk (source > destination
+    of the first INVITE), destination_prefix or source_prefix (the first `prefix_len`
+    digits of the called or calling number, + and 00 stripped), user_agent, or interval
+    (`interval` seconds by first INVITE). Each group gives calls, answered, failed,
+    `asr_pct`, `ser_pct` and `ser_without_487_pct` (RFC 6076), `ner_pct` (busy, rejected
+    and no-answer-after-alerting count as network successes), `pdd_ms` percentiles (INVITE
+    to first 180/183, RFC 6076 Session Request Delay), `answer_without_ringing_ms`,
+    `ringing_ms`, `acd_s` (200 to BYE), `failure_codes` by SIP status and `q850_causes`
+    from Reason headers, `no_final_response` and `near_capture_end` (calls still open when
+    the capture stopped, left out of every ratio). `summary` repeats the numbers for the
+    whole file, `method` states each definition and `worst_calls` lists the failed and
+    slowest calls with Call-ID and frame for sip_call_detail. `number` keeps calls whose
+    calling or called user part contains those digits; `filter` is a display filter ANDed
+    with `sip`. Use it for "what is our ASR to this destination" or "did PDD rise"."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if group_by not in callkpi.GROUP_BY:
+            raise ToolError("invalid_argument", f"group_by must be one of {', '.join(callkpi.GROUP_BY)}")
+        try:
+            plen = int(prefix_len)
+            step = float(interval)
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", "prefix_len must be an integer and interval a number of seconds") from None
+        if not 1 <= plen <= 15:
+            raise ToolError("invalid_argument", "prefix_len must be 1 to 15 digits")
+        if not 1.0 <= step <= 86400.0:
+            raise ToolError("invalid_argument", "interval must be 1 to 86400 seconds")
+        num = lint_digits(number, "number") if number else None
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        stdout, scan = _fields_run(capture, _filter(filter, base="sip"), callkpi.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=sip.AGGREGATOR)
+        end, _ = _last_packet_time(capture, stdout)
+        calls = callkpi.build_calls(stdout, end)
+        if num:
+            calls = [c for c in calls if num in (c.get("to") or "") or num in (c.get("from_user") or "")]
+        rows, summary = callkpi.summarise(calls, group_by, plen, step)
+        worst = callkpi.worst_calls(calls, group_by, plen, step)
+        return _envelope("groups", rows, cap, scan, offset=offset, group_by=group_by, summary=summary,
+                         worst_calls=worst, method=callkpi.METHOD)
+    return _guarded("call_kpis", {"path": path, "group_by": group_by, "prefix_len": prefix_len, "interval": interval,
+                                  "filter": filter, "number": number, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)
