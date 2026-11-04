@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, callkpi, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -60,7 +60,8 @@ tools. For "why did subscriber X fail" questions call trace_subscriber first,
 then drill into diameter_sessions, diameter_transactions, gtp_sessions,
 gtpv1_sessions, pfcp_sessions, sigtran_messages or sip_dialogs with a structured filter (imsi, session_id,
 call_id, ...) or a display filter. diameter_avps shows the AVPs behind a
-Diameter transaction (subscription data, flags, cancellation type).
+Diameter transaction (subscription data, flags, cancellation type);
+gtp_ies does the same for GTPv2-C IEs (APN, PDN type, QoS, ULI, offending IE).
 sip_call_detail explains one call (post-dial delay, SDP, Reason, who hung
 up); call_kpis gives ASR, NER, PDD and ACD per peer, trunk, prefix or interval. media_path_check explains one-way audio and 488s. For voice quality,
 rtp_streams gives per-stream loss, jitter, RTCP and a labelled MOS estimate
@@ -1737,6 +1738,123 @@ def gtp_sessions(path: str, imsi: str | None = None, apn: str | None = None, tei
         return _envelope("transactions", rows, cap, scan, offset=offset, summary=summary, selection=select)
     return _guarded("gtp_sessions", {"path": path, "imsi": imsi, "apn": apn, "teid": teid, "filter": filter,
                                      "limit": limit, "offset": offset}, run)
+
+
+GTP_IE_DETAIL = ("key", "full")
+
+
+def _gtp_message_type(message: Any) -> int | None:
+    """A GTPv2-C message type from its number or name ("Create Session Request", "create session")."""
+    if message is None or str(message).strip() == "":
+        return None
+    text = str(message).strip()
+    code = to_int(text)
+    if code is not None:
+        if not 0 < code < 256:
+            raise ToolError("invalid_argument", f"message type must be 1 to 255, got {message!r}")
+        return code
+    wanted = " ".join(text.lower().replace("_", " ").split())
+    for mtype, name in gtp.MESSAGE_TYPES.items():
+        if name.lower() == wanted or name.lower() == f"{wanted} request":
+            return mtype
+    raise ToolError("invalid_argument", f"unknown GTPv2-C message {message!r}; give the type number or a name "
+                                        "such as 'Create Session Request'")
+
+
+@_tool(title="GTPv2-C information elements", annotations=READ_ONLY)
+def gtp_ies(path: str, imsi: str | None = None, teid: str | int | None = None, frame: int | None = None,
+            message: str | int | None = None, filter: str | None = None, detail: str = "key", max_ies: int = 200,
+            limit: int = 20, offset: int = 0) -> models.GtpIesResult:
+    """The information elements of paired GTPv2-C requests and responses: the GTP
+    counterpart of diameter_avps. Select with `imsi`, `teid` (header or F-TEID, decimal or
+    0x hex), `frame` (a request or response frame) and/or `message` (type number or name,
+    e.g. "Create Session Request"; a request name also selects its response); both halves
+    of each transaction are kept. `detail="key"` (default) gives `request_ies` and
+    `response_ies` with the IEs read first: IMSI, MSISDN, MEI, APN, selection mode, PDN
+    type, PAA, APN restriction, serving network, RAT, ULI (TAI, ECGI, CGI, SAI, RAI with
+    MCC-MNC), UE time zone, indication flags set, charging characteristics and ID,
+    recovery, APN-AMBR, F-TEIDs by interface, PCO option names (never PAP/CHAP contents),
+    bearer contexts (EBI, QCI, ARP, MBR/GBR, F-TEIDs, cause), the cause with its
+    `offending_ie` and `source` (CS bit), and the RAN/NAS cause a Delete Session carries;
+    other IEs are listed by name. A rejected or partly accepted response adds
+    `likely_causes` built from the request (cause 78 and the APN sent, 73 with IPv4v6
+    requested, 92 with PAP in the PCO, 64 and the Recovery IE, ...). `detail="full"` gives
+    every IE as a tree, at most `max_ies` IEs per message (server cap 2000).
+    `filter` is ANDed with `gtpv2`; `limit` caps transactions (default 20)."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if detail not in GTP_IE_DETAIL:
+            raise ToolError("invalid_argument", f"detail must be one of {', '.join(GTP_IE_DETAIL)}")
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        teid_i = lint_teid(teid) if teid is not None and str(teid).strip() != "" else None
+        frame_n = None
+        if frame is not None:
+            frame_n = to_int(str(frame))
+            if frame_n is None or frame_n < 1:
+                raise ToolError("invalid_argument", f"frame must be a positive frame number, got {frame!r}")
+        mtype = _gtp_message_type(message)
+        budget = clamp_limit(max_ies, gtpies.HARD_MAX_IES, 200)
+        cap = clamp_limit(limit, st.limits.max_packets, 20)
+        base = _filter(filter, base="gtpv2")
+        parts = [p for p in (gtp.selection_filter(imsi_d, None, teid_i),
+                             f"frame.number == {frame_n}" if frame_n is not None else None,
+                             (f"gtpv2.message_type in {{{mtype}, {gtp.REQUEST_TO_RESPONSE.get(mtype, mtype)}}}"
+                              if mtype is not None else None)) if p]
+        select = " && ".join(f"({p})" for p in parts) if parts else None
+        pre: Scan | None = None
+        flt = base
+        if select:
+            stdout, pre = _fields_run(capture, f"({base}) && ({select})", ["gtpv2.seq"], st.limits.max_scan_packets)
+            seqs = {s for ln in stdout.splitlines() for s in (to_int(v) for v in ln.strip().split(",")) if s is not None}
+            corr = gtp.correlation_filter(seqs, set())
+            if corr is None:
+                return _envelope("transactions", [], cap, pre, offset=offset, detail=detail, selection=select)
+            flt = f"({base}) && ({corr})"
+        packets, scan = _json_run(capture, flt, gtp.JSON_LAYERS, st.limits.max_packets)
+        scan = _merge_scans(pre, scan)
+        txs = gtp.pair(gtp.extract_messages(packets, keep_raw=True))
+        rows = []
+        dropped_any = False
+        for tx in txs:
+            row = gtp.transaction_row(tx)
+            if select and not gtp.row_matches(row, imsi_d, None, teid_i):
+                continue
+            frames = {m.frame for m in (tx.request, tx.answer) if m is not None}
+            if frame_n is not None and frame_n not in frames:
+                continue
+            types = {m.fields.get("message_type") for m in (tx.request, tx.answer) if m is not None}
+            if mtype is not None and mtype not in types:
+                continue
+            out = {k: row[k] for k in ("time", "message", "response", "seq", "teid", "request_frame", "answer_frame",
+                                       "src", "dst", "rtt_ms", "cause", "cause_name", "accepted", "unanswered")
+                   if k in row}
+            req_raw = tx.request.fields.get("raw") if tx.request is not None else None
+            for side, msg in (("request", tx.request), ("response", tx.answer)):
+                if msg is None:
+                    continue
+                raw = msg.fields.get("raw") or {}
+                if detail == "full":
+                    out[f"{side}_ies"], dropped = gtpies.full_tree(raw, budget)
+                    if dropped:
+                        out[f"{side}_ies_dropped"] = dropped
+                        dropped_any = True
+                else:
+                    out[f"{side}_ies"] = gtpies.key_view(raw, req_raw if side == "response" else None)
+            if detail == "key" and "request_ies" in out and "response_ies" in out:
+                why = gtpies.likely_causes(out["request_ies"], out["response_ies"])
+                if why:
+                    out["likely_causes"] = why
+            rows.append(out)
+        result = _envelope("transactions", rows, cap, scan, offset=offset, detail=detail, selection=select)
+        if dropped_any:
+            note = f"some messages have more than {budget} IEs; raise max_ies (server cap {gtpies.HARD_MAX_IES})"
+            result["truncated"] = True
+            result["truncated_reason"] = f'{result["truncated_reason"]}; {note}' if result.get("truncated_reason") else note
+        return result
+    return _guarded("gtp_ies", {"path": path, "imsi": imsi, "teid": teid, "frame": frame, "message": message,
+                                "filter": filter, "detail": detail, "max_ies": max_ies, "limit": limit,
+                                "offset": offset}, run)
 
 
 @_tool(title="GTPv1-C PDP contexts", annotations=READ_ONLY)
