@@ -24,6 +24,9 @@ the project uses [semantic versioning](https://semver.org/).
   tshark release names a code that has neither curated text nor an `unexplained` listing.
   Diameter codes are read as Result-Code or, with `application`, as that application's
   Experimental-Result-Code. No capture is read.
+- `http_transactions`: HTTP/1.x requests paired with responses and HTTP/2 / gRPC streams with
+  status, sizes, response time and TTFB, per-endpoint status mix and percentiles, gRPC status
+  names, reset streams, unanswered requests and the ports carrying HTTP that tshark left raw.
 
 ### Changed
 

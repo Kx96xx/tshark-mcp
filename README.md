@@ -125,7 +125,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Thirty-seven tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Thirty-eight tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. Full arguments, fields and
 examples: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -153,6 +153,7 @@ examples: [docs/TOOLS.md](docs/TOOLS.md).
 | `message_rates` | Messages per interval, bursts, storms and subscriber loops with the nodes involved |
 | `dns_transactions` | Queries paired with responses, unanswered ones included, per-server latency, failing names |
 | `tls_handshakes` | Client offer versus server choice, alerts, certificate, outcome per connection |
+| `http_transactions` | HTTP/1.x pairs and HTTP/2 / gRPC streams: status, size, timing; per-endpoint 5xx share and p99 |
 | `response_times` | Network, server and receiver time per TCP flow (HTTP/1, HTTP/2, gRPC) |
 | `tcp_health` | Per-stream loss by location, resets with their likely source, windows, MTU black holes |
 | `tcp_connections` | Every connection attempt: connected, refused, filtered or ICMP-prohibited, who closed it; per destination success rate |

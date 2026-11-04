@@ -403,6 +403,58 @@ class CaptureMetadataResult(ToolResult, total=False):
     issues: list[str]
     read_warnings: list[str]
     note: str
+class HttpRequestRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    frame: int
+    response_frame: int
+    stream: int
+    h2_stream: int
+    client: str
+    server: str
+    version: str
+    method: str
+    host: str
+    uri: str
+    query: str
+    status: int
+    reason: str
+    content_type: str
+    request_bytes: int
+    response_bytes: int
+    response_ms: float
+    ttfb_ms: float
+    grpc: bool
+    grpc_status: int
+    grpc_status_name: str
+    stream_reset_by: str
+    reset_error: str | int
+    unanswered: bool
+    near_capture_end: bool
+
+
+class HttpEndpointRow(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    host: str
+    method: str
+    uri: str
+    count: int
+    status: dict[str, int]
+    unanswered: int
+    response_ms: dict[str, float]
+    response_bytes: dict[str, float]
+    grpc_status: dict[str, int]
+    servers: list[str]
+    slowest_frame: int
+    first_frame: int
+
+
+class HttpTransactionsResult(RowsResult, total=False):
+    view: str
+    requests: list[HttpRequestRow]
+    endpoints: list[HttpEndpointRow]
+    display_filter: str
+    summary: dict[str, Any]
+    undissected_http: list[dict[str, Any]]
 
 
 class ConversationRow(TypedDict, total=False):

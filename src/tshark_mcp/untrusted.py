@@ -36,6 +36,8 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({
     "feature_tags", "sec_agree", "reason_phrase",
     # capture_metadata: strings the capture file's writer stored (interface names are under "name")
     "description", "capture_filter", "comment",
+    # HTTP (host and reason are listed above)
+    "uri", "query", "content_type",
 })
 """Keys whose string values are copied from packets (anywhere in a result)."""
 
