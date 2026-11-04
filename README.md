@@ -211,7 +211,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 794 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 805 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
