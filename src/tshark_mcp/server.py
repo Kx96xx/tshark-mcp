@@ -126,14 +126,15 @@ _now = time.monotonic  # separable so tests can exhaust the multi-file time budg
 
 def configure(allow_dirs: list[str] | tuple[str, ...], limits: Limits | None = None, tshark: str | None = None,
               log_path: str | os.PathLike[str] | None = None, redact_mode: str = "off",
-              redact_key: bytes | None = None, redact_keep_prefix: bool = False) -> ServerState:
+              redact_key: bytes | None = None, redact_keep_prefix: bool = False,
+              user_profile: bool = False) -> ServerState:
     """Initialise the global server state (used by ``main`` and by the tests)."""
     global _STATE
     limits = limits or Limits.from_env()
     _STATE = ServerState(
         allowlist=Allowlist.from_strings(list(allow_dirs)),
         limits=limits,
-        runner=Runner(limits, tshark=tshark),
+        runner=Runner(limits, tshark=tshark, user_profile=user_profile),
         log_path=Path(log_path) if log_path else None,
         redactor=redaction.Redactor(redact_key, keep_prefix=redact_keep_prefix),
         redact_mode=redaction.check_mode(redact_mode, "redact_mode"),
@@ -2979,6 +2980,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-output-kb", type=float, default=None, help="JSON bytes returned per call (default 30); rows beyond it go to the next page")
     p.add_argument("--timeout", type=float, default=None, help="seconds per tshark run (default 60)")
     p.add_argument("--max-files", type=int, default=None, help="capture files one find_identifier call may open (default 50)")
+    p.add_argument("--max-concurrent-runs", type=int, default=None,
+                   help="tshark processes running at once across all calls (default 2); a call that waits longer "
+                        "than --busy-wait for a slot fails with busy")
+    p.add_argument("--busy-wait", type=float, default=None, help="seconds a run waits for a free slot (default 30)")
+    p.add_argument("--max-tshark-memory-mb", type=float, default=None,
+                   help="address-space limit of each tshark run, Linux only (default 2048)")
+    p.add_argument("--allow-user-profile", action="store_true",
+                   default=os.environ.get("TSHARK_MCP_ALLOW_USER_PROFILE", "").lower() in ("1", "true", "yes"),
+                   help="let tshark load the personal Wireshark configuration, Lua scripts, plugins and extcap of "
+                        "the account running the server (off: tshark gets an empty profile)")
     p.add_argument("--redact", choices=redaction.MODES, default=os.environ.get("TSHARK_MCP_REDACT", "off"),
                    help="pseudonymise identifiers in every result: ids (IMSI, MSISDN, IMEI, SIP/tel users, UE IPs) "
                         "or ids+ips (also every IP); default off (or TSHARK_MCP_REDACT). The key comes from "
@@ -3008,6 +3019,12 @@ def main(argv: list[str] | None = None) -> int:
             overrides["timeout_seconds"] = args.timeout
         if args.max_files is not None:
             overrides["max_files"] = args.max_files
+        if args.max_concurrent_runs is not None:
+            overrides["max_concurrent_runs"] = args.max_concurrent_runs
+        if args.busy_wait is not None:
+            overrides["busy_wait_seconds"] = args.busy_wait
+        if args.max_tshark_memory_mb is not None:
+            overrides["max_tshark_memory_bytes"] = int(args.max_tshark_memory_mb * 1024 * 1024)
         if overrides:
             from dataclasses import replace
             limits = replace(limits, **overrides)
@@ -3020,12 +3037,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("TSHARK_MCP_REDACT_KEY must be at least 16 characters")
         st = configure(allow_dirs, limits=limits, tshark=args.tshark, log_path=args.log_file,
                        redact_mode=redaction.check_mode(args.redact, "--redact"),
-                       redact_key=key_text.encode() if key_text else None, redact_keep_prefix=args.redact_keep_prefix)
+                       redact_key=key_text.encode() if key_text else None, redact_keep_prefix=args.redact_keep_prefix,
+                       user_profile=args.allow_user_profile)
     except (ValueError, ToolError) as exc:
         print(f"tshark-mcp: {exc}", file=sys.stderr)
         return 2
     print(f"tshark-mcp {__version__}: tshark={st.runner.tshark} allow={st.allowlist.describe()} limits={st.limits.describe()} "
-          f"redact={st.redact_mode}",
+          f"redact={st.redact_mode} user_profile={st.runner.user_profile}",
           file=sys.stderr)
     app.run(transport=args.transport)
     return 0

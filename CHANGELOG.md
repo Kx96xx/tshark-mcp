@@ -13,6 +13,15 @@ the project uses [semantic versioning](https://semver.org/).
   `candidates`, `invalid_filter` and `unknown_field` list close field names in `suggestions`,
   `timeout` and `output_too_large` name the arguments that narrow the call.
 
+### Security
+
+- Security hardening of the tshark child: an empty read-only personal profile and a scrubbed
+  environment, so no personal `init.lua`, Lua script, plugin or extcap loads
+  (`--allow-user-profile` to opt back in); nice +10 and, on Linux, a 2 GB address-space limit
+  (`--max-tshark-memory-mb`, out-of-memory runs report `out_of_memory: true`); at most two
+  tshark runs at once (`--max-concurrent-runs`, `--busy-wait`, then a `busy` error); a capture
+  replaced during the run fails with `capture_changed`; `-d` decode-as rules are validated.
+
 ## 0.1.0 - 2026-11-04
 
 First release. Everything below was built between 1 and 4 November 2026 in pull requests #1

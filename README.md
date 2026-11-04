@@ -108,7 +108,8 @@ investigation of a failed attach is in [docs/EXAMPLE.md](docs/EXAMPLE.md).
 
 - **Read-only by construction.** The only program started is tshark, from an argv list with
   `-n` and `-r`, never a shell. Capture, write, export and extension flags are refused before
-  a process exists.
+  a process exists. tshark gets an empty profile, so no personal Lua script, plugin or extcap
+  loads, and at most two tshark processes run at once.
 - **Allowlist and caps.** Every path must resolve inside an `--allow-dir`. File size (500 MB),
   packets dissected per call (500), frames read per run (200 000), JSON per call (30 KB) and
   run time (60 s) are capped; the numbers are configurable, none can be switched off.
