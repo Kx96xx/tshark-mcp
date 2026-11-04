@@ -785,6 +785,8 @@ def filter_packets(path: str, display_filter: str, fields: list[str] | None = No
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
+        if display_filter is None or not str(display_filter).strip():
+            raise ToolError("invalid_argument", 'display_filter is required; use "frame" to match every packet')
         flt = _filter(display_filter)
         names = [lint_field_name(f) for f in (fields or _default_fields(st.runner))]
         if not names:

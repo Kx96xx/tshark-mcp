@@ -620,3 +620,13 @@ def test_trace_pairs_a_request_and_response_found_in_different_passes(configure,
     assert rows == [("Create Session Request", "Create Session Response", None),
                     ("Modify Bearer Request", "Modify Bearer Response", None)]
     assert result["failures"] == 0
+
+
+@requires_tshark
+def test_filter_packets_refuses_an_empty_filter(server, pcap_dir):
+    """An empty display_filter ran tshark unfiltered and then failed the result schema
+    (display_filter None), which the client saw as a bare MCP error instead of {"error": ...}."""
+    for empty in ("", "   "):
+        out = server.filter_packets(str(pcap_dir / "diameter.pcap"), empty)
+        assert out["error"]["type"] == "invalid_argument" and "display_filter is required" in out["error"]["message"]
+    assert server.filter_packets(str(pcap_dir / "diameter.pcap"), "frame")["count"] > 0
