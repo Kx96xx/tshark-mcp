@@ -6,8 +6,11 @@ direction and the acknowledgements coming back from the other side:
 
 * a segment that starts beyond the next expected byte leaves a *gap*;
 * a gap later filled by a retransmission was lost before the capture point
-  (``lost_before_capture``), unless the IP ID shows the filling segment was sent
-  before the one that opened the gap (``out_of_order``);
+  (``lost_before_capture``), unless the segment was only overtaken (``out_of_order``):
+  its TCP timestamp or IP ID shows it was sent before the one that opened the gap, or
+  it arrives less than one round trip after the gap opened, which no loss-triggered
+  retransmission can do (the duplicate ACKs alone take a round trip from the capture
+  point, however close it sits to either end);
 * a gap the receiver acknowledges without the capture ever seeing it was missed
   by the capture itself (``missed_by_capture``): the network delivered it;
 * a retransmission of bytes the capture already saw means they were lost after
@@ -25,6 +28,9 @@ MOD = 2 ** 32
 HALF = 2 ** 31
 MAX_GAPS = 256
 REORDER_WINDOW_S = 0.003
+RTT_SHARE = 0.9
+"""A gap filled within this share of the handshake round trip is reordering: a retransmission
+needs the whole round trip (dup-ACKs out, resend back), an RTO or tail-loss probe longer."""
 
 
 def ahead(a: int, b: int) -> bool:
@@ -40,7 +46,8 @@ def dist(a: int, b: int) -> int:
 class Direction:
     __slots__ = ("isn", "next", "gaps", "acked", "segments", "data_segments", "bytes", "lost_before", "after",
                  "out_of_order", "missed", "missed_bytes", "untracked", "keepalives", "syn_retrans", "last_id",
-                 "id_steps", "id_near", "packets", "first_frame", "max_len", "retrans_frames", "events", "last_zero_seq")
+                 "id_steps", "id_near", "packets", "first_frame", "max_len", "retrans_frames", "events", "last_zero_seq",
+                 "last_fill")
 
     def __init__(self) -> None:
         self.isn: int | None = None
@@ -59,6 +66,7 @@ class Direction:
         self.retrans_frames: list[tuple[int | None, int, int, str]] = []  # (frame, seq, len, kind)
         self.events: list[dict[str, Any]] = []
         self.last_zero_seq: int | None = None
+        self.last_fill: tuple[int, float | None, str] | None = None  # (end, time, kind) of the last gap filler
 
     @property
     def sequential_ids(self) -> bool:
@@ -88,6 +96,31 @@ class FlowTracker:
     def __init__(self, keep_retrans_frames: int = 0) -> None:
         self.dirs: dict[tuple[str, str, str, str], Direction] = {}
         self.keep = keep_retrans_frames
+        # Handshake timing per connection (both directions share it): SYN time, SYN-ACK time, and
+        # the round trip as seen from the capture point (SYN to SYN-ACK, plus SYN-ACK to ACK once seen).
+        self._syn: dict[tuple, float] = {}
+        self._synack: dict[tuple, float] = {}
+        self._syn_acked: set[tuple] = set()
+        self.rtt: dict[tuple, float] = {}
+
+    @staticmethod
+    def _conn(key: tuple[str, str, str, str]) -> tuple:
+        a, b = (key[0], key[1]), (key[2], key[3])
+        return (a, b) if a <= b else (b, a)
+
+    def _handshake(self, key: tuple[str, str, str, str], tcp: dict[str, Any], t: float | None) -> None:
+        if t is None:
+            return
+        conn = self._conn(key)
+        if tcp["syn"] and not tcp["ack"]:
+            self._syn[conn] = t
+        elif tcp["syn"] and tcp["ack"]:
+            if conn in self._syn and conn not in self._synack and t >= self._syn[conn]:
+                self._synack[conn] = t
+                self.rtt[conn] = t - self._syn[conn]
+        elif tcp["ack"] and conn in self._synack and conn not in self._syn_acked and t >= self._synack[conn]:
+            self._syn_acked.add(conn)
+            self.rtt[conn] = (self._synack[conn] - self._syn[conn]) + (t - self._synack[conn])
 
     def direction(self, key: tuple[str, str, str, str]) -> Direction:
         d = self.dirs.get(key)
@@ -106,7 +139,9 @@ class FlowTracker:
         d.packets += 1
         if d.first_frame is None:
             d.first_frame = rec.get("frame")
-        kind = None if tcp["rst"] else self._sequence(d, rec, tcp)
+        if not tcp["rst"]:
+            self._handshake(key, tcp, rec.get("time"))
+        kind = None if tcp["rst"] else self._sequence(d, rec, tcp, self.rtt.get(self._conn(key)))
         if tcp["ack"] and tcp["ack_no"] is not None and not tcp["rst"]:
             r = self.dirs.get(rkey)
             if r is not None:
@@ -114,7 +149,7 @@ class FlowTracker:
         return kind
 
     # ----------------------------------------------------------- sequence side
-    def _sequence(self, d: Direction, rec: dict[str, Any], tcp: dict[str, Any]) -> str | None:
+    def _sequence(self, d: Direction, rec: dict[str, Any], tcp: dict[str, Any], rtt: float | None = None) -> str | None:
         seq, length = tcp["seq"], tcp["len"]
         if seq is None:
             return None
@@ -127,7 +162,8 @@ class FlowTracker:
         if ip_id is not None:
             if d.last_id is not None:
                 d.id_steps += 1
-                if min((ip_id - d.last_id) % 65536, (d.last_id - ip_id) % 65536) <= 64:
+                step = min((ip_id - d.last_id) % 65536, (d.last_id - ip_id) % 65536)
+                if 0 < step <= 64:  # a stack that reuses one ID (step 0) tells nothing about emission order
                     d.id_near += 1
             if d.last_id is None or 0 < (ip_id - d.last_id) % 65536 < 32768:
                 d.last_id = ip_id
@@ -161,7 +197,8 @@ class FlowTracker:
             d.next = end
             return None
         # Behind the highest byte seen: fills a gap, or repeats bytes the capture already saw.
-        kind = self._fill(d, seq, end, rec, ip_id)
+        kind = self._fill(d, seq, end, rec, ip_id, rtt)
+        d.last_fill = (end, rec.get("time"), kind)
         if ahead(end, d.next):
             d.next = end
         if kind == "lost_before_capture":
@@ -174,7 +211,8 @@ class FlowTracker:
             self._note(d, rec, seq, length, kind)
         return kind
 
-    def _fill(self, d: Direction, seq: int, end: int, rec: dict[str, Any], ip_id: int | None) -> str:
+    def _fill(self, d: Direction, seq: int, end: int, rec: dict[str, Any], ip_id: int | None,
+              rtt: float | None = None) -> str:
         hit = None
         kept: list[list[Any]] = []
         for gap in d.gaps:
@@ -191,15 +229,29 @@ class FlowTracker:
             return "retransmitted_after_capture"
         d.gaps = kept
         opened_time, opened_id, opened_ts = hit[2], hit[3], hit[6]
-        if ip_id is not None and opened_id is not None and d.sequential_ids:
-            # Sent before the segment that opened the gap: it was overtaken, not lost.
-            return "out_of_order" if 0 < (opened_id - ip_id) % 65536 < 32768 else "lost_before_capture"
         tsval = tcp_tsval(rec)
         if tsval is not None and opened_ts is not None and tsval != opened_ts:
             # The TCP timestamp option says when the sender sent it (IPv6 has no IP ID).
             return "out_of_order" if 0 < (opened_ts - tsval) % MOD < HALF else "lost_before_capture"
         t = rec.get("time")
-        if t is not None and opened_time is not None and t - opened_time <= REORDER_WINDOW_S:
+        since = t - opened_time if t is not None and opened_time is not None else None
+        window = max(REORDER_WINDOW_S, RTT_SHARE * rtt if rtt else 0.0)
+        if since is not None and rtt is not None and rtt > 0 and since < RTT_SHARE * rtt:
+            # Too soon for a retransmission: the duplicate ACKs that would trigger one take a whole
+            # round trip from the capture point, so the sender (or a multi-queue NIC) emitted the
+            # segments out of order. The IP ID cannot tell this case: it follows emission order.
+            return "out_of_order"
+        last = d.last_fill
+        if (last is not None and last[2] == "out_of_order" and seq == last[0] and t is not None
+                and last[1] is not None and t - last[1] < window):
+            # The next piece of the same overtaken burst: contiguous with the previous reordered
+            # segment and right behind it. A recovery burst never starts this way, because its
+            # first segment arrives a round trip after the gap and is classed as lost.
+            return "out_of_order"
+        if ip_id is not None and opened_id is not None and d.sequential_ids:
+            # Sent before the segment that opened the gap: it was overtaken, not lost.
+            return "out_of_order" if 0 < (opened_id - ip_id) % 65536 < 32768 else "lost_before_capture"
+        if since is not None and since <= REORDER_WINDOW_S:
             return "out_of_order"
         return "lost_before_capture"
 

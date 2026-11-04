@@ -144,6 +144,52 @@ def test_loss_before_and_after_the_capture_point_and_capture_misses(configure, t
     assert any("absent from the capture" in i for i in s["issues"])
 
 
+def test_gap_filled_within_a_round_trip_is_reordering_even_with_a_later_ip_id(configure, tmp_path: Path):
+    """A multi-queue sender emits segments out of order with IP IDs in emission order: the
+    filler has a later ID than the segment that opened the gap, yet it arrives 10 ms after
+    it on a 300 ms path, long before any duplicate ACK could have reached the sender. The
+    same filler half a second later is a retransmission of a segment lost before the capture."""
+    cap = Cap()
+    c = Conn(cap)
+    c.handshake(rtt_server=0.15, rtt_client=0.15)
+    c.down(2)
+    # reordered: skip 500 bytes, send the next segment, then the skipped one 10 ms later
+    skipped = c.sseq
+    c.sseq += 500
+    c.down(1, ack=False)
+    cap.add(c.pkt(False, skipped, c.cseq, "PA", payload=500), t=round(cap.t + 0.010, 6))
+    cap.t = round(cap.t + 0.010, 6)
+    c.ack()
+    # lost before the capture point: the gap is filled 0.5 s later, more than one round trip
+    hole = c.sseq
+    c.sseq += 500
+    c.down(1, ack=False)
+    cap.add(c.pkt(True, c.cseq, hole, "A"))
+    cap.add(c.pkt(False, hole, c.cseq, "PA", payload=500), t=round(cap.t + 0.5, 6))
+    cap.t = round(cap.t + 0.5, 6)
+    c.ack()
+    c.down(1)
+    d = only(run(configure, tmp_path, cap))["server_to_client"]
+    assert d.get("out_of_order") == 1 and d.get("lost_before_capture") == 1 and d["retransmissions"] == 1
+
+
+def test_constant_ip_id_falls_back_to_the_time_window(configure, tmp_path: Path):
+    """Every packet with IP ID 1 (some stacks, scapy's default): the IDs say nothing about
+    emission order, so a gap filled within 3 ms is reordering, not a retransmission."""
+    cap = Cap(step=0.0005)
+    c = Conn(cap)
+    c.handshake()
+    for _ in range(2):
+        cap.add(c.pkt(False, c.sseq, c.cseq, "PA", payload=500, ip_id=1)); c.sseq += 500
+    skipped = c.sseq
+    c.sseq += 500
+    cap.add(c.pkt(False, c.sseq, c.cseq, "PA", payload=500, ip_id=1)); c.sseq += 500
+    cap.add(c.pkt(False, skipped, c.cseq, "PA", payload=500, ip_id=1))
+    c.ack()
+    d = only(run(configure, tmp_path, cap))["server_to_client"]
+    assert d.get("out_of_order") == 1 and d["retransmissions"] == 0
+
+
 def test_duplicate_acks_and_zero_window(configure, tmp_path: Path):
     cap = Cap()
     c = Conn(cap)
