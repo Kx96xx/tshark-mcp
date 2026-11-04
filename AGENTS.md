@@ -72,7 +72,9 @@ a `TSHARK_MCP_*` environment variable.
 | Anything else | `filter_packets(path, display_filter, fields)`; `find_fields(query)` and `check_filter(filter)` build the filter without reading a capture; `packet_detail(path, frame)` shows one packet in full |
 
 Tool names and argument names are exactly those in `src/tshark_mcp/server.py`; the
-server publishes an `outputSchema` for each.
+server publishes an `outputSchema` for each. The listed one is compact (top-level keys, row
+keys named in a description); read the resource `schema://tools/<name>` for the full
+description and schema of a tool, or start the server with `--schema-profile full`.
 
 ### Argument conventions
 
@@ -137,6 +139,7 @@ src/tshark_mcp/
   runner.py     the only place that starts tshark: read-only argv checks, caps, timeouts
   limits.py     Limits, Allowlist and the argument linters
   progress.py   request cancellation (polled by the runner) and progress notifications
+  schemas.py    the compact tool list (--schema-profile) and the schema://tools/<name> resources
   errors.py     the `fix` hint, candidates and suggestions added to every tool error
   fields.py     tshark field catalogue (tshark -G fields), parsing helpers
   redact.py     identifier redaction and tokens
@@ -184,6 +187,9 @@ Anything that needs a newer tshark must be gated on `tests/conftest.py: tshark_v
   test or in the PR text.
 - Keep the output contract: paging fields, `truncated_reason`, frame numbers on rows, packet
   text through `untrusted.apply`, a TypedDict in `models.py` for every new result or row.
+- A tool description stays under 1,500 characters: what the tool does, what it returns and
+  its narrowing arguments. Put the rest after a `Details:` line in the docstring; it moves to
+  the `schema://tools/<name>` resource in the compact tool list (`tests/test_tool_list.py`).
 - When a tool or its arguments change, update the README table and `docs/TOOLS.md`, `llms.txt`,
   this file, `CHANGELOG.md` and the test count in the README.
 - Commit messages and PR descriptions say what was wrong, what changed and how a user sees

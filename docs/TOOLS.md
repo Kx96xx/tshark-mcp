@@ -52,8 +52,24 @@ and the redaction rules.
 | `roaming_attach_check(path, imsi, msisdn, home_plmn, limit, offset)` | Why a roamer cannot attach or get a bearer. The subscriber's steps (S6a AIR/AIA and ULR/ULA, MAP sendAuthenticationInfo, updateLocation and updateGprsLocation, GTPv2-C Create Session and Modify Bearer, Gx CCR-I/CCA-I, PFCP Session Establishment) grouped into `attempts` in time order (a new attempt when authentication or a location update follows a location update or PDN step, or a Create Session repeats an APN). Each attempt: `visited_plmn` (ULR Visited-PLMN-Id, GTPv2 Serving Network, or the MAP peer GT) with `visited_source`, `roaming`, `access` (RAT, TAI, ECGI), `steps` with result, code, `ref`, `cause_lookup` call, Error-Diagnostic, offending IE and `likely_causes` of a GTP reject, the ULA `subscription` digest (`subscription_from_earlier_attempt` when this attempt had no ULA), the Create Session `request`, `checks` (`pass`, `warn`, `fail` or `unknown`: authentication, location update, Create Session, ODB, RAT against Access-Restriction-Data, APN subscribed or wildcard, PDN type requested against subscribed, routing: home routed or local breakout from the APN operator identifier against VPLMN-Dynamic-Address-Allowed, APN-AMBR within the subscription), `first_failure` and a one-sentence `verdict`. `home_plmn` ("MCC-MNC") overrides the home network read from the IMSI (the MNC length follows the MCC). Content-free: authentication vectors are counted, never returned |
 
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
-annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false`. Failures come back
-as `{"error": {"type": ..., "message": ..., "fix": ...}}` with `isError: true` on the MCP
+annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false`.
+
+`tools/list` is compact by default (102 KB for 41 tools instead of 263 KB): each output
+schema keeps its top-level keys with their JSON types, a list of rows is `array` of `object`
+with a description naming the row keys, and the keys every result may carry and the server
+instructions explain (`truncated`, `warnings`, `trimmed`, `untrusted_text_fields`,
+`text_values_shortened`, `redaction`) are left out; input schemas lose the generated titles
+and write an optional argument as `"type": ["string", "null"]`; `additionalProperties`
+stays true, so a result valid against the full schema is valid against the compact one. Long descriptions keep
+what an agent needs to choose the tool and move the rest (how pairing works, every flag) to
+the resource. The full description, input schema and output schema of any tool are the
+resource `schema://tools/<name>` (one per tool, in `resources/list`) in either profile;
+`--schema-profile full` (or `TSHARK_MCP_SCHEMA_PROFILE=full`) publishes the full list as
+before. `tests/test_tool_list.py` keeps the compact list within budget: at most 2,750 bytes
+per tool on average and 4,608 for any tool, descriptions at most 1,500 characters (a longer
+one moves its detail after a `Details:` line in the docstring), instructions at most 3,900.
+
+Failures come back as `{"error": {"type": ..., "message": ..., "fix": ...}}` with `isError: true` on the MCP
 result (the same JSON is in `structuredContent` and in the text content), never as protocol
 errors. `fix` is one sentence saying what to change or which tool to call next. Some types
 add a list: `path_not_allowed` keeps `allowed_dirs`; `not_found` and `not_a_file` add
@@ -392,7 +408,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 818 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 835 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,

@@ -51,6 +51,14 @@ more and the hardening landed the same day (listed under Added, Changed and Secu
   its timeout; the audit log records `cancelled`. With a `progressToken`, `find_identifier`
   reports files done out of files planned and other tools one notification per finished tshark
   run, at most one per second.
+- `tools/list` is compact by default: 102 KB instead of 263 KB for 41 tools. Output schemas
+  keep their top-level keys with JSON types and name the keys of each row list; the keys
+  every result may carry are left out; input schemas lose the generated titles and write
+  optional arguments as a type list; the twelve descriptions over 1,500 characters move their
+  detail to a resource, and the server instructions are rewritten to about 3,100 characters (they
+  had grown past the 4,096 some clients keep). Each tool's full description and schemas are
+  the resource `schema://tools/<name>`; `--schema-profile full` (`TSHARK_MCP_SCHEMA_PROFILE`)
+  publishes the old list. `tests/test_tool_list.py` keeps the compact list within budget.
 - Tool errors are returned with `isError: true`, so clients show and count them as failures;
   the structured `{"error": {...}}` stays in `structuredContent` and the text content. Every
   error carries a `fix` hint; `not_found` and `not_a_file` list nearby capture files in
