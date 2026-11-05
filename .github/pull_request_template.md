@@ -9,5 +9,5 @@ how a user sees the difference (the tool, its arguments and the rows or fields t
 - [ ] Counts or pairings in the new output were checked against raw tshark (`-z ...` or `-T fields`).
 - [ ] Nothing new can capture, write, export, load code or reach a shell; limits still apply.
 - [ ] A fragment in `changelog.d/` (`<topic>.<section>.md`, see changelog.d/README.md) if users can see the change; never an edit to `CHANGELOG.md`.
-- [ ] README and `docs/TOOLS.md` tables, `llms.txt` and `AGENTS.md` updated if a tool or its arguments changed.
+- [ ] A new or changed tool: `docs/tools/<name>.md` written or updated and `python scripts/gen_docs.py` run (it rewrites the tables, llms.txt, counts and the MCPB manifest).
 - [ ] `pytest` and `ruff check --select F,E9` pass locally; CI green before merge.

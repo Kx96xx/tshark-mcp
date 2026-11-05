@@ -33,8 +33,10 @@ oldest supported `mcp` and `pydantic`.
   they come from, with the reference in a comment.
 - **Keep the output contract.** Paged tools take `limit` and `offset` and return
   `total_matched`, `returned`, `dropped` and `next_offset`; truncation always comes with a
-  `truncated_reason`; packet text goes through `untrusted.apply`. Update the tool tables in the README and `docs/TOOLS.md`,
-  `llms.txt` and `AGENTS.md` when a tool is added or its arguments change, and add a changelog fragment.
+  `truncated_reason`; packet text goes through `untrusted.apply`. A new tool is a module in
+  `src/tshark_mcp/tools/` plus `docs/tools/<name>.md`; then run `python scripts/gen_docs.py`,
+  which rewrites the tool tables, the tool list in `llms.txt`, the tool counts and the MCPB
+  manifest (never edit those by hand; CI checks them). Add a changelog fragment.
 - `ruff check --select F,E9` must be clean; CI must be green on the exact commit before merge.
 
 ## Reporting a bug

@@ -138,6 +138,9 @@ jobs:
       - name: Manifest is current (version, tools list)
         run: python mcpb/build.py --check
 
+      - name: Generated tool tables, tool lists and counts are current
+        run: python scripts/gen_docs.py --check
+
       - name: Validate and pack the bundle
         run: |
           python mcpb/build.py
