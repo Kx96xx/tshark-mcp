@@ -39,6 +39,7 @@ from . import output as shaping
 from . import capdiff
 from . import incident
 from . import throughput
+from . import certs
 from . import overlays
 from . import export as exporting
 from . import progress
@@ -86,7 +87,7 @@ roaming_attach_check (the first failure). Voice: sip_call_detail (one call), med
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
-http_transactions (HTTP and gRPC per endpoint), response_times (network, server
+tls_certificates (chains, expiry), http_transactions (HTTP and gRPC per endpoint), response_times (network, server
 or receiver time), throughput_timeline (when a transfer slowed and why), tunnels_overview (VPNs, overlays). Before reading missing packets or retransmissions as network
 faults, capture_quality says whether the capture can be trusted; tcp_health
 tells real TCP loss, resets and MTU black holes from capture artifacts;
@@ -2499,6 +2500,66 @@ def tls_handshakes(path: str, server_name: str | None = None, filter: str | None
         return _envelope("connections", rows, cap, scan, offset=offset, display_filter=flt, **out)
     return _guarded("tls_handshakes", {"path": path, "server_name": server_name, "filter": filter, "limit": limit,
                                        "offset": offset}, run)
+
+
+@_tool(title="TLS server certificates and chains", annotations=READ_ONLY)
+def tls_certificates(path: str, server_name: str | None = None, server: str | None = None,
+                     expiring_within_days: float | None = None, filter: str | None = None, limit: int = 100,
+                     offset: int = 0) -> models.TlsCertificatesResult:
+    """The certificate chains servers sent in TLS handshakes, per server, SNI and leaf:
+    leaf subject, issuer, SANs, validity, `days_left` (at the handshake) and
+    `days_left_now`, key algorithm and size, signature algorithm, self-signed, wildcard,
+    SHA-256 fingerprint; the intermediates; `order_ok`, `missing_intermediate`,
+    `expired`, `name_matches` (SNI against SAN/CN), `ocsp_stapled`; per chain the
+    connections, TLS versions, alerts and `clients_rejected` (the client refused the
+    certificate). `issues` in plain words. TLS 1.3 encrypts certificates, so only TLS 1.2
+    and older chains show; `summary.tls13_connections_skipped` counts the rest. No private
+    keys, no decryption. `server_name`, `server` (IP) and `expiring_within_days` narrow it.
+    Details: Built on tls_handshakes' connection rebuild (copies dropped, TLS inside GTP-U
+    read from the inner packet). Every certificate is parsed from its DER bytes; nothing is
+    checked against a trust store, so `missing_intermediate` means no certificate in the
+    chain issued the leaf (and the leaf is not self-signed). A weak signature is MD5 or
+    SHA-1 below a self-signed root; an RSA key under 2048 bits is reported. A client
+    rejection is a client alert such as bad_certificate, unknown_ca or certificate_expired,
+    or a TLS 1.3 client that answered the server flight with one alert-sized record.
+    `expiring_within_days` keeps chains whose leaf has at most that many days left at the
+    handshake (expired ones included)."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        wanted = lint_hostname(server_name, "server_name") if server_name is not None and str(server_name).strip() != "" else None
+        addr = _lint_ip(server, "server") if server is not None and str(server).strip() != "" else None
+        within = None
+        if expiring_within_days is not None and str(expiring_within_days).strip() != "":
+            try:
+                within = float(expiring_within_days)
+            except (TypeError, ValueError):
+                raise ToolError("invalid_argument", f"expiring_within_days must be a number, got {echo(expiring_within_days)}") from None
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        base = tls.display_filter()
+        if addr:
+            base = f"({base}) && {_ip_clause(addr)}"
+        flt = _filter(filter, base=base)
+        stdout, scan = _fields_run(capture, flt, tls.FIELDS, st.limits.max_scan_packets, aggregator=tls.AGGREGATOR)
+        conns = tls.build(tls.parse(stdout))
+        rows = tls.summarise(conns, wanted)["connections"]
+        if addr:
+            rows = [r for r in rows if r["server"].rsplit(":", 1)[0].strip("[]") == addr]
+        out = certs.chains(conns, rows, time.time())
+        chains = out["chains"]
+        if within is not None:
+            chains = [c for c in chains if c.get("expired") or (c["leaf"].get("days_left") is not None
+                                                                and c["leaf"]["days_left"] <= within)]
+            out["chains"] = chains
+        issues = [i for c in chains for i in c.get("issues", [])][:20]
+        if out["tls13_connections_skipped"]:
+            issues.append(f"{out['tls13_connections_skipped']} TLS 1.3 connections carry their certificates encrypted; "
+                          "they are not in this list")
+        return _envelope("chains", chains, cap, scan, offset=offset, display_filter=flt, summary=certs.summary(out),
+                         issues=issues)
+    return _guarded("tls_certificates", {"path": path, "server_name": server_name, "server": server,
+                                         "expiring_within_days": expiring_within_days, "filter": filter,
+                                         "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="TCP response times", annotations=READ_ONLY)

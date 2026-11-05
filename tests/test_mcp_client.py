@@ -43,6 +43,7 @@ EXPECTED_TOOLS = {
     "call_legs",
     "tunnels_overview",
     "export_subset",
+    "tls_certificates",
 }
 
 
@@ -78,6 +79,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("diff_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/sip.pcap", "by": "tcp"}),
         ("throughput_timeline", {"path": f"{d}/sip.pcap", "interval": 5, "per": "conversation"}),
         ("tunnels_overview", {"path": f"{d}/gtpu.pcap", "kind": "gtpu"}),
+        ("tls_certificates", {"path": f"{d}/all.pcap"}),
         ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
         ("gtp_tunnel_health", {"path": f"{d}/gtpu.pcap"}),
         ("message_rates", {"path": f"{d}/all.pcap", "interval": 10}),
@@ -233,6 +235,8 @@ def test_every_tool_call_returns_structured_content(client_run):
     summary = by_name[("incident_summary", ("focus", "path"))]
     assert summary["findings"] and {f["evidence"]["tool"] for f in summary["findings"]} <= {
         "diameter_transactions", "gtp_sessions", "capture_quality"}
+    certs_out = by_name[("tls_certificates", ("path",))]
+    assert certs_out["chains"] == [] and certs_out["summary"]["chains"] == 0
     tun = by_name[("tunnels_overview", ("kind", "path"))]
     assert tun["summary"]["by_kind"] == {"GTP-U": 1} and tun["tunnels"][0]["teids"] >= 1
     tput = by_name[("throughput_timeline", ("interval", "path", "per"))]

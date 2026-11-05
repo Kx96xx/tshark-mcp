@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. Forty-eight
+when the operator enables `--export-dir`. Forty-nine
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -71,6 +71,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | What changed after a deploy, firewall rule, DNS or MTU change? | `diff_captures(path_a=<before>, path_b=<after>)` (`by="dns"`, `"tls"`, ... for one section) |
 | DNS failures, slow resolvers | `dns_transactions(path, name=...)` |
 | TLS handshake failures, certificate problems | `tls_handshakes(path, server_name=...)` |
+| Is the chain complete, expired or expiring, self-signed, SHA-1, the wrong name for the SNI? | `tls_certificates(path, server_name=... or expiring_within_days=30)` (TLS 1.2 and older; TLS 1.3 certificates are encrypted) |
 | Can this host reach that port? Refused, filtered or prohibited? | `tcp_connections(path, server=..., port=...)`; `view="destinations"` for success rate per server |
 | Who sends unreachables, fragmentation needed, TTL exceeded (loop or traceroute)? | `icmp_errors(path, sender=... or about=...)` |
 | Which HTTP endpoints fail or are slow? Status mix, gRPC status? | `http_transactions(path, view="endpoints")`, then `view="requests"` with `status="5xx"` or `min_ms` |
@@ -191,6 +192,7 @@ src/tshark_mcp/
   incident.py   incident_summary: the passes per focus, the threshold table and one rule per pass
   capdiff.py    diff_captures: per-section metrics per key, the join and the change labels
   throughput.py throughput_timeline: intervals, goodput from ACKs, per-stream verdicts and issues
+  certs.py      tls_certificates: every certificate of a chain parsed from DER, chains per server/SNI/leaf, issues
   overlays.py   tunnels_overview: outer/inner layers per tunnel kind, IKE/WireGuard/OpenVPN handshakes, MTU issues
   export.py     export_subset: the --export-dir checks, safe names, no-overwrite publish, size budget
 tests/          pytest suite; tests/pcapgen.py builds every synthetic capture at run time

@@ -83,6 +83,13 @@ the project uses [semantic versioning](https://semver.org/).
   export directory may not overlap an `--allow-dir` unless `--export-inside-allow-dir`; `-w` and
   `-F` stay refused on every other tshark run.
 
+- `tls_certificates`: the certificate chains servers sent in TLS 1.2 and older handshakes, per
+  server, SNI and leaf, with every certificate parsed from DER: subject, issuer, SANs, validity and
+  days left, key and signature algorithm, self-signed, fingerprint; whether the chain is in order
+  or misses the intermediate, whether the name matches the SNI, OCSP stapling, the TLS versions
+  and alerts seen and how many clients refused the certificate. TLS 1.3 connections are counted
+  as skipped because their certificates are encrypted. No private keys, no decryption.
+
 ### Fixed
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared

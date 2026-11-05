@@ -1242,6 +1242,41 @@ class ExportSubsetResult(ToolResult, total=False):
     reminder: str
 
 
+class TlsCertificateChain(TypedDict, total=False):
+    """One chain: ``server``, ``sni``, ``leaf`` (subject/issuer CN and O, ``san``, validity, ``days_left``,
+    ``days_left_now``, key algorithm/bits/curve, ``signature_algorithm``, ``self_signed``, ``wildcard``,
+    ``fingerprint_sha256``), ``intermediates``, ``chain_length``, ``order_ok``, ``missing_intermediate``,
+    ``expired``, ``name_matches``, ``ocsp_stapled``, ``connections``, ``frames``, ``tls_versions``, ``alerts``,
+    ``clients_rejected``, ``issues``."""
+    __pydantic_config__ = _EXTRA_OK
+    server: str
+    sni: str
+    leaf: dict[str, Any]
+    intermediates: list[dict[str, Any]]
+    chain_length: int
+    order_ok: bool
+    missing_intermediate: bool
+    self_signed: bool
+    expired: bool
+    name_matches: bool
+    ocsp_stapled: bool
+    connections: int
+    frames: list[int]
+    tls_versions: dict[str, int]
+    alerts: dict[str, int]
+    clients_rejected: int
+    issues: list[str]
+
+
+class TlsCertificatesResult(RowsResult, total=False):
+    """``chains`` with issues first; ``summary`` counts (expired, self-signed, mismatches, missing intermediates,
+    weak signatures, TLS 1.3 connections skipped); ``issues``."""
+    chains: list[TlsCertificateChain]
+    display_filter: str
+    summary: dict[str, Any]
+    issues: list[str]
+
+
 class SipMessage(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     frame: int
