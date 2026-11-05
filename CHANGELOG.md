@@ -7,6 +7,11 @@ the project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
+- README first screen: a one-line `claude mcp add` with `uvx --from tshark-mcp-server`, PyPI version
+  and downloads badges, and a demo GIF recorded with vhs from a live MCP client session against the
+  PyPI package (docs/media/demo.tape, docs/media/demo_client.py). A "Found a bug or a wrong answer?"
+  section, issue forms for wrong answers and for bugs, questions routed to GitHub Discussions, and a
+  1280x640 social preview image (docs/media/social-preview.png).
 - `Dockerfile`: tshark from Debian pinned to the 4.4 series (the build fails if the series
   changes), the server installed from the checkout, a non-root user (uid 10001), `/captures` as the
   read-only capture mount, a healthcheck (package imports, tshark runs) and no port. A CI `docker`

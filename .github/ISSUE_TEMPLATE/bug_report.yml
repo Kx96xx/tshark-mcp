@@ -1,0 +1,45 @@
+name: Bug or crash
+description: A tool failed, raised an error, hung, or the server did not start
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not attach captures with real subscriber data** (IMSI, MSISDN, IMEI, IP addresses)
+        to this public issue. Security problems go to
+        [private vulnerability reporting](https://github.com/Kx96xx/tshark-mcp/security/advisories/new), not here.
+  - type: textarea
+    id: call
+    attributes:
+      label: Tool call or command
+      description: The tool and arguments, or the tshark-mcp command line if the server did not start.
+      render: text
+      placeholder: 'gtp_sessions(path="/captures/x.pcap", imsi="001010123456789")'
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: What happened
+      description: The error result, the traceback from --log-file or stderr, or how long it hung.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce without real traffic
+      description: A few lines for tests/pcapgen.py, or a capture built with scapy or text2pcap with documentation addresses and test identities.
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      value: |
+        - tshark-mcp: (tshark-mcp --version)
+        - tshark: (tshark --version | head -1)
+        - Python:
+        - OS:
+        - MCP client (Claude Code, Claude Desktop, other):
+    validations:
+      required: true
