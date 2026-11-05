@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. Fifty-one
+when the operator enables `--export-dir`. Fifty-two
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -69,6 +69,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | Call quality (loss, jitter, MOS estimate) | `rtp_streams`; `sip_call_detail(path, call_id)` for timing, Reason, who hung up |
 | ASR, NER, post-dial delay or call duration per carrier, prefix or hour | `call_kpis(path, group_by="peer" / "destination_prefix" / "interval")`, then `sip_call_detail` on a Call-ID from `worst_calls` |
 | The customer got 503 but the carrier sent 480: which hop of the B2BUA, SBC or CSCF chain failed or rewrote it? | `call_legs(path, call_id=... or number=...)`: legs with `linked_by` and confidence, `status_mapping`, `where_it_failed`; then `sip_call_detail` on one leg |
+| VoLTE call rang but no audio, or 503 after the 183: Rx, Gx or the dedicated bearer? | `volte_call_chain(path, call_id=... or ue_ip=...)`: links in order with status, `first_broken_link`, `verdict` |
 | DTMF not working | `dtmf_events(path, call_id=...)` |
 | UE cannot register on IMS | `ims_registration(path, imsi=... or impu=...)` |
 | SMS over IMS lost or rejected | `sms_over_ims(path, number=... or imsi=...)` |
@@ -194,6 +195,7 @@ src/tshark_mcp/
   causes.py     cause_lookup; names from tshark -G values, text in causedata.py
   gtpies.py     gtp_ies: GTPv2-C IE key view, full tree and likely causes
   nasproc.py    nas_procedures: S1 UE contexts, UEs and EMM/ESM procedures from S1AP and NAS EPS
+  volte.py      volte_call_chain: SIP, Rx, Gx, GTPv2-C bearer, PFCP and RTP of one VoLTE call joined by icid and UE address
   roaming.py    roaming_attach_check: attempts, subscription against request, checks and verdict
   prompts.py    the six MCP prompts (guided workflows) and path completion for their arguments
   window.py     start/end on every capture tool: parsing, per-capture resolution, the filter clause

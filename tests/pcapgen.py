@@ -1806,6 +1806,163 @@ def write_ran_pcaps(directory: Path) -> dict[str, Path]:
     """The radio-side (S1-MME) captures, in their own directory like the voice ones."""
     directory.mkdir(parents=True, exist_ok=True)
     return {"s1ap_nas": write_s1ap_nas_pcap(directory / "s1ap_nas.pcap")}
+# --------------------------------------------------------------------------- VoLTE call chain
+# One capture per story is easier to reason about, so the three calls share one file but use
+# their own UE address, icid and Gx session: SIP at the P-CSCF, Rx (P-CSCF to PCRF), Gx (PCRF to
+# PGW), GTPv2-C S5 and S11 bearer creation, PFCP on N4/Sxb and the RTP that follows.
+RX_APP = 16777236
+GX_APP = 16777238
+PCRF_IP = "192.0.2.55"
+VOLTE_UE = {"ok": "100.64.1.21", "rx": "100.64.1.22", "bearer": "100.64.1.23"}
+VOLTE_ICID = {"ok": "icid-volte-ok-1", "rx": "icid-volte-rx-2", "bearer": "icid-volte-bearer-3"}
+VOLTE_CALL = {"ok": "volte-ok-1@ue.example", "rx": "volte-rx-2@ue.example", "bearer": "volte-bearer-3@ue.example"}
+VOLTE_PEER_MEDIA = "203.0.113.30"
+
+
+def _v_avp(code: int, data: bytes) -> bytes:
+    return _avp(code, data, vendor=VOLTE_VENDOR)
+
+
+VOLTE_VENDOR = VENDOR_3GPP
+
+
+def _diam_app(cmd: int, app: int, hbh: int, request: bool, session: str, origin: str, avps: list[bytes]) -> bytes:
+    base = [_avp(263, session.encode()), _avp(264, origin.encode()), _avp(296, b"test.example"),
+            _avp(258, struct.pack("!I", app))]
+    if request:
+        base.append(_avp(283, b"test.example"))
+    return _diameter(cmd, app, hbh, hbh, request, base + avps)
+
+
+def _volte_frames() -> list[tuple[float, bytes]]:
+    frames: list[tuple[float, bytes]] = []
+    tsn = [0]
+
+    def add(t: float, raw: bytes) -> None:
+        frames.append((t, raw))
+
+    def diam(t: float, src: str, dst: str, payload: bytes) -> None:
+        tsn[0] += 1
+        add(t, _sctp_data(src, dst, 3868, 3868, 0xD1A0, tsn[0], 46, payload))
+
+    def gtp(t: float, src: str, dst: str, payload: bytes) -> None:
+        add(t, _udp_frame(src, dst, 2123, 2123, payload))
+
+    def pfcp(t: float, src: str, dst: str, msg_type: int, seid: int, seq: int, ies: list[bytes]) -> None:
+        body = struct.pack("!Q", seid) + struct.pack("!I", seq << 8) + b"".join(ies)
+        add(t, _udp_frame(src, dst, 8805, 8805, bytes([0x21, msg_type]) + struct.pack("!H", len(body)) + body))
+
+    def sip(t: float, src: str, dst: str, payload: bytes) -> None:
+        add(t, _udp_frame(src, dst, 5060, 5060, payload))
+
+    def bearer_ctx(ebi: int, qci: int, cause: int | None = None) -> bytes:
+        qos = bytes([0x00, qci]) + b"\x00\x00\x00\x00\x40" * 2 + b"\x00\x00\x00\x00\x40" * 2
+        inner = _ie(73, bytes([ebi])) + (_ie(80, qos) if cause is None else _ie(2, bytes([cause, 0])))
+        return _ie(93, inner)
+
+    def call(key: str, t0: float, rx_result: int | None, gtp_cause: int, ue_media: bool) -> None:
+        ue, icid, cid = VOLTE_UE[key], VOLTE_ICID[key], VOLTE_CALL[key]
+        n = {"ok": 1, "rx": 2, "bearer": 3}[key]
+        gx_session = f"pgw.test.example;gx;{n}"
+        rx_session = f"pcscf.test.example;rx;{n}"
+        mme_teid, sgw_teid = 0x1100 + n, 0x2200 + n
+        # The UE's default bearer, before the call: Gx CCR-I/CCA-I and the Create Session Response with its PAA.
+        diam(t0 - 30.0, PGW_IP, PCRF_IP, _diam_app(272, GX_APP, 0x500 + n, True, gx_session, "pgw.test.example",
+                                                   [_avp(416, struct.pack("!I", 1)), _avp(8, _ipv4(ue))]))
+        diam(t0 - 29.99, PCRF_IP, PGW_IP, _diam_app(272, GX_APP, 0x500 + n, False, gx_session, "pcrf.test.example",
+                                                    [_avp(268, struct.pack("!I", 2001)), _avp(416, struct.pack("!I", 1))]))
+        gtp(t0 - 29.98, SGW_IP, MME_IP, _gtpv2(33, mme_teid, 0x100 + n, [
+            _ie(2, bytes([16, 0])), _ie(79, bytes([1]) + _ipv4(ue)), _ie(73, bytes([5]))]))
+        req, resp = _voice_sip(cid, f"v{n}")
+        pcv = f'P-Charging-Vector: icid-value="{icid}";orig-ioi=test.example'
+        offer = _sdp(ue, 4000 + 2 * n, [104, 105], ["104 AMR-WB/16000", "105 telephone-event/16000"],
+                     ["a=curr:qos local none", "a=des:qos mandatory local sendrecv"])
+        sip(t0, ue, PCSCF_IP, req("INVITE", 1, extra=[pcv, "Require: precondition", "Supported: 100rel"], body=offer))
+        sip(t0 + 0.010, PCSCF_IP, ue, resp(100, "Trying", 1, "INVITE", to_tag=None))
+        answer = _sdp(VOLTE_PEER_MEDIA, 30000 + 2 * n, [104], ["104 AMR-WB/16000"], ["a=curr:qos remote none"])
+        t = t0 + 0.300
+        # Rx AAR at the 183 (the P-CSCF authorises the media once both SDPs are known).
+        sip(t, PCSCF_IP, ue, resp(183, "Session Progress", 1, "INVITE", extra=[pcv, "Require: 100rel", "RSeq: 1"],
+                                   body=answer))
+        aar = [_avp(8, _ipv4(ue)), _v_avp(505, icid.encode()), _v_avp(533, struct.pack("!I", 0))]
+        diam(t + 0.010, PCSCF_IP, PCRF_IP, _diam_app(265, RX_APP, 0x600 + n, True, rx_session, "pcscf.test.example", aar))
+        if rx_result is not None:
+            result = _avp(268, struct.pack("!I", rx_result)) if rx_result < 5000 or rx_result in (5001, 5002, 5003) \
+                else _avp(297, _avp(266, struct.pack("!I", VENDOR_3GPP)) + _avp(298, struct.pack("!I", rx_result)))
+            diam(t + 0.030, PCRF_IP, PCSCF_IP, _diam_app(265, RX_APP, 0x600 + n, False, rx_session,
+                                                          "pcrf.test.example", [result]))
+        if rx_result != 2001:
+            sip(t + 0.200, PCSCF_IP, ue, resp(503, "Service Unavailable", 1, "INVITE",
+                                              extra=['Reason: Q.850;cause=47;text="Resource unavailable"']))
+            sip(t + 0.210, ue, PCSCF_IP, req("ACK", 1, to_tag="net"))
+            return
+        rule = _v_avp(1001, _v_avp(1003, _v_avp(1005, b"volte-voice") + _v_avp(1016, _v_avp(1028, struct.pack("!I", 1)))))
+        diam(t + 0.040, PCRF_IP, PGW_IP, _diam_app(258, GX_APP, 0x700 + n, True, gx_session, "pcrf.test.example",
+                                                   [_avp(285, struct.pack("!I", 0)), rule]))
+        diam(t + 0.050, PGW_IP, PCRF_IP, _diam_app(258, GX_APP, 0x700 + n, False, gx_session, "pgw.test.example",
+                                                   [_avp(268, struct.pack("!I", 2001))]))
+        gtp(t + 0.060, PGW_IP, SGW_IP, _gtpv2(95, sgw_teid, 0x200 + n, [_ie(73, bytes([5])), bearer_ctx(0, 1)]))
+        gtp(t + 0.065, SGW_IP, MME_IP, _gtpv2(95, mme_teid, 0x300 + n, [_ie(73, bytes([5])), bearer_ctx(0, 1)]))
+        ebi = 6
+        gtp(t + 0.150, MME_IP, SGW_IP, _gtpv2(96, 0x5500 + n, 0x300 + n, [
+            _ie(2, bytes([gtp_cause, 0])), bearer_ctx(ebi, 1, cause=gtp_cause)]))
+        gtp(t + 0.155, SGW_IP, PGW_IP, _gtpv2(96, 0x6600 + n, 0x200 + n, [
+            _ie(2, bytes([gtp_cause, 0])), bearer_ctx(ebi, 1, cause=gtp_cause)]))
+        if gtp_cause == 16:
+            pdi = _pfcp_ie(2, _pfcp_ie(20, bytes([0])) + _pfcp_ie(93, bytes([0x02]) + _ipv4(ue)))
+            pdr = _pfcp_ie(1, _pfcp_ie(56, struct.pack("!H", 10 + n)) + _pfcp_ie(29, struct.pack("!I", 100)) + pdi)
+            pfcp(t + 0.160, SMF_IP, UPF_IP, 52, 0x7700 + n, 0x40 + n, [pdr])
+            pfcp(t + 0.170, UPF_IP, SMF_IP, 53, 0x8800 + n, 0x40 + n, [_pfcp_ie(19, bytes([1]))])
+        sip(t + 0.400, ue, PCSCF_IP, req("PRACK", 2, to_tag="net", extra=["RAck: 1 1 INVITE"]))
+        sip(t + 0.420, PCSCF_IP, ue, resp(200, "OK", 2, "PRACK"))
+        sip(t + 0.500, ue, PCSCF_IP, req("UPDATE", 3, to_tag="net", body=offer.replace("a=curr:qos local none",
+                                                                                      "a=curr:qos local sendrecv")))
+        sip(t + 0.520, PCSCF_IP, ue, resp(200, "OK", 3, "UPDATE", body=answer))
+        sip(t + 1.000, PCSCF_IP, ue, resp(180, "Ringing", 1, "INVITE"))
+        sip(t + 3.000, PCSCF_IP, ue, resp(200, "OK", 1, "INVITE", body=answer))
+        sip(t + 3.010, ue, PCSCF_IP, req("ACK", 1, to_tag="net"))
+        media_t = t + 3.020
+        for i in range(5):
+            add(media_t + 0.02 * i, _udp_frame(VOLTE_PEER_MEDIA, ue, 30000 + 2 * n, 4000 + 2 * n,
+                                               _rtp(104, 100 + i, 320 * i, 0xAB000000 + n, b"\xf7\xc0")))
+            if ue_media:
+                add(media_t + 0.005 + 0.02 * i, _udp_frame(ue, VOLTE_PEER_MEDIA, 4000 + 2 * n, 30000 + 2 * n,
+                                                           _rtp(104, 200 + i, 320 * i, 0xCD000000 + n, b"\xf7\xc0")))
+        end = media_t + 2.0
+        sip(end, ue, PCSCF_IP, req("BYE", 4, to_tag="net"))
+        sip(end + 0.020, PCSCF_IP, ue, resp(200, "OK", 4, "BYE"))
+        diam(end + 0.030, PCSCF_IP, PCRF_IP, _diam_app(275, RX_APP, 0x800 + n, True, rx_session, "pcscf.test.example",
+                                                        [_avp(295, struct.pack("!I", 1))]))
+        diam(end + 0.040, PCRF_IP, PCSCF_IP, _diam_app(275, RX_APP, 0x800 + n, False, rx_session, "pcrf.test.example",
+                                                        [_avp(268, struct.pack("!I", 2001))]))
+        if gtp_cause == 16:
+            remove = _v_avp(1002, _v_avp(1005, b"volte-voice"))
+            diam(end + 0.050, PCRF_IP, PGW_IP, _diam_app(258, GX_APP, 0x900 + n, True, gx_session, "pcrf.test.example",
+                                                         [_avp(285, struct.pack("!I", 0)), remove]))
+            diam(end + 0.060, PGW_IP, PCRF_IP, _diam_app(258, GX_APP, 0x900 + n, False, gx_session, "pgw.test.example",
+                                                         [_avp(268, struct.pack("!I", 2001))]))
+            gtp(end + 0.070, SGW_IP, MME_IP, _gtpv2(99, mme_teid, 0x400 + n, [_ie(73, bytes([ebi]))]))
+            gtp(end + 0.120, MME_IP, SGW_IP, _gtpv2(100, 0x5500 + n, 0x400 + n, [_ie(2, bytes([16, 0]))]))
+
+    t0 = 1_700_200_000.0
+    call("ok", t0, 2001, 16, True)
+    call("rx", t0 + 20.0, 5065, 16, True)
+    call("bearer", t0 + 40.0, 2001, 73, False)
+    frames.sort(key=lambda f: f[0])
+    return frames
+
+
+def write_volte_chain_pcap(path: Path) -> Path:
+    """Three VoLTE calls through SIP, Rx, Gx, GTPv2-C and PFCP: one that works end to end,
+    one whose Rx AAR is refused (5065, so a 503 to the UE), and one whose dedicated bearer
+    the MME refuses (cause 73) while the call is still answered and the UE sends no RTP."""
+    return _frames_to_pcap(path, _volte_frames())
+
+
+def write_volte_pcaps(directory: Path) -> dict[str, Path]:
+    """The VoLTE chain capture, in its own directory like the voice ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {"volte_chain": write_volte_chain_pcap(directory / "volte_chain.pcap")}
 
 
 # --------------------------------------------------------------------------- examples/

@@ -773,6 +773,43 @@ class NasProceduresResult(RowsResult, total=False):
     ues: list[NasUe]
     summary: dict[str, Any]
     null_cipher: dict[str, Any]
+class VolteLink(TypedDict, total=False):
+    """One link of a VoLTE call chain: SIP, Rx, Gx, GTPv2-C, PFCP or RTP."""
+    __pydantic_config__ = _EXTRA_OK
+    link: str
+    status: str
+    frame: int
+    time: str
+    found_by: str
+    answer_frame: int
+    result_code: int
+    cause: int
+    status_code: int
+    qci: int
+    rtt_ms: float
+    delay_ms: float
+    legs: list[dict[str, Any]]
+    explained: dict[str, Any]
+    note: str
+
+
+class VolteCall(TypedDict, total=False):
+    """One call followed from the INVITE to the bearer and media, with the first broken link."""
+    __pydantic_config__ = _EXTRA_OK
+    call_id: str
+    frame: int
+    time: str
+    ue_ip: str
+    icid: str
+    final_status: int
+    links: list[VolteLink]
+    first_broken_link: str
+    verdict: str
+
+
+class VolteCallChainResult(RowsResult, total=False):
+    calls: list[VolteCall]
+    summary: dict[str, Any]
     method: dict[str, str]
 
 
