@@ -52,6 +52,19 @@ PARTIAL_READ_MARKERS: tuple[str, ...] = (
 _WARNINGS: ContextVar[list[str] | None] = ContextVar("tshark_mcp_warnings", default=None)
 
 
+_DEADLINE: ContextVar[float | None] = ContextVar("tshark_mcp_deadline", default=None)
+
+
+def set_deadline(at: float | None) -> Token:
+    """Cap every run of this call (context) at ``at`` (a ``time.monotonic()`` value): a tool that
+    runs several other tools under one budget sets it once, and each run gets what is left."""
+    return _DEADLINE.set(at)
+
+
+def reset_deadline(token: Token) -> None:
+    _DEADLINE.reset(token)
+
+
 def begin_warnings() -> Token:
     """Start collecting per-call warnings (one list per tool call, context-local)."""
     return _WARNINGS.set([])
@@ -306,6 +319,12 @@ class Runner:
             assert_read_only(args)
         started = time.monotonic()
         limit = self.limits.timeout_seconds if timeout is None else max(0.0, min(timeout, self.limits.timeout_seconds))
+        budget_end = _DEADLINE.get()
+        if budget_end is not None:
+            left = budget_end - time.monotonic()
+            if left <= 0:
+                raise ToolError("timeout", "the call's time budget was used up before the next tshark run")
+            limit = min(limit, left)
         wait = max(0.0, min(self.limits.busy_wait_seconds, limit))
         if not self._acquire(wait):
             raise ToolError("busy", f"{self.limits.max_concurrent_runs} tshark runs are already in progress and none "

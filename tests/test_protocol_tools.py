@@ -157,6 +157,7 @@ class TestRegistration:
             "gtp_ies",
             "roaming_attach_check",
             "capture_index",
+            "incident_summary",
         ])
         by_name = {t.name: t for t in tools}
 

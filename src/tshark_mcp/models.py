@@ -1666,6 +1666,38 @@ class FindIdentifierResult(RowsResult, total=False):
     files_outside_window: int
 
 
+class IncidentFinding(TypedDict, total=False):
+    """One finding: ``kind`` (a stable name such as tcp_loss, http_5xx, connect_failures), ``severity``
+    (high, medium, low), ``text`` (one sentence), ``confidence``, ``evidence`` (the tool, its
+    arguments and up to five frames), ``details`` (that tool's own sentences) and ``next_call``."""
+    __pydantic_config__ = _EXTRA_OK
+    kind: str
+    severity: str
+    text: str
+    confidence: str
+    evidence: dict[str, Any]
+    details: list[str]
+    next_call: dict[str, Any]
+
+
+class IncidentSummaryResult(ToolResult, total=False):
+    """``findings`` ranked by severity; ``capture``: span, packets, protocols, ``trust`` (capture_quality's
+    verdict) and ``cannot_show``; ``top_talkers`` (IP conversations); ``timeline`` (first packet, first
+    problem, first high finding, last problem, last packet); ``not_checked`` (pass and reason);
+    ``passes`` (pass, ms, status); ``thresholds`` the rules used."""
+    path: str
+    focus: str
+    summary: str
+    findings: list[IncidentFinding]
+    capture: dict[str, Any]
+    top_talkers: list[dict[str, Any]]
+    timeline: list[dict[str, Any]]
+    not_checked: list[dict[str, Any]]
+    passes: list[dict[str, Any]]
+    budget_s: float
+    thresholds: dict[str, float]
+
+
 class CaptureIndexFile(TypedDict, total=False):
     """One capture file of a directory, in time order. ``gap_before_s`` is the hole between
     the previous file's last packet and this file's first; ``overlap_before_s`` the time both
