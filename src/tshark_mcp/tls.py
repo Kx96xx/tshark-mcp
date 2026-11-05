@@ -390,10 +390,13 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 conn["server_hello"] = sh
         if 11 in hs and side == "server" and p["certificates"] and conn["certificate"] is None:
             conn["chain_length"] = len(p["certificates"])
+            conn["chain"] = list(p["certificates"])
             try:
                 conn["certificate"] = parse_certificate(bytes.fromhex(p["certificates"][0].replace(":", "")))
             except ValueError:
                 conn["certificate"] = None
+        if 22 in hs and side == "server":  # CertificateStatus: an OCSP response stapled to the handshake
+            conn["ocsp_stapled"] = True
         for level, desc in zip(p["alert_levels"], p["alert_descs"]):
             if _repeat([a for a in conn["alerts"] if a["description"] == alert_name(desc)], p, copy):
                 continue

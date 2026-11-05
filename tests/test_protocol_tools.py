@@ -162,6 +162,7 @@ class TestRegistration:
             "throughput_timeline",
             "tunnels_overview",
             "export_subset",
+            "tls_certificates",
             "call_legs",
         ])
         by_name = {t.name: t for t in tools}
