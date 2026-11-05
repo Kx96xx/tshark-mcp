@@ -85,6 +85,9 @@ The questions name paths relative to the capture directory (`all.pcap`); the too
 paths, so a model run through that script must be told the directory (the harness's own driver
 says it in its system prompt).
 
+PcapBench (`python -m evals.bench`, [BENCHMARK.md](BENCHMARK.md)) runs these questions and the
+XML set through tshark-mcp and a plain-tshark baseline with a model, under a stated run cap.
+
 ## Results (scripted driver)
 
 Token counts are approximate: results that carry file paths grow with the length of the
