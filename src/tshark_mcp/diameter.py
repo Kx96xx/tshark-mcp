@@ -205,6 +205,31 @@ def _tbcd_bytes(digits: str) -> str:
     return ":".join(pairs)
 
 
+def _top_avps(msg: Json) -> list[Json]:
+    """The command-level AVPs of one Diameter message (tshark's ``diameter.avp_tree``, one entry per AVP
+    with ``--no-duplicate-keys``); an AVP inside a grouped AVP sits deeper, under ``<Name>_tree``."""
+    tree = msg.get("diameter.avp_tree")
+    if isinstance(tree, list):
+        return [a for a in tree if isinstance(a, dict)]
+    return [tree] if isinstance(tree, dict) else []
+
+
+def command_results(msg: Json) -> tuple[int | None, int | None, list[int]]:
+    """(command-level Result-Code, command-level Experimental-Result-Code, Result-Codes inside each
+    Multiple-Services-Credit-Control). A Result-Code nested in Proxy-Info, an MSCC or any other grouped
+    AVP is not the answer's result (RFC 6733 7.1, RFC 4006 8.16)."""
+    top = _top_avps(msg)
+    if not top:  # no AVP tree to tell the levels apart: the first one found, as before
+        return (to_int(first(msg, "diameter.Result-Code")), to_int(first(msg, "diameter.Experimental-Result-Code")), [])
+    rc = next((to_int(a["diameter.Result-Code"]) for a in top if "diameter.Result-Code" in a), None)
+    erc = next((to_int(first(a, "diameter.Experimental-Result-Code")) for a in top
+                if "diameter.Experimental-Result" in a or "diameter.Experimental-Result_tree" in a), None)
+    mscc = [code for a in top if "diameter.Multiple-Services-Credit-Control_tree" in a
+            for code in [to_int(first(a["diameter.Multiple-Services-Credit-Control_tree"], "diameter.Result-Code"))]
+            if code is not None]
+    return rc, erc, mscc
+
+
 def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Message]:
     """One Message per Diameter PDU; ``keep_raw`` keeps the dissected PDU under ``raw``
     for the AVP tools."""
@@ -222,6 +247,7 @@ def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Messag
             hbh = to_int(first(msg, "diameter.hopbyhopid"))
             e2e = to_int(first(msg, "diameter.endtoendid"))
             session = first(msg, "diameter.Session-Id")
+            rc, erc, mscc = command_results(msg)
             fields: dict[str, Any] = {
                 "command_code": code,
                 "application_id": to_int(first(msg, "diameter.applicationId")),
@@ -235,8 +261,9 @@ def extract_messages(packets: list[Json], keep_raw: bool = False) -> list[Messag
                 "user_name": first(msg, "diameter.User-Name"),
                 "public_identity": first(msg, "diameter.Public-Identity"),
                 "msisdn_raw": first(msg, "diameter.MSISDN"),
-                "result_code": to_int(first(msg, "diameter.Result-Code")),
-                "experimental_result_code": to_int(first(msg, "diameter.Experimental-Result-Code")),
+                "result_code": rc,
+                "experimental_result_code": erc,
+                "mscc_result_codes": mscc,
                 "error_flag": first(msg, "diameter.flags.error") == "1",
                 "retransmit_flag": first(msg, "diameter.flags.T") == "1",
             }
@@ -295,7 +322,14 @@ def transaction_row(tx: Transaction) -> dict[str, Any]:
             row["result"] = RESULT_CODES.get(rc, f"result-{rc}")
         if erc is not None:
             row["experimental_result_code"] = erc
-            row["result"] = EXPERIMENTAL_RESULT_CODES.get(erc, f"experimental-{erc}")
+            if rc is None:  # RFC 6733 7.6: Experimental-Result stands in for Result-Code, never beside it
+                row["result"] = EXPERIMENTAL_RESULT_CODES.get(erc, f"experimental-{erc}")
+        mscc = ans.fields.get("mscc_result_codes") or []
+        if mscc:
+            row["mscc_result_codes"] = mscc
+            bad = [c for c in mscc if not 2000 <= c < 3000]
+            if bad:
+                row["mscc_results"] = [RESULT_CODES.get(c, f"result-{c}") for c in bad]
         if rc is None and erc is None:
             row["result"] = "no Result-Code AVP"
         row["success"] = _is_success(rc, erc)
@@ -305,6 +339,8 @@ def transaction_row(tx: Transaction) -> dict[str, Any]:
 
 
 def _is_success(rc: int | None, erc: int | None) -> bool:
+    """Command-level success. A credit-control answer can succeed while one service unit fails
+    (DIAMETER_CREDIT_LIMIT_REACHED in an MSCC): that is in ``mscc_result_codes``, not here."""
     if rc is not None:
         return 2000 <= rc < 3000
     if erc is not None:
@@ -420,7 +456,7 @@ def session_rows(transactions: list[Transaction], capture_end: CaptureEnd | None
         s["request_codes"].append(row["command_code"])
         if row.get("answer"):
             s["answer_codes"].append(row["command_code"])
-        code = row.get("experimental_result_code", row.get("result_code"))
+        code = row.get("result_code", row.get("experimental_result_code"))
         if code is not None:
             s["result_codes"].append(code)
         if row.get("unanswered"):
