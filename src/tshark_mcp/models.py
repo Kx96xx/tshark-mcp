@@ -851,6 +851,31 @@ class SmsDeliveryResult(RowsResult, total=False):
     method: dict[str, str]
 
 
+class DiameterPeer(TypedDict, total=False):
+    """One Diameter peer connection: capabilities, watchdog, disconnects, restarts and KPIs per application."""
+    __pydantic_config__ = _EXTRA_OK
+    peer: list[str]
+    hosts: dict[str, list[str]]
+    first_frame: int
+    last_frame: int
+    verdict: str
+    capabilities: list[dict[str, Any]]
+    watchdog: dict[str, Any]
+    disconnects: list[dict[str, Any]]
+    restarts: list[dict[str, Any]]
+    applications: list[dict[str, Any]]
+    failed_avps: dict[str, int]
+    error_messages: list[dict[str, Any]]
+    routing: dict[str, Any]
+    issues: list[str]
+
+
+class DiameterPeersResult(RowsResult, total=False):
+    peers: list[DiameterPeer]
+    summary: dict[str, Any]
+    method: dict[str, str]
+
+
 class GtpIeTransaction(TypedDict, total=False):
     """One paired GTPv2-C transaction with its IEs (``request_ies``/``response_ies``:
     key view or full tree); ``likely_causes`` explains a reject from the request."""

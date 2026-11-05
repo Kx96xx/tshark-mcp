@@ -52,6 +52,8 @@ PACKET_CONTAINERS: frozenset[str] = frozenset({
     "header_changes",                  # call_legs: header values of both legs
     "differences",                     # compare_captures: values from both captures
     "writer",                          # capture_metadata: application, OS, hardware of the file's writer
+    "hosts",                           # diameter_peers: Origin-Host values per address
+    "auth_applications", "acct_applications", "peer_auth_applications",  # diameter_peers: CER/CEA
 })
 """Keys under which every string is packet content."""
 

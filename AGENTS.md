@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. Fifty-four
+when the operator enables `--export-dir`. Fifty-five
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -75,6 +75,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | Everything that happened to one subscriber | `trace_subscriber(path, imsi=... or msisdn=...)` |
 | Attach, TAU or service request rejected on S1-MME, bearer refused, paging not answered? | `nas_procedures(path, imsi=... or guti=...)`: procedures per UE with outcome, EMM/ESM/S1AP cause named, `ciphered_count`, `pending_paging` |
 | Why can this roamer not attach, or attach but get no bearer? | `roaming_attach_check(path, imsi=..., home_plmn=...)`: attempts, subscription versus request, `checks`, `first_failure`, `verdict` |
+| Is the DRA or a Diameter peer unhealthy? Which realm is unroutable? Did the HSS restart? | `diameter_peers(path, host=... or realm=...)`: capabilities, watchdog, DPR, restarts, routing errors per peer |
 | Why did the attach or Diameter procedure fail? | `diameter_sessions(path, imsi=...)`, then `diameter_avps(path, imsi=..., detail="key")` for the AVPs behind a result code |
 | Why did charging, the VoLTE bearer, IMS registration, an Sh read or the IMEI check fail? | `diameter_avps(path, command_code=272 / 265 / 300-303 / 306 / 324)`: the `gy`, `rx`, `cx`, `sh` or `s13` digest, failed codes `explained` |
 | GTPv2-C: was the session created, with which cause, which PAA? | `gtp_sessions(path, imsi=... / apn=... / teid=...)`; GTPv1-C (Gn/Gp): `gtpv1_sessions` |
@@ -215,6 +216,7 @@ src/tshark_mcp/
   volte.py      volte_call_chain: SIP, Rx, Gx, GTPv2-C bearer, PFCP and RTP of one VoLTE call joined by icid and UE address
   sigtranhealth.py sigtran_health: SCTP episodes, heartbeats, M3UA ASP state, DUNA/DAVA, SCCP returns, TCAP aborts
   smsdelivery.py sms_delivery: MAP SRI-for-SM/forwardSM/report dialogues and SGsAP paging and CP/RP per message
+  diampeers.py  diameter_peers: CER/CEA, DWR/DWA, DPR, restarts and per-application KPIs per peer
   roaming.py    roaming_attach_check: attempts, subscription against request, checks and verdict
   prompts.py    the six MCP prompts (guided workflows) and path completion for their arguments
   window.py     start/end on every capture tool: parsing, per-capture resolution, the filter clause
