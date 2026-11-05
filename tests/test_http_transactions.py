@@ -120,7 +120,7 @@ def test_endpoints_and_issues(configure, tmp_path):
     assert eps[("GET", "/search")]["response_ms"]["p99"] == pytest.approx(2000.0, abs=0.01)
     text = " | ".join(out["summary"]["issues"])
     assert "75% of POST api.example.com/api/orders answered 5xx (3 of 4)" in text
-    assert "p99 response 2.0 s on GET search.example.com/search" in text
+    assert "p99 response 2.0 s to the first byte on GET search.example.com/search" in text
 
 
 def test_selectors(configure, tmp_path):

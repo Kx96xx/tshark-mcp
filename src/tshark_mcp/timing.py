@@ -142,6 +142,11 @@ def _h2_frames(raw: dict[str, list[str]]) -> list[dict[str, Any]] | None:
     types, lengths, ends = raw.get("http2.type") or [], raw.get("http2.length") or [], raw.get("http2.flags.end_stream") or []
     counts, names, values = raw.get("http2.header.count") or [], raw.get("http2.header.name") or [], raw.get("http2.header.value") or []
     headers_ok = len(names) == len(values) == sum(to_int(c, 0) or 0 for c in counts)
+    header_frames = sum(1 for i in range(len(sids)) if to_int(_nth(types, i)) in (H2_HEADERS, H2_PUSH_PROMISE))
+    # tshark's header count includes HPACK entries that are not headers (a dynamic table size update),
+    # so the sum can exceed the names listed. With one header block in the segment the names and
+    # values still belong to it.
+    single_block = not headers_ok and header_frames == 1 and len(names) == len(values)
     frames = []
     e = c = h = 0
     for i, sid in enumerate(sids):
@@ -156,6 +161,8 @@ def _h2_frames(raw: dict[str, list[str]]) -> list[dict[str, Any]] | None:
             c += 1
             if headers_ok:
                 frame["headers"] = {names[h + k].lower(): values[h + k] for k in range(n)}
+            elif single_block:
+                frame["headers"] = {name.lower(): value for name, value in zip(names, values)}
             h += n
         frames.append(frame)
     return frames

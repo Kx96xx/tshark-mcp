@@ -116,6 +116,9 @@ ALLOWED_PREFERENCES: frozenset[str] = frozenset({
     "ip.check_checksum:TRUE", "tcp.check_checksum:TRUE", "udp.check_checksum:TRUE",
     # nas_procedures: read NAS sent with null ciphering (EEA0) only when asked, the same on every tshark.
     "nas-eps.null_decipher:TRUE", "nas-eps.null_decipher:FALSE",
+    # http_transactions: read a response's status line from its first segment when tshark cannot
+    # reassemble the whole response in one pass. Changes dissection only, never what is read or written.
+    "tcp.desegment_tcp_streams:FALSE",
 })
 
 

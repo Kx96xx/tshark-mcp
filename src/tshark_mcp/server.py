@@ -1371,6 +1371,18 @@ def http_transactions(path: str, host: str | None = None, path_prefix: str | Non
         flt = _filter(filter, base=httptx.BASE_FILTER)
         stdout, scan = _fields_run(capture, flt, httptx.FIELDS, st.limits.max_scan_packets, aggregator=httptx.AGGREGATOR)
         rows, stats = httptx.analyse(httptx.parse(stdout))
+        followup = httptx.followup_streams(rows)
+        if followup:
+            # Responses tshark could not reassemble, and TTFB of slow multi-segment ones: their first segments.
+            try:
+                seg_out, _seg_scan = _fields_run(capture, _filter(filter, base=httptx.first_segment_filter(followup)),
+                                                 httptx.FIRST_SEGMENT_FIELDS, st.limits.max_scan_packets,
+                                                 aggregator=httptx.AGGREGATOR, extra_args=httptx.FIRST_SEGMENT_ARGS)
+                decoded = httptx.apply_first_segments(rows, seg_out)
+                if decoded:
+                    stats["responses_from_first_segment"] = decoded
+            except ToolError:
+                pass
         end_of = _interface_end(capture)
         rows = httptx.finish(rows, lambda: end_of(None))
         try:
