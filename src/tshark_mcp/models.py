@@ -62,6 +62,7 @@ class ToolResult(TypedDict, total=False):
     text_values_shortened: int
     redaction: dict[str, Any]
     tokens_estimate: int
+    cache: dict[str, int]
     columns: list[str]
     output: str
     window: dict[str, Any]

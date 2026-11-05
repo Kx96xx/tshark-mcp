@@ -26,7 +26,7 @@ def _one_of(values: tuple[str, ...], room: int = 100) -> str:
 MAX_CHARS = 120
 
 SHARED: dict[str, str] = {
-    "path": "Capture file, absolute path in an allowed dir",
+    "path": "Capture file (absolute, in an allowed dir) or open_capture handle",
     "path_a": "First capture (working, or before): absolute path",
     "path_b": "Second capture (failing, or after): absolute path",
     "limit": "Most rows per page",

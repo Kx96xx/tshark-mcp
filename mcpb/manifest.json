@@ -294,6 +294,10 @@
     {
       "name": "diameter_peers",
       "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
+    },
+    {
+      "name": "open_capture",
+      "description": "Pin one capture for an investigation of several calls: returns a `handle` (\"cap:...\"), accepted by every capture tool in place of `path` (also `path_a`/`path_b`)."
     }
   ],
   "compatibility": {

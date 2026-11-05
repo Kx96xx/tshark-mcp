@@ -33,7 +33,8 @@ URI_PREFIX = "schema://tools/"
 
 # Keys of ToolResult that the server instructions describe for every tool.
 COMMON_KEYS = frozenset({"truncated", "truncated_reason", "warnings", "trimmed", "untrusted_text_fields",
-                         "text_values_shortened", "redaction", "tokens_estimate", "columns", "output"})
+                         "text_values_shortened", "redaction", "tokens_estimate", "columns", "output",
+                         "cache"})
 
 _DETAILS = re.compile(r"\n[ \t]*Details:[ \t]*")
 _MAX_KEYS_LISTED = 40

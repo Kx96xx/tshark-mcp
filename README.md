@@ -193,10 +193,10 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-<!-- tool-count -->Fifty-five<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Fifty-six<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
-`--schema-profile full` publishes them all. Only the default toolset (33 tools, about 60% of the
+`--schema-profile full` publishes them all. Only the default toolset (34 tools, about 60% of the
 list: `incident_summary`, the capture overview, the most used TCP/IP and telecom tools) is listed
 unless you add `--toolsets mobile,voice,network` (or `all`); see
 [AGENTS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/AGENTS.md#toolsets). Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
@@ -209,6 +209,7 @@ what it cost in `tokens_estimate`.
 | Tool | One line |
 | --- | --- |
 | `incident_summary` | Start here. First call on an unknown capture: ranked findings with evidence frames, confidence and the next call to make, plus the protocols no check covers |
+| `open_capture` | Pin one capture (and a filter and time window) under a handle every capture tool takes as `path`; repeated runs come from a memory cache |
 | `diff_captures` | Before and after a change: per destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, what appeared, vanished, got worse or better |
 | `throughput_timeline` | Bytes, goodput, retransmissions, window stalls, SYNs, DNS and ICMP per interval; per-stream verdict (loss, receiver, idle, sender) |
 | `tunnels_overview` | GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE/ESP), WireGuard, OpenVPN, L2TP and GTP-U tunnels: endpoints, traffic each way, inner protocols, overhead against the MTU, handshake outcome |

@@ -27,6 +27,7 @@ import re
 import selectors
 import sys
 import tempfile
+from collections import OrderedDict
 from contextvars import ContextVar, Token
 import shutil
 import subprocess
@@ -34,7 +35,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from . import progress, window
 from .limits import Limits, ToolError, echo
@@ -53,6 +54,82 @@ _WARNINGS: ContextVar[list[str] | None] = ContextVar("tshark_mcp_warnings", defa
 
 
 _DEADLINE: ContextVar[float | None] = ContextVar("tshark_mcp_deadline", default=None)
+
+# Cache hits and misses of the tool call running in this context: [hits, misses].
+_CACHE_STATS: ContextVar[list[int] | None] = ContextVar("tshark_mcp_cache_stats", default=None)
+DEFAULT_CACHE_MB = 256.0
+
+
+def begin_cache_stats() -> Token:
+    return _CACHE_STATS.set([0, 0])
+
+
+def collect_cache_stats(token: Token) -> tuple[int, int]:
+    stats = _CACHE_STATS.get() or [0, 0]
+    _CACHE_STATS.reset(token)
+    return stats[0], stats[1]
+
+
+def _count(hit: bool) -> None:
+    stats = _CACHE_STATS.get()
+    if stats is not None:
+        stats[0 if hit else 1] += 1
+
+
+class ResultCache:
+    """Memory-only LRU of finished tshark and capinfos runs on a capture, keyed by the file's
+    identity (real path, device, inode, size, mtime in ns) and the full argv, bounded in bytes of
+    stdout plus stderr. Two tools issuing the same run, or the same call repeated, read tshark's
+    output once. Redaction and output shaping happen after it, so a cached run serves clear and
+    redacted callers alike; nothing in it leaves the process."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max(0, int(max_bytes))
+        self._items: "OrderedDict[tuple, RunResult]" = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+        self.hits = self.misses = 0
+
+    @staticmethod
+    def key(capture: Path, program: str, args: Sequence[str]) -> tuple | None:
+        try:
+            info = os.stat(capture)
+        except OSError:
+            return None
+        return (os.path.realpath(capture), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, program, tuple(args))
+
+    def get(self, key: tuple) -> "RunResult | None":
+        with self._lock:
+            hit = self._items.get(key)
+            if hit is not None:
+                self._items.move_to_end(key)
+                self.hits += 1
+            else:
+                self.misses += 1
+            return hit
+
+    def put(self, key: tuple, result: "RunResult") -> None:
+        size = len(result.stdout) + len(result.stderr)
+        if size > self.max_bytes:
+            return
+        with self._lock:
+            old = self._items.pop(key, None)
+            if old is not None:
+                self._bytes -= len(old.stdout) + len(old.stderr)
+            self._items[key] = result
+            self._bytes += size
+            while self._bytes > self.max_bytes and self._items:
+                _, gone = self._items.popitem(last=False)
+                self._bytes -= len(gone.stdout) + len(gone.stderr)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+            self._bytes = 0
+
+    def describe(self) -> dict[str, Any]:
+        return {"max_mb": round(self.max_bytes / (1024 * 1024), 1), "entries": len(self._items),
+                "mb": round(self._bytes / (1024 * 1024), 2), "hits": self.hits, "misses": self.misses}
 
 
 def set_deadline(at: float | None) -> Token:
@@ -240,8 +317,9 @@ class Runner:
     """Runs tshark in read-only mode under the configured limits."""
 
     def __init__(self, limits: Limits, tshark: str | None = None, capinfos: str | None = None,
-                 user_profile: bool = False) -> None:
+                 user_profile: bool = False, cache_mb: float = DEFAULT_CACHE_MB) -> None:
         self.limits = limits
+        self.cache = ResultCache(int(cache_mb * 1024 * 1024)) if cache_mb and cache_mb > 0 else None
         self.tshark = find_tshark(tshark)
         self.capinfos = capinfos or self._sibling("capinfos")
         self.dftest = self._sibling("dftest")
@@ -386,6 +464,15 @@ class Runner:
                  keep_line: Callable[[bytes], bool] | None = None) -> RunResult:
         if read_only_check:
             assert_read_only(args)
+        key = None
+        if self.cache is not None and capture is not None and stdin is None and keep_line is None:
+            key = ResultCache.key(capture[0], program, args)
+            hit = self.cache.get(key) if key is not None and key[1:3] == capture[1] else None
+            if hit is not None:
+                progress.raise_if_cancelled()
+                _count(True)
+                return hit
+            _count(False)
         started = time.monotonic()
         limit = self.limits.timeout_seconds if timeout is None else max(0.0, min(timeout, self.limits.timeout_seconds))
         budget_end = _DEADLINE.get()
@@ -405,6 +492,9 @@ class Runner:
         finally:
             self._slots.release()
         progress.run_finished(result.duration_ms)
+        if key is not None and result.returncode == 0:
+            # Keyed on the identity seen before the run; _run already refused a file replaced meanwhile.
+            self.cache.put(key, result)
         return result
 
     def _acquire(self, wait: float) -> bool:

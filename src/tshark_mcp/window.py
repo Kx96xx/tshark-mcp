@@ -55,6 +55,22 @@ class Span:
 
 _SPEC: ContextVar[Spec | None] = ContextVar("tshark_mcp_window", default=None)
 _SEEN: ContextVar[list[dict[str, Any]] | None] = ContextVar("tshark_mcp_window_seen", default=None)
+# Display filters pinned by capture handles (see :mod:`handles`), by capture path: ANDed into every
+# run of the call on that capture, like the time window.
+_SCOPE: ContextVar[dict[str, str] | None] = ContextVar("tshark_mcp_handle_filters", default=None)
+
+
+def bind_filters(filters: dict[str, str] | None) -> Token:
+    return _SCOPE.set(filters or None)
+
+
+def unbind_filters(token: Token) -> None:
+    _SCOPE.reset(token)
+
+
+def pinned_filter(capture: Path) -> str | None:
+    scope = _SCOPE.get()
+    return scope.get(str(capture)) if scope else None
 _CACHE: dict[tuple[str, int, int, int, int], Span] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 512
@@ -200,10 +216,13 @@ def clause(capture: Path, capinfos: Callable[[Path], Any]) -> str | None:
     """The display-filter clause of the active window on ``capture``, or None; records
     what it resolved to for :func:`report`."""
     spec = _SPEC.get()
+    pinned = pinned_filter(capture)
     if spec is None:
-        return None
+        return pinned
     lo, hi, cap = resolve(spec, capture, capinfos)
     text = filter_text(lo, hi)
+    if pinned:
+        text = combine(text, pinned) if text else pinned
     seen = _SEEN.get()
     if seen is not None and not any(r["capture"] == str(capture) for r in seen):
         seen.append({"capture": str(capture), "start_epoch": lo, "end_epoch": hi, "filter": text,
