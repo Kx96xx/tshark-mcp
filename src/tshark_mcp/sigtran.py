@@ -10,7 +10,7 @@ from .fields import (
     split_fields_line, to_int,
 )
 
-JSON_LAYERS = "frame ip ipv6 sctp m3ua sccp tcap gsm_map gsm_sms e212 e164"
+JSON_LAYERS = "frame ip ipv6 sctp m3ua sccp tcap gsm_map camel gsm_sms e212 e164"
 MESSAGE_FILTER = "sccp || m3ua"
 
 SCCP_TYPES: dict[int, str] = {
@@ -54,6 +54,34 @@ MAP_ERRORS: dict[int, str] = {
     54: "noRoamingNumberAvailable", 71: "unknownOrUnreachableLCSClient",
 }
 
+# CAMEL (CAP) operations and errors, 3GPP TS 29.078 (the values tshark's camel dissector names).
+CAMEL_OPERATIONS: dict[int, str] = {
+    0: "initialDP", 16: "assistRequestInstructions", 17: "establishTemporaryConnection",
+    18: "disconnectForwardConnection", 19: "connectToResource", 20: "connect", 22: "releaseCall",
+    23: "requestReportBCSMEvent", 24: "eventReportBCSM", 27: "collectInformation", 31: "continue",
+    32: "initiateCallAttempt", 33: "resetTimer", 34: "furnishChargingInformation", 35: "applyCharging",
+    36: "applyChargingReport", 41: "callGap", 44: "callInformationReport", 45: "callInformationRequest",
+    46: "sendChargingInformation", 47: "playAnnouncement", 48: "promptAndCollectUserInformation",
+    49: "specializedResourceReport", 53: "cancel", 55: "activityTest", 60: "initialDPSMS",
+    61: "furnishChargingInformationSMS", 62: "connectSMS", 63: "requestReportSMSEvent", 64: "eventReportSMS",
+    65: "continueSMS", 66: "releaseSMS", 67: "resetTimerSMS", 70: "activityTestGPRS", 71: "applyChargingGPRS",
+    72: "applyChargingReportGPRS", 73: "cancelGPRS", 74: "connectGPRS", 75: "continueGPRS",
+    76: "entityReleasedGPRS", 77: "furnishChargingInformationGPRS", 78: "initialDPGPRS", 79: "releaseGPRS",
+    80: "eventReportGPRS", 81: "requestReportGPRSEvent", 82: "resetTimerGPRS", 83: "sendChargingInformationGPRS",
+    86: "disconnectForwardConnectionWithArgument", 88: "continueWithArgument", 90: "disconnectLeg", 93: "moveLeg",
+    95: "splitLeg", 96: "entityReleased", 97: "playTone",
+}
+CAMEL_ERRORS: dict[int, str] = {
+    0: "canceled", 1: "cancelFailed", 3: "eTCFailed", 4: "improperCallerResponse", 6: "missingCustomerRecord",
+    7: "missingParameter", 8: "parameterOutOfRange", 10: "requestedInfoError", 11: "systemFailure",
+    12: "taskRefused", 13: "unavailableResource", 14: "unexpectedComponentSequence", 15: "unexpectedDataValue",
+    16: "unexpectedParameter", 17: "unknownLegID", 50: "unknownPDPID", 51: "unknownCSID",
+}
+_CAMEL_COMPONENT_KEYS = (
+    ("camel.invoke_element", "invoke"), ("camel.returnResult_element", "returnResultLast"),
+    ("camel.returnError_element", "returnError"), ("camel.reject_element", "reject"),
+)
+
 _COMPONENT_KEYS = (
     ("gsm_old.invoke_element", "invoke"),
     ("gsm_old.returnResultLast_element", "returnResultLast"),
@@ -88,7 +116,34 @@ def correlation_filter(tids: set[str]) -> str | None:
     return "tcap.tid in {" + ", ".join(sorted(tids)) + "}"
 
 
-def _components(tcap_layer: Any, map_layer: Any) -> list[dict[str, Any]]:
+def _camel_components(camel_layer: Any) -> list[dict[str, Any]]:
+    """CAP components: the operation from ``camel.local`` (inside ``camel.result_element`` for a
+    result), the error from ``camel.error_code_local``, the invoke id from ``camel.present``."""
+    comps: list[dict[str, Any]] = []
+    for key, kind in _CAMEL_COMPONENT_KEYS:
+        for comp in dicts_with(camel_layer, key):
+            body = comp[key]
+            opcode = to_int(first(body, "camel.local"))
+            err = to_int(first(body, "camel.error_code_local"))
+            comps.append(compact({
+                "type": kind, "application": "camel",
+                "invoke_id": to_int(first(body, "camel.present")),
+                "opcode": opcode if kind != "returnError" else None,
+                "operation": (CAMEL_OPERATIONS.get(opcode, f"cap-op-{opcode}")
+                              if opcode is not None and kind != "returnError" else None),
+                "error_code": err,
+                "error": CAMEL_ERRORS.get(err, f"cap-err-{err}") if err is not None else None,
+                "problem": first(body, "camel.invokeProblem") or first(body, "camel.general")
+                if kind == "reject" else None,
+            }))
+    return comps
+
+
+def _components(tcap_layer: Any, map_layer: Any, camel_layer: Any = None) -> list[dict[str, Any]]:
+    if camel_layer is not None:
+        camel = _camel_components(camel_layer)
+        if camel:
+            return camel
     comps: list[dict[str, Any]] = []
     for source in (map_layer, tcap_layer):
         if source is None:
@@ -138,6 +193,7 @@ def extract_rows(packets: list[Json]) -> list[dict[str, Any]]:
         sccp = _layer(lyr, "sccp")
         tcap = _layer(lyr, "tcap")
         gsm_map = _layer(lyr, "gsm_map")
+        camel = lyr.get("camel")  # every CAP layer: tshark adds one per component (requestReportBCSMEvent + continue)
         gsm_sms = _layer(lyr, "gsm_sms")
         if m3ua is None and sccp is None:
             continue
@@ -170,7 +226,7 @@ def extract_rows(packets: list[Json]) -> list[dict[str, Any]]:
                     break
             row["otid"] = _tid(first(tcap, "tcap.otid"))
             row["dtid"] = _tid(first(tcap, "tcap.dtid"))
-            row["components"] = _components(tcap, gsm_map)
+            row["components"] = _components(tcap, gsm_map, camel)
             if gsm_map is not None or gsm_sms is not None:
                 app_layers = [l for l in (gsm_map, gsm_sms, tcap) if l is not None]
                 row["imsi"] = _map_imsi(app_layers)
@@ -336,6 +392,10 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
                 "heartbeat_acks": 0, "retransmissions": 0, "data_chunks": 0, "abort": False, "shutdown": False,
                 "init_frame": None, "init_ack_frame": None, "abort_frame": None,
                 "first_frame": to_int(rec["frame.number"]),
+                # Handshake bookkeeping: an INIT waiting for its answer, per sender; INITs answered
+                # by ABORT; who sent INITs (both ends: an INIT collision, RFC 9260 5.2.1).
+                "pending_init": {}, "inits_aborted": 0, "aborted_frames": [], "init_senders": set(),
+                "init_collision_frame": None,
             }
         s["packets"] += 1
         s["last_frame"] = to_int(rec["frame.number"])
@@ -347,6 +407,22 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
             n = to_int(ct)
             name = CHUNK_TYPES.get(n if n is not None else -1, f"chunk-{ct}")
             s["chunks"][name] = s["chunks"].get(name, 0) + 1
+            frame_no = to_int(rec["frame.number"])
+            sender = (rec["ip.src"], rec["sctp.srcport"])
+            if name == "INIT":
+                if sender not in s["init_senders"] and s["init_senders"] and s["init_collision_frame"] is None:
+                    s["init_collision_frame"] = frame_no
+                s["init_senders"].add(sender)
+                s["pending_init"][sender] = frame_no
+            elif name == "ABORT" and s["pending_init"] and s["init_ack_frame"] is None:
+                peer_inits = [f for snd, f in s["pending_init"].items() if snd != sender]
+                if peer_inits:
+                    s["inits_aborted"] += 1
+                    if len(s["aborted_frames"]) < 5:
+                        s["aborted_frames"].append(max(peer_inits))
+                    s["pending_init"] = {snd: f for snd, f in s["pending_init"].items() if snd == sender}
+            elif name == "INIT_ACK":
+                s["pending_init"] = {}
             if name == "INIT":
                 s["init_frame"] = s["init_frame"] or to_int(rec["frame.number"])
                 if rec["sctp.init_initiate_tag"]:
@@ -370,6 +446,19 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
     for s in assocs.values():
         handshake = "complete" if (s["init_frame"] and s["init_ack_frame"]) else (
             "INIT without INIT_ACK" if s["init_frame"] else "not in capture")
+        issues = []
+        if s["inits_aborted"]:
+            n = s["inits_aborted"]
+            issues.append(f"{n} INIT{'s' if n != 1 else ''} answered with ABORT (frames "
+                          f"{', '.join(str(f) for f in s['aborted_frames'][:3])}): the peer refused the association "
+                          "(nothing listening on that port, an endpoint or stream limit, or a mismatched configuration)")
+        if s["init_collision_frame"] is not None:
+            issues.append(f"INIT collision: both ends sent INIT (frame {s['init_collision_frame']}), so the "
+                          "association was set up by the RFC 9260 5.2.4 collision procedure"
+                          + (" and completed" if handshake == "complete" else ""))
+        if s["heartbeats"] - s["heartbeat_acks"] >= 3:
+            issues.append(f"{s['heartbeats'] - s['heartbeat_acks']} HEARTBEATs not acknowledged: the path or the "
+                          "peer is not answering")
         rows.append(compact({
             "endpoint_a": s["endpoint_a"],
             "endpoint_b": s["endpoint_b"],
@@ -391,6 +480,9 @@ def summarise_sctp(stdout: str) -> list[dict[str, Any]]:
             "abort_frame": s["abort_frame"],
             "shutdown_seen": s["shutdown"],
             "chunk_counts": s["chunks"],
+            "inits_aborted": s["inits_aborted"] or None,
+            "init_collision": True if s["init_collision_frame"] is not None else None,
+            "issues": issues or None,
         }))
     return rows
 
