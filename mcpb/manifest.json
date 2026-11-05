@@ -286,6 +286,10 @@
     {
       "name": "diameter_peers",
       "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
+    },
+    {
+      "name": "security_triage",
+      "description": "Is anything on this network scanning, beaconing, tunnelling over DNS, spoofing ARP or sending passwords in clear: `findings` ranked by severity, each with `kind` (port_scan, host_sweep, syn_flood, beacon, dns_tunnel_hint, rare_tls_client, arp_conflict, cleartext_credentials), `summary`, ..."
     }
   ],
   "compatibility": {
