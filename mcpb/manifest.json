@@ -208,6 +208,10 @@
       "description": "Follow one VoLTE call through every element and say where the setup broke."
     },
     {
+      "name": "sigtran_health",
+      "description": "Why an SS7-over-IP link flapped or a GT is unreachable: one row per SCTP association (the two address:port endpoints) with a `verdict` (healthy, degraded, flapping, down) and `issues` in plain words."
+    },
+    {
       "name": "sip_call_detail",
       "description": "Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder (messages carrying SDP are marked), From/To/Request-URI/P-Asserted-Identity, the `outcome` (answered, failed <status>, cancelled, no final response), `final_response` with its reason phrase, `timing`: post-dial delay ..."
     },

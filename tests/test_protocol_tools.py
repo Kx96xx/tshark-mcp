@@ -167,6 +167,7 @@ class TestRegistration:
             "call_legs",
             "nas_procedures",
             "volte_call_chain",
+            "sigtran_health",
         ])
         by_name = {t.name: t for t in tools}
 

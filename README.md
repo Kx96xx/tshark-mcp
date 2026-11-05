@@ -189,9 +189,9 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-Fifty-two tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Fifty-three tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
-compact by default (151 KB instead of 382 KB at 52 tools); each tool's full schema is the resource `schema://tools/<name>`, and
+compact by default (154 KB instead of 389 KB at 53 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
@@ -240,6 +240,7 @@ what it cost in `tokens_estimate`.
 | `call_kpis` | ASR, NER, SER, PDD and ACD per peer, trunk, number prefix, user agent or interval |
 | `call_legs` | Stitch the legs of one call across B2BUAs, SBCs and CSCFs (icid, Session-ID, X- headers, media, number), with a confidence per link, which hop failed and who rewrote the status |
 | `volte_call_chain` | One VoLTE call through SIP, Rx, Gx, GTPv2-C bearer creation, PFCP and RTP: each link's status, the first broken link and a verdict |
+| `sigtran_health` | Why an SS7-over-IP link flapped or a GT is unreachable: SCTP episodes, aborts and heartbeats, M3UA ASP state, DUNA/DAVA outages, SCCP returns and TCAP aborts per association, with a verdict |
 | `media_path_check` | SDP-negotiated media against the RTP seen: one-way audio, NAT, 488 |
 | `rtp_streams` | Per-stream loss, jitter, RTCP and an E-model MOS estimate, linked to the call |
 | `dtmf_events` | RFC 4733 and SIP INFO digits in order, checked against the SDP |
@@ -307,7 +308,7 @@ pytest
 python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 1047 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 1058 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

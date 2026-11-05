@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_float, to_int, validate_fields,
@@ -86,7 +86,7 @@ pfcp_sessions, sigtran_messages or sip_dialogs with imsi, session_id, call_id,
 roaming_attach_check (the first failure). S1-MME attach, TAU or service
 rejects: nas_procedures. Voice: sip_call_detail (one call), media_path_check
 (one-way audio, 488), rtp_streams (loss, jitter, MOS), dtmf_events, call_kpis
-(ASR, NER, PDD, ACD), volte_call_chain (where a VoLTE setup broke). IMS:
+(ASR, NER, PDD, ACD), volte_call_chain (where a VoLTE setup broke). SS7 links: sigtran_health. IMS:
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
@@ -2939,6 +2939,61 @@ def volte_call_chain(path: str, call_id: str | None = None, ue_ip: str | None = 
                          method=volte.METHOD)
     return _guarded("volte_call_chain", {"path": path, "call_id": call_id, "ue_ip": ue_ip, "window_s": window_s,
                                          "filter": filter, "limit": limit, "offset": offset}, run)
+@_tool(title="SIGTRAN link health per association", annotations=READ_ONLY)
+def sigtran_health(path: str, peer: str | None = None, point_code: int | None = None, gt: str | None = None,
+                   filter: str | None = None, limit: int = 100, offset: int = 0) -> models.SigtranHealthResult:
+    """Why an SS7-over-IP link flapped or a GT is unreachable: one row per SCTP association
+    (the two address:port endpoints) with a `verdict` (healthy, degraded, flapping, down)
+    and `issues` in plain words. Per association: `episodes` (INIT, established, ABORT or
+    SHUTDOWN with the SCTP error cause named and who sent it, duration, `gap_before_s`
+    before the next INIT), `heartbeat` (sent, answered, failures with frames), `m3ua`
+    (ASP state and transitions ASPUP/ASPAC/ASPIA/ASPDN with ack times, routing contexts,
+    NTFY, ERR with the error code named, DUNA/DAVA/SCON/DUPU per point code with the
+    outage length, point codes in ITU 3-8-3 and ANSI 8-8-8), `sccp_returns` (UDTS/XUDTS
+    per unreachable GT and SSN with the return cause named) and `tcap_aborts` (P-Abort
+    causes). Narrow with `peer` (an IP or ip:port), `point_code` or `gt` (digits).
+
+    Details: A heartbeat with no answer in the other direction within 3 s counts as a
+    failure. The ASP state drops to down when the association ends. flapping: two or more
+    aborts or shutdowns; down: the last episode ended and none followed. An association
+    that was up before the capture starts with `started: before the capture`. `summary`
+    counts associations per verdict, aborts, heartbeat failures, M3UA errors, SCCP returns
+    and TCAP aborts. Content-free: addresses, codes, timings and frames."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        who = None
+        if peer:
+            text = str(peer).strip()
+            if not re.fullmatch(r"[0-9A-Fa-f:.]{2,45}(:\d{1,5})?", text) or len(text) > 60:
+                raise ToolError("invalid_argument", f"peer must be an IP address or ip:port, got {echo(peer)}")
+            who = text
+        pc = None
+        if point_code is not None:
+            try:
+                pc = int(point_code)
+            except (TypeError, ValueError):
+                raise ToolError("invalid_argument", f"point_code must be an integer, got {echo(point_code)}") from None
+            if not 0 <= pc <= 0xFFFFFF:
+                raise ToolError("invalid_argument", "point_code must be 0 to 16777215")
+        digits = lint_digits(gt, "gt") if gt else None
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        stdout, scan = _fields_run(capture, _filter(filter, base=sigtranhealth.DISPLAY_FILTER), sigtranhealth.FIELDS,
+                                   st.limits.max_scan_packets)
+        end, _ = _last_packet_time(capture, stdout)
+        explained: dict[tuple[str, int], Any] = {}
+
+        def explain(protocol: str, code: int) -> Any:
+            if (protocol, code) not in explained:
+                explained[(protocol, code)] = causes.brief(st.runner, protocol, code)
+            return explained[(protocol, code)]
+        assocs = sigtranhealth.build(sigtranhealth.parse(stdout), end, explain)
+        summary = sigtranhealth.summary(assocs)
+        assocs = sigtranhealth.select(assocs, who, pc, digits)
+        return _envelope("associations", assocs, cap, scan, offset=offset, summary=summary,
+                         method=sigtranhealth.METHOD)
+    return _guarded("sigtran_health", {"path": path, "peer": peer, "point_code": point_code, "gt": gt,
+                                       "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)
