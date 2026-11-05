@@ -6,6 +6,8 @@ llms: which files in a directory mention an IMSI, MSISDN, IP address, SIP Call-I
 
 Which captures in a directory (or one file) mention an IMSI, MSISDN, IP address, SIP Call-ID or
 Diameter Session-Id: hits, first/last timestamp and protocol breakdown per file, bounded by a
-file-count cap and one shared time budget; files without hits that were only read up to the frame
+file-count cap (`max_files`, default the server's --max-files) and one shared time budget;
+subdirectories are not searched, and those that hold captures are named in
+`subdirectories_with_captures`; files without hits that were only read up to the frame
 cap are listed in `partially_scanned`. Hits count packets that carry the identifier, so for Diameter
 they count requests (answers carry no User-Name)
