@@ -286,6 +286,10 @@
     {
       "name": "diameter_peers",
       "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
+    },
+    {
+      "name": "iot_sessions",
+      "description": "Why IoT devices fail to stay connected: one row per MQTT connection (client id, protocol level, keepalive, CONNACK named, `keepalive_violated`, PUBLISH counts per topic, PUBACK latency, DISCONNECT reason, how it `ended`, `reconnect_loop`), per CoAP client and server (CON/NON/ACK/RST, ..."
     }
   ],
   "compatibility": {
