@@ -56,11 +56,13 @@ from . import export as exporting
 from . import progress
 from . import prompts as guided
 from . import window
+from . import handles
 from . import schemas
 from . import toolsets
 from . import ipsec
 from .errors import add_fix
-from .runner import Runner, begin_warnings, check_result, collect_warnings, note_warning
+from .runner import (DEFAULT_CACHE_MB, Runner, begin_cache_stats, begin_warnings, check_result, collect_cache_stats,
+                     collect_warnings, note_warning)
 from .runner import reset_deadline as runner_deadline_reset, set_deadline as runner_deadline
 from .runner import preferences as runner_preferences, reset_preferences, set_preferences
 
@@ -218,8 +220,9 @@ def configure(allow_dirs: list[str] | tuple[str, ...], limits: Limits | None = N
               log_path: str | os.PathLike[str] | None = None, redact_mode: str = "off",
               redact_key: bytes | None = None, redact_keep_prefix: bool = False,
               user_profile: bool = False, export_dir: str | None = None, export_max_mb: float | None = None,
-              export_inside_allow_dir: bool = False) -> ServerState:
-    """Initialise the global server state (used by ``main`` and by the tests)."""
+              export_inside_allow_dir: bool = False, cache_mb: float | None = None) -> ServerState:
+    """Initialise the global server state (used by ``main`` and by the tests). ``cache_mb``: the
+    memory result cache (default 256, 0 turns it off; env ``TSHARK_MCP_CACHE_MB``)."""
     global _STATE
     limits = limits or Limits.from_env()
     allowlist = Allowlist.from_strings(list(allow_dirs))
@@ -227,13 +230,25 @@ def configure(allow_dirs: list[str] | tuple[str, ...], limits: Limits | None = N
     _STATE = ServerState(
         allowlist=allowlist,
         limits=limits,
-        runner=Runner(limits, tshark=tshark, user_profile=user_profile),
+        runner=Runner(limits, tshark=tshark, user_profile=user_profile, cache_mb=_cache_mb(cache_mb)),
         log_path=Path(log_path) if log_path else None,
         redactor=redaction.Redactor(redact_key, keep_prefix=redact_keep_prefix),
         redact_mode=redaction.check_mode(redact_mode, "redact_mode"),
         export=export_cfg,
     )
     return _STATE
+
+
+def _cache_mb(value: float | None) -> float:
+    if value is None:
+        raw = os.environ.get("TSHARK_MCP_CACHE_MB")
+        try:
+            value = float(raw) if raw not in (None, "") else DEFAULT_CACHE_MB
+        except ValueError:
+            raise ValueError(f"TSHARK_MCP_CACHE_MB must be numeric, got {raw!r}") from None
+    if value < 0:
+        raise ValueError("the result cache size must be 0 (off) or more MB")
+    return value
 
 
 def state() -> ServerState:
@@ -345,6 +360,9 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 problem = exc
                 return _guarded(fn.__name__, shape, lambda: _raise(problem))
             start, end = (kw.pop("start", None), kw.pop("end", None)) if windowed else (None, None)
+            pinned_filters, pinned_window = _handle_scope(sig, args, kw)
+            if windowed and start is None and end is None and pinned_window is not None:
+                start, end = pinned_window  # the window open_capture pinned, unless the call names its own
             # A tool called by another tool (incident_summary) without its own window runs in the caller's.
             inherited = start is None and end is None and window.active() is not None
             try:
@@ -368,9 +386,12 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             token = _CALL_MODE.set(redaction.stronger(mode, "ids" if found else "off"))
             out_token = _CALL_OUTPUT.set(options)
             window_tokens = None if inherited else window.bind(spec)
+            filter_token = window.bind_filters(pinned_filters) if pinned_filters else None
             try:
                 return fn(*args, **kw)
             finally:
+                if filter_token is not None:
+                    window.unbind_filters(filter_token)
                 if window_tokens is not None:
                     window.unbind(window_tokens)
                 _CALL_OUTPUT.reset(out_token)
@@ -402,6 +423,34 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         globals().setdefault(fn.__name__, wrapper)
         return wrapper
     return decorate
+
+
+_PATH_ARGS = ("path", "path_a", "path_b")
+
+
+def _handle_scope(sig: inspect.Signature, args: list[Any] | tuple[Any, ...],
+                  kw: dict[str, Any]) -> tuple[dict[str, str], tuple[str | None, str | None] | None]:
+    """The filters pinned by capture handles among this call's path arguments (by capture path),
+    and the window pinned by the first handle that has one. A handle that cannot be used is left
+    to the tool's own _resolve, which reports it."""
+    names = list(sig.parameters)
+    filters: dict[str, str] = {}
+    pinned_window = None
+    for name in _PATH_ARGS:
+        value = kw.get(name)
+        if value is None and name in names and names.index(name) < len(args):
+            value = args[names.index(name)]
+        if not handles.looks_like(value):
+            continue
+        try:
+            h = handles.lookup(value)
+        except ToolError:
+            continue
+        if h.filter:
+            filters[str(h.path)] = h.filter
+        if pinned_window is None and (h.start is not None or h.end is not None):
+            pinned_window = (h.start, h.end)
+    return filters, pinned_window
 
 
 def as_call_result(result: Any) -> Any:
@@ -588,12 +637,15 @@ def _guarded_call(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, An
     started = time.monotonic()
     status = "ok"
     token = begin_warnings()
+    cache_token = None if nested else begin_cache_stats()  # nested calls count into their caller
     touched_token = _TOUCHED.set([])
     try:
         result = fn()
     except progress.Cancelled:
         # tshark was killed; nothing is returned to a request nobody waits for, but the audit log says so.
         collect_warnings(token)
+        if cache_token is not None:
+            collect_cache_stats(cache_token)
         mode = _redact_mode()
         logged = state().redactor.apply([args], mode)[0][0] if mode != "off" and _STATE else args
         if not nested:
@@ -609,6 +661,10 @@ def _guarded_call(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, An
         touched = _TOUCHED.get() or []
         _TOUCHED.reset(touched_token)
     warnings = collect_warnings(token)
+    hits, misses = collect_cache_stats(cache_token) if cache_token is not None else (0, 0)
+    if hits and "error" not in result:
+        # Runs answered from the memory cache (same file, same tshark argv as an earlier call).
+        result["cache"] = {"hits": hits, "misses": misses}
     if isinstance(result.get("error"), dict):
         _add_fix(result["error"], tool, args)
     else:
@@ -821,7 +877,13 @@ def _resolve(path: str) -> Path:
     """An allowed capture; with redaction on it is pre-scanned before the call's result
     leaves (find_identifier resolves its files directly: its rows carry no packet content)."""
     st = state()
-    capture = st.allowlist.resolve(path, st.limits)
+    if handles.looks_like(path):
+        pinned = handles.lookup(path)
+        capture = st.allowlist.resolve(str(pinned.path), st.limits)
+        if handles.identity(capture) != pinned.identity:
+            raise ToolError("stale_handle", f"the capture behind {pinned.handle} changed since open_capture")
+    else:
+        capture = st.allowlist.resolve(path, st.limits)
     touched = _TOUCHED.get()
     if touched is not None:
         touched.append(capture)
@@ -5378,6 +5440,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tool groups tools/list shows, comma-separated: default (always on: "
                         "incident_summary, overview, the most used TCP/IP and telecom tools), mobile, voice, "
                         "network or all (or TSHARK_MCP_TOOLSETS). Unlisted tools still answer a call by name")
+    p.add_argument("--cache-mb", type=float, default=None,
+                   help="memory cache of finished tshark runs on a capture, keyed by file identity and argv "
+                        "(default 256; 0 turns it off; or TSHARK_MCP_CACHE_MB)")
     p.add_argument("--export-dir", default=None, metavar="DIR",
                    help="turn on export_subset: the one directory it may write new pcapng files to (default off; "
                         "or TSHARK_MCP_EXPORT_DIR). Must not overlap an --allow-dir")
@@ -5432,14 +5497,15 @@ def main(argv: list[str] | None = None) -> int:
                        export_dir=args.export_dir or os.environ.get("TSHARK_MCP_EXPORT_DIR") or None,
                        export_max_mb=args.export_max_mb if args.export_max_mb is not None else (
                            float(os.environ["TSHARK_MCP_EXPORT_MAX_MB"]) if os.environ.get("TSHARK_MCP_EXPORT_MAX_MB") else None),
-                       export_inside_allow_dir=args.export_inside_allow_dir)
+                       export_inside_allow_dir=args.export_inside_allow_dir, cache_mb=args.cache_mb)
     except (ValueError, ToolError) as exc:
         print(f"tshark-mcp: {exc}", file=sys.stderr)
         return 2
     print(f"tshark-mcp {__version__}: tshark={st.runner.tshark} allow={st.allowlist.describe()} limits={st.limits.describe()} "
           f"redact={st.redact_mode} user_profile={st.runner.user_profile} schema_profile={_SCHEMA_PROFILE} "
           f"toolsets={toolsets.describe()} "
-          f"export={st.export.describe() if st.export else 'off'}",
+          f"export={st.export.describe() if st.export else 'off'} "
+          f"cache_mb={st.runner.cache.describe()['max_mb'] if st.runner.cache else 0}",
           file=sys.stderr)
     app.run(transport=args.transport)
     return 0
