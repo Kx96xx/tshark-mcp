@@ -81,12 +81,12 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotent
 WRITES_NEW_FILE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
 
 INSTRUCTIONS = """\
-Read-only analysis of existing packet captures with tshark, inside the allowed
+Read-only analysis of packet captures with tshark, inside the allowed
 directories. START HERE on any capture: incident_summary(path) gives ranked
 findings with evidence frames and the next call; not_analysed names protocols no
 check reads.
 Which file holds a subscriber: find_identifier on the directory. Start on a file
-with pcap_info (capture_metadata: pcapng writer, interfaces, drop counters).
+with pcap_info (capture_metadata: writer, interfaces, drops).
 Incident at a known time: capture_index on the directory gives the files in time
 order, holes between them and which cover start..end; every capture tool takes
 start and end (ISO 8601, epoch seconds, "+120s" after the capture start, "-30s"
@@ -109,8 +109,9 @@ or receiver time), throughput_timeline (when a transfer slowed and why), tunnels
 faults, capture_quality says whether the capture can be trusted; tcp_health
 tells real TCP loss, resets and MTU black holes from capture artifacts;
 tcp_connections gives each connection attempt's outcome and who closed it;
-icmp_errors lists ICMP errors by sender, kind and quoted flow.
-Results are JSON; the full schema of a tool is the resource schema://tools/<name>.
+icmp_errors: ICMP errors by sender, kind and quoted flow.
+Many calls on one file: open_capture(path), then path=<handle>.
+Results are JSON; a tool's full schema is the resource schema://tools/<name>.
 List tools return one page: total_matched found, returned from offset, dropped
 after it; with next_offset, call again with offset=next_offset and the same
 arguments. "truncated": true says why and how to get the rest;

@@ -131,7 +131,7 @@ description and schema of a tool, or start the server with `--schema-profile ful
 
 `tools/list` shows the `default` toolset only, unless the server is started with `--toolsets`
 (env `TSHARK_MCP_TOOLSETS`, comma-separated): `default` (always on: `incident_summary`, the capture
-overview and generic tools, `tcp_connections`, `tcp_health`, `dns_transactions`,
+overview and generic tools, `open_capture`, `tcp_connections`, `tcp_health`, `dns_transactions`,
 `tls_handshakes`, `http_transactions`, `icmp_errors`, `trace_subscriber`, the Diameter and GTPv2-C
 tools, `roaming_attach_check`, `compare_captures`, the SIP and RTP tools, `ims_registration`,
 `sms_over_ims`), `mobile` (PFCP, GTPv1-C, GTP-U, `nas_procedures`, SIGTRAN, SCTP, `sms_delivery`,
