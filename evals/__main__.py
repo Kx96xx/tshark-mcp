@@ -3,6 +3,7 @@
     python -m evals                          # scripted driver: deterministic, no API cost
     python -m evals --only one_way_audio     # one scenario
     python -m evals --report docs/EVALS.md   # rewrite the results table in the docs
+    python -m evals --xml evals/tshark_mcp_eval.xml   # the mcp-builder XML question set instead
     python -m evals --driver llm --model claude-opus-5-5   # a model picks the calls (costs tokens)
     python -m evals --server-dir /captures -- docker run -i --rm -v "$DIR:/captures:ro" tshark-mcp
 
@@ -46,16 +47,24 @@ def main(argv: list[str] | None = None) -> int:
                    help="fraction of scenarios that must pass for exit status 0 (default 1.0)")
     p.add_argument("--report", type=Path, default=None, help="rewrite the table between the evals markers in this file")
     p.add_argument("--json", type=Path, default=None, help="write per-scenario results and calls as JSON")
+    p.add_argument("--xml", type=Path, default=None, metavar="FILE",
+                   help="run the qa_pairs of an mcp-builder evaluation XML file (evals/tshark_mcp_eval.xml) "
+                        "instead of the built-in scenarios")
     p.add_argument("--list", action="store_true", help="list the scenarios and exit")
     p.add_argument("command", nargs="*", help="after --: the server command (default: this Python's tshark_mcp.server)")
     args = p.parse_args(argv)
 
-    scenarios = [s for s in SCENARIOS if not args.only or s.id in args.only]
+    if args.xml:
+        from .xml_bridge import load  # noqa: PLC0415
+        source = load(args.xml)
+    else:
+        source = list(SCENARIOS)
+    scenarios = [s for s in source if not args.only or s.id in args.only]
     if args.list:
-        for s in SCENARIOS:
+        for s in source:
             print(f"{s.id}: {s.question}")
         return 0
-    unknown = set(args.only) - {s.id for s in SCENARIOS}
+    unknown = set(args.only) - {s.id for s in source}
     if unknown:
         p.error(f"unknown scenario id(s): {', '.join(sorted(unknown))}")
 

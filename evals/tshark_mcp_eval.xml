@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+tshark-mcp evaluation set in the mcp-builder XML format: read-only, independent, multi-hop
+questions with exact-string answers.
+
+Captures: the synthetic set the eval harness writes, evals.harness.build_captures(<dir>)
+(tests/pcapgen.py: write_all, all.pcap, voice/, ims/, examples/). Paths in <verify> args are
+relative to that directory; evals/xml_bridge.py prefixes them with it.
+
+Format: mcp-builder's scripts/evaluation.py reads only <question> and <answer> of each
+<qa_pair> and compares the agent's response to <answer> by exact string match. The id
+attribute and the <verify> children are ignored by that script; evals/xml_bridge.py turns
+them into harness steps and checks, so running the harness with this file (xml option)
+proves without a model that every answer is still in the tool output (tests/test_eval_xml.py
+runs it in CI). Check paths use the harness syntax (a.b, a[0], a[*], a[key=value]); value is
+JSON. See docs/EVALS.md for the model runs and the reference harness.
+-->
+<evaluation>
+  <qa_pair id="s6a-unknown-subscriber">
+    <question>In all.pcap, one subscriber asked for an access point name the gateway did not recognise. Earlier, that same subscriber's authentication request to the home subscriber server also failed. What numeric Diameter experimental result code did the HSS return for it? Answer with the number only.</question>
+    <answer>5001</answer>
+    <verify tool="gtp_sessions" args='{"path": "all.pcap"}' check="transactions[imsi=001010987654321].cause" op="eq" value="78"/>
+    <verify tool="diameter_transactions" args='{"path": "all.pcap"}' check="transactions[user_name=001010987654321].experimental_result_code" op="eq" value="5001"/>
+  </qa_pair>
+  <qa_pair id="paa-of-attached-subscriber">
+    <question>In all.pcap, exactly one subscriber completed its location update with the HSS successfully. Which IPv4 address did the packet gateway assign to that subscriber's data session? Answer with the dotted address only.</question>
+    <answer>100.64.0.7</answer>
+    <verify tool="diameter_transactions" args='{"path": "all.pcap"}' check="transactions[request=ULR].user_name" op="eq" value="&quot;001010123456789&quot;"/>
+    <verify tool="gtp_sessions" args='{"path": "all.pcap"}' check="transactions[imsi=001010123456789].paa" op="eq" value="&quot;100.64.0.7&quot;"/>
+  </qa_pair>
+  <qa_pair id="gtpu-downlink-bytes">
+    <question>The user-plane capture gtpu.pcap carries traffic for the subscriber whose session was accepted in gtpv2.pcap. How many bytes of inner payload travelled in the downlink direction, from the gateway toward that subscriber's UE address? Answer with the number only.</question>
+    <answer>444</answer>
+    <verify tool="gtp_sessions" args='{"path": "gtpv2.pcap"}' check="transactions[accepted=True].paa" op="eq" value="&quot;100.64.0.7&quot;"/>
+    <verify tool="gtp_user_plane" args='{"path": "gtpu.pcap"}' check="tunnels[teid=0x0000b001].payload_bytes" op="eq" value="444"/>
+  </qa_pair>
+  <qa_pair id="false-alarm-delete-session">
+    <question>In gtpv2.pcap, a request to tear down a bearer session never received a reply. Does the capture show that the gateway failed to answer it? Respond True or False.</question>
+    <answer>False</answer>
+    <verify tool="gtp_sessions" args='{"path": "gtpv2.pcap"}' check="transactions[message=Delete Session Request].near_capture_end" op="eq" value="true"/>
+  </qa_pair>
+  <qa_pair id="trunk-lowest-asr">
+    <question>voice/call_mix.pcap holds calls from two SIP trunk peers. Which peer IP address has the lower answer-seizure ratio? Answer with the IP address only.</question>
+    <answer>203.0.113.10</answer>
+    <verify tool="call_kpis" args='{"path": "voice/call_mix.pcap", "group_by": "peer"}' check="groups[peer=203.0.113.10].asr_pct" op="eq" value="40.0"/>
+    <verify tool="call_kpis" args='{"path": "voice/call_mix.pcap", "group_by": "peer"}' check="groups[peer=203.0.113.20].asr_pct" op="eq" value="50.0"/>
+  </qa_pair>
+  <qa_pair id="rtp-lost-packets">
+    <question>In voice/voice_call.pcap, the media sent by the calling handset suffered some loss. How many RTP packets were lost on that direction? Answer with the number only.</question>
+    <answer>3</answer>
+    <verify tool="rtp_streams" args='{"path": "voice/voice_call.pcap"}' check="streams[ssrc=0x11111111].lost" op="eq" value="3"/>
+    <verify tool="rtp_streams" args='{"path": "voice/voice_call.pcap"}' check="streams[ssrc=0x11111111].src" op="eq" value="&quot;198.51.100.9:40000&quot;"/>
+  </qa_pair>
+  <qa_pair id="nat-public-address">
+    <question>In voice/voice_problems.pcap, one caller advertised a media address in its SDP offer that cannot be reached from the internet. From which public IP address did that caller's audio actually arrive? Answer with the IP address only, no port.</question>
+    <answer>203.0.113.7</answer>
+    <verify tool="rtp_streams" args='{"path": "voice/voice_problems.pcap"}' check="streams[ssrc=0x33333333].src" op="eq" value="&quot;203.0.113.7:61000&quot;"/>
+    <verify tool="rtp_streams" args='{"path": "voice/voice_problems.pcap"}' check="streams[ssrc=0x33333333].call_id" op="eq" value="&quot;voice-nat-2@ue.example&quot;"/>
+  </qa_pair>
+  <qa_pair id="488-codec">
+    <question>In voice/voice_problems.pcap, one call was refused because the two sides could not agree on media. Which codec did the refusing side say it would accept? Answer with the codec name only, without the clock rate.</question>
+    <answer>AMR-WB</answer>
+    <verify tool="media_path_check" args='{"path": "voice/voice_problems.pcap", "call_id": "voice-488-4@ue.example"}' check="failure_sdp.codecs[0]" op="eq" value="&quot;AMR-WB/16000&quot;"/>
+  </qa_pair>
+  <qa_pair id="dtmf-in-band">
+    <question>In voice/voice_dtmf.pcap, the caller pressed keys using two different signalling methods. Which keys were sent as RTP telephone events, in the order they were pressed? Answer with the key characters concatenated, no spaces.</question>
+    <answer>1#</answer>
+    <verify tool="dtmf_events" args='{"path": "voice/voice_dtmf.pcap"}' check="calls[0].rfc4733" op="eq" value="&quot;1#&quot;"/>
+  </qa_pair>
+  <qa_pair id="b2bua-rewrote-status">
+    <question>In voice/call_legs.pcap, a caller received 503 with Q.850 cause 34, but the callee side actually answered something else. Which network element's IP address changed the failure on the way back to the caller? Answer with the IP address only.</question>
+    <answer>192.0.2.90</answer>
+    <verify tool="call_legs" args='{"path": "voice/call_legs.pcap"}' check="calls[0].status_mapping[rewritten=True].element" op="eq" value="&quot;192.0.2.90&quot;"/>
+  </qa_pair>
+  <qa_pair id="ims-retry-after">
+    <question>In ims/ims_register.pcap, the network told one handset that the service was temporarily unavailable and asked it to back off. How many seconds was it told to wait before retrying? Answer with the number only.</question>
+    <answer>120</answer>
+    <verify tool="ims_registration" args='{"path": "ims/ims_register.pcap"}' check="registrations[impu=sip:001010000000104@ims.mnc001.mcc001.3gppnetwork.org].reasons[0]" op="regex" value="&quot;Retry-After 120&quot;"/>
+  </qa_pair>
+  <qa_pair id="ims-third-party-as">
+    <question>In ims/ims_register.pcap, the only handset that ended up registered still has a problem: one application server was not informed of the registration. What is that application server's host name? Answer with the host name only, without the sip: scheme.</question>
+    <answer>as2.ims.mnc001.mcc001.3gppnetwork.org</answer>
+    <verify tool="ims_registration" args='{"path": "ims/ims_register.pcap"}' check="registrations[verdict=registered].third_party[status=500].application_server" op="eq" value="&quot;sip:as2.ims.mnc001.mcc001.3gppnetwork.org&quot;"/>
+  </qa_pair>
+  <qa_pair id="ims-esp-spi">
+    <question>In ims/ims_register.pcap, one handset was challenged and then sent protected traffic toward the P-CSCF that went unanswered. Which security parameter index did those protected packets use? Answer with the decimal number only.</question>
+    <answer>4444</answer>
+    <verify tool="ims_registration" args='{"path": "ims/ims_register.pcap"}' check="registrations[impu=sip:001010000000106@ims.mnc001.mcc001.3gppnetwork.org].reasons[1]" op="regex" value="&quot;SPI 4444&quot;"/>
+  </qa_pair>
+  <qa_pair id="ims-failed-count">
+    <question>In ims/ims_register.pcap, count the handsets whose registration simply failed: do not count challenge loops, registrations that lapsed, or de-registrations. How many are there? Answer with the number only.</question>
+    <answer>4</answer>
+    <verify tool="ims_registration" args='{"path": "ims/ims_register.pcap"}' check="summary.by_verdict.failed" op="eq" value="4"/>
+  </qa_pair>
+  <qa_pair id="sms-storage-full">
+    <question>In ims/ims_sms.pcap, a text message to the handset was refused because the handset had no room left to store it. What relay-layer cause value came back? Answer with the number only.</question>
+    <answer>22</answer>
+    <verify tool="sms_over_ims" args='{"path": "ims/ims_sms.pcap"}' check="messages[frame=31].reasons[0]" op="regex" value="&quot;cause 22&quot;"/>
+  </qa_pair>
+  <qa_pair id="sms-not-registered">
+    <question>In ims/ims_sms.pcap, one recipient could not receive texts over IMS because of how it had registered. What is that recipient's phone number? Answer with the digits only, without a plus sign.</question>
+    <answer>15550100202</answer>
+    <verify tool="sms_over_ims" args='{"path": "ims/ims_sms.pcap"}' check="messages[verdict=not_registered_for_sms].request_uri" op="regex" value="&quot;15550100202&quot;"/>
+  </qa_pair>
+  <qa_pair id="map-unanswered-dpc">
+    <question>In sigtran.pcap, a mobile-originated short message was forwarded over SS7 and never answered. What is the signalling point code of the node it was sent to? Answer with the decimal point code only.</question>
+    <answer>300</answer>
+    <verify tool="sigtran_messages" args='{"path": "sigtran.pcap"}' check="messages[unanswered=True].dpc" op="eq" value="300"/>
+  </qa_pair>
+  <qa_pair id="sctp-heartbeats">
+    <question>In sctp.pcap, how many keep-alive probes on the signalling association went without an acknowledgement? Answer with the number only.</question>
+    <answer>1</answer>
+    <verify tool="sctp_associations" args='{"path": "sctp.pcap"}' check="associations[0].heartbeats_unacked" op="eq" value="1"/>
+  </qa_pair>
+  <qa_pair id="gy-credit-limit">
+    <question>In ims/diameter_apps.pcap, an online-charging update for a data session was answered with overall success, yet the service it reported on was cut off. What result code did the charging system give for that service's quota? Answer with the number only.</question>
+    <answer>4012</answer>
+    <verify tool="diameter_avps" args='{"path": "ims/diameter_apps.pcap"}' check="transactions[0].answer_avps.gy.mscc[0].result.code" op="eq" value="4012"/>
+  </qa_pair>
+</evaluation>
