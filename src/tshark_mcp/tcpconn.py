@@ -14,6 +14,11 @@ Every TCP connection attempt in the capture gets one row with an ``outcome``:
 * ``reset_during_handshake``: a SYN-ACK came back, then a reset before the
   handshake finished;
 * ``handshake_incomplete``: a SYN-ACK came back and the client never acknowledged it;
+* ``one_sided``: only one direction of the connection is in the capture (a one-way
+  tap, asymmetric routing, or a capture filter on one address): the SYN sender went on
+  sending ACKs or data without a SYN-ACK in the file, or the server sent data after its
+  SYN-ACK without the client's ACK in the file. The peer must have answered, so this is
+  not a failure; ``missing_direction`` names the direction that is absent;
 * ``seen_midway``: the capture started after the handshake.
 
 A new SYN with another initial sequence number on the same addresses and ports
@@ -52,7 +57,8 @@ ICMP_ERRORS = "icmp.type == 3 || icmp.type == 11 || icmpv6.type == 1 || icmpv6.t
 PROHIBITED = {("icmp", 3, 9), ("icmp", 3, 10), ("icmp", 3, 13), ("icmpv6", 1, 1)}
 
 OUTCOMES = ("connected", "refused", "filtered", "prohibited", "unreachable", "reset_during_handshake",
-            "handshake_incomplete", "seen_midway")
+            "handshake_incomplete", "one_sided", "seen_midway")
+NOT_ATTEMPTS = ("seen_midway", "one_sided")  # neither proves nor disproves that a connection attempt worked
 FAILED = ("refused", "filtered", "prohibited", "unreachable", "reset_during_handshake", "handshake_incomplete")
 COPY_WINDOW_S = 1.0
 NEAR_END_S = 3.0  # a SYN this close to the end of the capture may still have been answered or retried
@@ -90,6 +96,10 @@ class _Conn:
         self.icmp_frames: dict[tuple, int] = {}
         self.copies = 0
         self.seen: set[str] = set()
+        # Packets after the SYN / SYN-ACK that only make sense once the other side answered:
+        # the SYN sender's ACKs or data, the SYN-ACK sender's data.
+        self.acks_after_syn: Counter[tuple] = Counter()
+        self.data_after_synack: Counter[tuple] = Counter()
 
     def other(self, side: tuple) -> tuple:
         a, b = self.key
@@ -176,6 +186,11 @@ def _account(conn: _Conn, rec: dict[str, Any], me: tuple, peer: tuple) -> None:
             conn.synack_time, conn.synack_frame = t, rec["frame"]
     elif conn.synack_time is not None and me == conn.client and (tcp["ack"] or tcp["len"]) and not tcp["rst"]:
         conn.established = True
+    if not tcp["syn"] and not tcp["rst"]:
+        if tcp["ack"] and "syn" in conn.seen and me == conn.client:
+            conn.acks_after_syn[me] += 1
+        if tcp["len"] and conn.synack_time is not None and me != conn.client:
+            conn.data_after_synack[me] += 1
     if tcp["len"]:
         conn.seen.add("data")
     if tcp["fin"] and not tcp["rst"]:
@@ -231,9 +246,24 @@ def _client_server(conn: _Conn) -> tuple[tuple, tuple]:
     return client, conn.other(client)
 
 
+def _missing_direction(conn: _Conn, client: tuple, server: tuple) -> str | None:
+    """The direction absent from the capture when the packets that are there prove the handshake worked."""
+    if conn.synack_time is None:
+        # The SYN sender acknowledges and sends data although no SYN-ACK is in the file, and nothing came back.
+        if conn.acks_after_syn.get(client) and not conn.packets.get(server):
+            return "server_to_client"
+        return None
+    if not conn.established and conn.data_after_synack.get(server) and not any(k == "rst" for k, *_ in conn.closes):
+        # The server sends data after its SYN-ACK, which it only does once the client's ACK arrived.
+        return "client_to_server"
+    return None
+
+
 def _outcome(conn: _Conn, server: tuple) -> str:
     if not conn.syn_times and conn.synack_time is None and "syn" not in conn.seen:
         return "seen_midway"
+    if _missing_direction(conn, conn.other(server), server):
+        return "one_sided"
     if conn.synack_time is not None:
         if conn.established:
             return "connected"
@@ -259,6 +289,8 @@ def _row(conn: _Conn, end_time: Callable[[], float | None]) -> dict[str, Any]:
     row: dict[str, Any] = {
         "stream": conn.stream, "client": side_text(*client), "server": side_text(*server), "outcome": outcome,
     }
+    if outcome == "one_sided":
+        row["missing_direction"] = _missing_direction(conn, client, server)
     if outcome in ("filtered", "handshake_incomplete"):
         last_try = conn.syn_times[-1] if conn.syn_times else conn.synack_time
         end = end_time()
@@ -311,7 +343,7 @@ def destinations(rows: list[dict[str, Any]], times: dict[int, tuple[float | None
     out = []
     for server, rs in groups.items():
         outcomes = Counter(r["outcome"] for r in rs)
-        attempts = [r for r in rs if r["outcome"] != "seen_midway"]
+        attempts = [r for r in rs if r["outcome"] not in NOT_ATTEMPTS]
         connect = [r["connect_ms"] for r in rs if r.get("connect_ms") is not None]
         durations = [r["duration_s"] for r in rs if r["outcome"] == "connected" and r.get("duration_s") is not None]
         clients = Counter(r["client"].rsplit(":", 1)[0] for r in rs)
@@ -402,6 +434,12 @@ def _dest_issues(server: str, rs: list[dict[str, Any]], dest: dict[str, Any],
         issues.append(f"{len(incomplete)} SYN-ACK{'s' if len(incomplete) != 1 else ''} from {server} never acknowledged "
                       f"by the client (frames {_frames(incomplete)}): the SYN-ACK is lost on the way back, or "
                       "asymmetric routing sends it past the capture point")
+    one_sided = [r for r in rs if r["outcome"] == "one_sided"]
+    if one_sided:
+        n = len(one_sided)
+        issues.append(f"{n} connection{'s' if n != 1 else ''} to {server} {'are' if n != 1 else 'is'} in the capture in one "
+                      f"direction only (frame{'s' if n != 1 else ''} {_frames(one_sided)}): the other side must have answered, so this is not "
+                      "a connection failure; the capture point sees one direction (a one-way tap or asymmetric routing)")
     retried = [r for r in rs if r.get("syn_retries") and r["outcome"] == "connected"]
     if retried:
         worst = max(r["syn_retries"] for r in retried)

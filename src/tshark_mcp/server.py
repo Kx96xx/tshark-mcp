@@ -1085,8 +1085,8 @@ def tcp_connections(path: str, server: str | None = None, port: int | None = Non
     firewall drops it or the host is down; `near_capture_end` when the capture stopped
     less than 3 s after the last SYN), prohibited (ICMP administratively prohibited
     quoting the SYN), unreachable (another ICMP unreachable or TTL exceeded),
-    reset_during_handshake, handshake_incomplete (SYN-ACK never acknowledged) or
-    seen_midway. Failed attempts come first; `view="destinations"` groups them per server
+    reset_during_handshake, handshake_incomplete (SYN-ACK never acknowledged), one_sided
+    (only one direction captured; not a failure) or seen_midway. Failed attempts come first; `view="destinations"` groups them per server
     address and port with `issues`. `server`, `client` (IP addresses) and `port` (the server
     port) narrow the attempts; `outcome` keeps one outcome; `filter` is a display filter ANDed
     with `tcp || icmp errors`. For loss, windows and MTU inside a connection use tcp_health.
@@ -2508,8 +2508,8 @@ def tls_handshakes(path: str, server_name: str | None = None, filter: str | None
     reset_by_server, closed_by_server, client_gave_up, client_rejected_likely (TLS
     1.3: the client sent one encrypted alert-sized record instead of Finished,
     usually a certificate it would not accept), unreadable (the server answered but
-    tshark could not read a ServerHello), incomplete, or server_hello for QUIC (the
-    rest is encrypted). `server_name` keeps that SNI and the names under it;
+    tshark could not read a ServerHello), incomplete, one_sided (only one direction
+    captured: not a failure), or server_hello for QUIC (the rest is encrypted). `server_name` keeps that SNI and the names under it;
     `filter` is ANDed with the base filter. Problem connections come first.
     Details: `issues` names expired or not-yet-valid certificates, an SNI
     the certificate does not cover, deprecated versions, a version the client did not

@@ -302,7 +302,7 @@ def _new_conn(p: dict[str, Any]) -> dict[str, Any]:
     return {"transport": p["transport"], "stream": p["stream"], "first": p["time"], "frame": p["frame"],
             "client": None, "server": None, "syn": None, "hellos": [], "server_hello": None, "certificate": None,
             "chain_length": 0, "alerts": [], "app": {"client": [], "server": []}, "ccs": set(),
-            "closed": {}, "last": p["time"]}
+            "closed": {}, "last": p["time"], "sides": Counter()}
 
 
 def _side(conn: dict[str, Any], p: dict[str, Any]) -> str | None:
@@ -356,6 +356,8 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if p["syn"] and not p["ack"] and conn["client"] is None:
             conn["client"], conn["server"] = (p["src"], p["sport"]), (p["dst"], p["dport"])
             conn["syn"] = p["time"]
+        elif p["syn"] and p["ack"] and conn["client"] is None:  # a SYN-ACK without the SYN names the client too
+            conn["client"], conn["server"] = (p["dst"], p["dport"]), (p["src"], p["sport"])
         hs = p["hs_types"]
         if 1 in hs and not _repeat(conn["hellos"], p, copy):  # ClientHello
             if conn["client"] is None:
@@ -373,6 +375,8 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if 2 in hs and conn["client"] is None:  # no SYN and no readable ClientHello: the ServerHello names the server
             conn["client"], conn["server"] = (p["dst"], p["dport"]), (p["src"], p["sport"])
         side = _side(conn, p)
+        if side is not None and not copy:
+            conn["sides"][side] += 1
         if 2 in hs and side == "server":  # ServerHello (or HelloRetryRequest)
             idx = hs.index(2)
             random = _nth(p["randoms"], idx if len(p["randoms"]) > idx else 0)
@@ -427,7 +431,18 @@ def build(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _outcome(conn: dict[str, Any]) -> tuple[str, str | None]:
     """(outcome, note). Outcomes: established, alert, client_rejected_likely, no_server_hello, reset_by_server,
-    closed_by_server, client_gave_up, unreadable, incomplete, server_hello (QUIC: handshake reached the ServerHello)."""
+    closed_by_server, client_gave_up, unreadable, incomplete, one_sided, server_hello (QUIC: handshake reached the
+    ServerHello)."""
+    outcome, note = _handshake_outcome(conn)
+    sides = conn.get("sides") or {}
+    if conn["transport"] == "tcp" and outcome not in ("established", "alert") and len(sides) == 1:
+        side = next(iter(sides))
+        return "one_sided", (f"only the {side}'s direction is in the capture, so the handshake cannot be judged "
+                             "(a one-way tap, asymmetric routing or a capture filter on one address)")
+    return outcome, note
+
+
+def _handshake_outcome(conn: dict[str, Any]) -> tuple[str, str | None]:
     fatal = [a for a in conn["alerts"] if a["level"] == "fatal"]
     if fatal:
         a = fatal[0]
@@ -475,7 +490,7 @@ def _outcome(conn: dict[str, Any]) -> tuple[str, str | None]:
 
 def summarise(conns: list[dict[str, Any]], server_name: str | None = None) -> dict[str, Any]:
     rows = []
-    without_hello = 0
+    without_hello = hello_missing = 0
     for conn in conns:
         if not conn["hellos"]:
             if conn["server_hello"] is None and conn["certificate"] is None and not conn["alerts"]:
@@ -487,6 +502,7 @@ def summarise(conns: list[dict[str, Any]], server_name: str | None = None) -> di
             conn["hellos"] = [{"frame": sh["frame"] if sh else conn["frame"], "time": None, "seq": None, "sni": None,
                                "alpn": [], "versions": [], "versions_from_extension": False, "cipher_suites": None,
                                "fallback_scsv": False, "missing": True}]
+            hello_missing += 1
         hello = conn["hellos"][0]
         if server_name and not (matches_name(hello["sni"], server_name)
                                 or (not hello["sni"] and conn["certificate"]
@@ -543,9 +559,19 @@ def summarise(conns: list[dict[str, Any]], server_name: str | None = None) -> di
         "alerts": dict(Counter(f"{a['from']}: {a['description']}" for r in rows for a in r.get("alerts", []))),
         "transports": dict(Counter(r["transport"] for r in rows)),
         "streams_without_client_hello": without_hello if not server_name else None,
+        "client_hello_missing": hello_missing or None,
     }
-    failing = Counter(r.get("sni") or r["server"] for r in rows if r["outcome"] not in ("established", "server_hello"))
+    failing = Counter(r.get("sni") or r["server"] for r in rows
+                      if r["outcome"] not in ("established", "server_hello", "one_sided"))
     issues = []
+    one_sided = [r for r in rows if r["outcome"] == "one_sided"]
+    if one_sided:
+        n = len(one_sided)
+        issues.append(f"{n} TLS connection{'s' if n != 1 else ''} seen in one direction only (frames "
+                      f"{', '.join(str(r['frame']) for r in one_sided[:3])}): not counted as failures")
+    if hello_missing:
+        issues.append(f"{hello_missing} connection{'s' if hello_missing != 1 else ''} without a readable ClientHello "
+                      "(not captured, or split over segments tshark could not reassemble): client-side fields are empty")
     if failing:
         top = ", ".join(f"{k} ({v})" for k, v in failing.most_common(5))
         issues.append(f"{sum(failing.values())} of {len(rows)} handshakes did not complete; by server: {top}")
@@ -586,4 +612,4 @@ def _conn_issues(conn: dict[str, Any], hello: dict[str, Any], cert: dict[str, An
 
 
 def is_problem(row: dict[str, Any]) -> bool:
-    return row.get("outcome") not in ("established", "server_hello") or bool(row.get("issues"))
+    return row.get("outcome") not in ("established", "server_hello", "one_sided") or bool(row.get("issues"))

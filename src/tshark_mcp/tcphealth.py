@@ -384,7 +384,12 @@ def _issues(row: dict[str, Any], st: _Stream, c: _Dir, s: _Dir, fc: Any, fs: Any
     v6 = ":" in client[0]
     header = 60 if v6 else 40
     hs = row.get("handshake") or {}
-    if st.syns and not st.synacks:
+    if (st.syns and not st.synacks and st.syn_from is not None and st.d(st.syn_from).packets > st.syns
+            and not sum(x.packets for side, x in st.dirs.items() if side != st.syn_from)):
+        # The SYN sender went on with ACKs or data: it got the SYN-ACK, the capture did not.
+        issues.append("only the client's direction is in the capture: it sent ACKs and data after its SYN, so the "
+                      "server answered on a path the capture point does not see (one-way tap or asymmetric routing)")
+    elif st.syns and not st.synacks:
         issues.append(f"{st.syns} SYN{'s' if st.syns != 1 else ''} and no SYN-ACK: the server did not answer "
                       "(down, filtered, or the answer took another path)")
     elif hs.get("syn_retransmissions"):
