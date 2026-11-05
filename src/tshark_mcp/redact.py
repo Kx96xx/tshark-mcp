@@ -40,8 +40,10 @@ address or a short number before any other tool has named it (``conversations``
 first, say) still hides it. When the pre-scan stops at a cap, the result says
 ``complete: false``.
 
-What it cannot do: free text written by people (SIP display names, SMS text)
-is not searched for names; a number shorter than 14 digits is only replaced
+USSD strings and SMS text (keys holding ``ussd_string`` or ``sms_text``) are
+searched for runs of 6 or more digits, which are replaced as numbers, and their packed
+bytes fields are dropped. What it cannot do: free text written by people (SIP display
+names, SMS text) is not searched for names; a number shorter than 14 digits is only replaced
 when the pre-scan or the first pass saw it in a known field or URI; identifiers
 in encodings other than the ones above (for example inside compressed or
 encrypted payloads, or split across fields) are not found; host names, realms
@@ -103,6 +105,11 @@ PATH_KEYS = frozenset({"path", "path_a", "path_b", "allowed_dirs"})
 """Keys holding file names, which are often named after the subscriber: there an
 11 to 13 digit run (an MSISDN-sized number) is replaced too."""
 _INNER_DIGITS = re.compile(r"(?<![0-9])[0-9]{6,}(?![0-9])")
+TEXT_KEY_PARTS = ("ussd_string", "sms_text")
+"""Keys holding text a subscriber typed (a USSD string such as ``*140*<number>#``, SMS text): every run
+of 6 or more digits in it is taken as a number, and the packed bytes field of the same text (GSM 7-bit
+hex, where the digits cannot be searched) is dropped."""
+_HEX_BYTES = re.compile(r"(?:[0-9A-Fa-f]{2}:)*[0-9A-Fa-f]{2}")
 _SPLIT = re.compile(r"[,;\s]+")
 _VISUAL = re.compile(r"[().\-]")
 
@@ -128,6 +135,8 @@ def kind_for_key(key: str) -> str | None:
     """What a value under ``key`` identifies, or None. ``number`` covers MSISDNs,
     global titles and other E.164 numbers; ``subscriber`` is an IMSI or an MSISDN."""
     k = _norm(key)
+    if any(p in k for p in TEXT_KEY_PARTS):
+        return "text"
     # 5G SBI identities (sbi_transactions): SUPI is an IMSI, GPSI an MSISDN, PEI an IMEI.
     if k == "supi" or k.endswith("_supi"):
         return "imsi"
@@ -256,6 +265,9 @@ class Redactor:
                 ip = _ip(piece.split("/")[0])
                 if ip is not None and ip not in ("0.0.0.0", "::"):  # "no address yet", not a subscriber
                     self._learn("ip", ip, local)
+        elif kind == "text":
+            for m in _INNER_DIGITS.finditer(text):
+                self._learn("msisdn", m.group(0), local)
         elif kind == "sip_user":
             for piece in _SPLIT.split(text):
                 if piece:
@@ -285,7 +297,9 @@ class Redactor:
                  is_path: bool = False) -> Any:
         if isinstance(node, dict):
             return {(self._text(k, mode, local, used) if isinstance(k, str) else k):
-                    self._replace(v, mode, local, used, isinstance(k, str) and k in PATH_KEYS) for k, v in node.items()}
+                    (_packed_text(v) if isinstance(k, str) and isinstance(v, str) and _is_packed_text(k, v)
+                     else self._replace(v, mode, local, used, isinstance(k, str) and k in PATH_KEYS))
+                    for k, v in node.items()}
         if isinstance(node, list):
             return [self._replace(item, mode, local, used, is_path) for item in node]
         if isinstance(node, str):
@@ -360,7 +374,10 @@ class Redactor:
         learnt = dropped = 0
         local: dict[str, str] = {}
         keyed = [(_SEED_ORDER.get(kind, 9), kind, value) for key, value in pairs
-                 if (kind := kind_for_key(key)) is not None]
+                 if (kind := kind_for_key(key)) is not None and kind != "text"]
+        # A number typed in a USSD string or SMS text: each run of 6 or more digits.
+        keyed += [(_SEED_ORDER.get("number", 9), "number", m.group(0)) for key, value in pairs
+                  if kind_for_key(key) == "text" for m in _INNER_DIGITS.finditer(value)]
         for _, kind, value in sorted(keyed, key=lambda item: item[0]):
             canonical: str | None = None
             token_kind = kind
@@ -402,6 +419,23 @@ def _count(used: dict[str, set[str]], token: str) -> str:
     return token
 
 
+PACKED_TEXT_KEYS = frozenset({"gsm_map.ss.ussd_String"})
+"""tshark's bytes fields for packed subscriber text (the decoded text is ``gsm_map.ussd_string``)."""
+
+
+def _is_packed_text(key: str, value: str) -> bool:
+    """A packed-bytes value of subscriber text: a known bytes field, or colon hex under a text key."""
+    if key in PACKED_TEXT_KEYS:
+        return bool(_HEX_BYTES.fullmatch(value) or re.fullmatch(r"(?:[0-9A-Fa-f]{2})+", value))
+    return kind_for_key(key) == "text" and ":" in value and bool(_HEX_BYTES.fullmatch(value))
+
+
+def _packed_text(value: str) -> str:
+    """The packed (GSM 7-bit) bytes of subscriber text: dropped, only their length kept."""
+    n = value.count(":") + 1 if ":" in value else len(value) // 2
+    return f"<redacted: {n} bytes of packed text>"
+
+
 def _digit_kind(kind: str, digits: str, plus: bool) -> str:
     if kind == "imsi" or kind == "imei":
         return kind
@@ -437,6 +471,8 @@ PRESCAN_VALUE_FIELDS = (
     "radius.User_Name", "gsm_sms.tp-oa", "gsm_sms.tp-da", "gsm_sms.tp-ra", "sccp.calling.digits", "sccp.called.digits",
     "gsm_map.address.digits", "sip.from.user", "sip.to.user", "sip.r-uri.user", "sip.contact.user", "sip.pai.user",
     "sip.ppi.user",
+    # subscriber text: numbers typed into it
+    "gsm_map.ussd_string", "gsm_sms.sms_text",
 )
 """Fields whose values are identifiers in their own right (named so that
 :func:`kind_for_key` classifies them). Fields this tshark does not know are left out."""
