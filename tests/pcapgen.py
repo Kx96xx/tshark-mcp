@@ -1608,6 +1608,206 @@ def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     }
 
 
+# --------------------------------------------------------------------------- S1AP and NAS EPS
+# S1AP is ASN.1 aligned PER. The encoders below cover the handful of IEs the RAN captures
+# need (UE S1AP ids, NAS-PDU, TAI, E-UTRAN CGI, S-TMSI, Cause, HandoverType); tshark's
+# decode of every message is asserted in tests/test_nas_procedures.py.
+ENB_IP = "198.51.100.40"
+NAS_IMSI_A = IMSI
+NAS_IMSI_B = IMSI_OTHER
+NAS_IMSI_D = "001010555000111"
+NAS_M_TMSI_A = 0xC0FFEE01
+NAS_M_TMSI_C = 0x0BADCAFE
+NAS_MMEC = 0x21
+
+
+def _s1_len(body: bytes) -> bytes:
+    assert len(body) < 128, "short-form PER length only"
+    return bytes([len(body)])
+
+
+def _s1_ie(ie_id: int, criticality: int, value: bytes) -> bytes:
+    return struct.pack("!HB", ie_id, criticality << 6) + _s1_len(value) + value
+
+
+def _s1ap(kind: str, proc: int, criticality: int, ies: list[bytes]) -> bytes:
+    body = b"\x00" + struct.pack("!H", len(ies)) + b"".join(ies)
+    first = {"initiating": 0x00, "successful": 0x20, "unsuccessful": 0x40}[kind]
+    return bytes([first, proc, criticality << 6]) + _s1_len(body) + body
+
+
+def _s1_int(value: int) -> bytes:
+    # A constrained integer up to four octets: two length bits, then the octets aligned.
+    n = max(1, (value.bit_length() + 7) // 8)
+    return bytes([(n - 1) << 6]) + value.to_bytes(n, "big")
+
+
+def _s1_ids(mme: int | None, enb: int | None) -> list[bytes]:
+    out = []
+    if mme is not None:
+        out.append(_s1_ie(0, 0, _s1_int(mme)))
+    if enb is not None:
+        out.append(_s1_ie(8, 0, _s1_int(enb)))
+    return out
+
+
+_S1_PLMN = bytes.fromhex("00f110")  # 001/01
+
+
+def _s1_tai(tac: int = 1) -> bytes:
+    return _s1_ie(67, 0, b"\x00" + _S1_PLMN + struct.pack("!H", tac))
+
+
+def _s1_ecgi(cell: int = 0x0001001) -> bytes:
+    return _s1_ie(100, 0, b"\x00" + _S1_PLMN + struct.pack("!I", cell << 4))
+
+
+def _s1_cause(group: int, value: int) -> bytes:
+    # CHOICE (extension bit, 3-bit index) then the group's ENUMERATED (extension bit, value bits).
+    bits = {0: 6, 1: 1, 2: 2, 3: 3, 4: 3}[group]
+    word = (group << 12) | (value << (11 - bits))
+    return _s1_ie(2, 1, struct.pack("!H", word)[: 1 if 5 + bits <= 8 else 2])
+
+
+def _s1_s_tmsi(mmec: int, m_tmsi: int) -> bytes:
+    return _s1_ie(96, 1, bytes([mmec >> 2, (mmec & 0x3) << 6]) + struct.pack("!I", m_tmsi))
+
+
+def _nas_imsi(imsi: str) -> bytes:
+    first = (int(imsi[0]) << 4) | (0x08 if len(imsi) % 2 else 0) | 0x01
+    rest = imsi[1:] + ("F" if len(imsi[1:]) % 2 else "")
+    return bytes([first]) + bytes((int(rest[i + 1], 16) << 4) | int(rest[i], 16) for i in range(0, len(rest), 2))
+
+
+def _nas_guti(m_tmsi: int, mmec: int = NAS_MMEC) -> bytes:
+    return b"\xf6" + _S1_PLMN + struct.pack("!HB", 0x8001, mmec) + struct.pack("!I", m_tmsi)
+
+
+def _nas_lv(data: bytes) -> bytes:
+    return bytes([len(data)]) + data
+
+
+def _nas_lve(data: bytes) -> bytes:
+    return struct.pack("!H", len(data)) + data
+
+
+def _nas_protected(inner: bytes, header: int = 1, seq: int = 1) -> bytes:
+    return bytes([(header << 4) | 0x07]) + b"\x00\x00\x00\x00" + bytes([seq]) + inner
+
+
+_PDN_REQUEST = bytes([0x02, 0x01, 0xD0, 0x11])  # PDN connectivity request, PTI 1, IPv4, initial
+
+
+def _attach_request(identity: bytes, attach_type: int = 1) -> bytes:
+    return bytes([0x07, 0x41, 0x70 | attach_type]) + _nas_lv(identity) + b"\x02\xe0\xe0" + _nas_lve(_PDN_REQUEST)
+
+
+def _attach_accept(m_tmsi: int) -> bytes:
+    tai_list = b"\x00" + _S1_PLMN + b"\x00\x01"
+    activate = (bytes([0x52, 0x01, 0xC1]) + _nas_lv(b"\x09") + _nas_lv(b"\x08internet")
+                + _nas_lv(b"\x01\x64\x40\x00\x07"))
+    return (bytes([0x07, 0x42, 0x01, 0x21]) + _nas_lv(tai_list) + _nas_lve(activate)
+            + b"\x50" + _nas_lv(_nas_guti(m_tmsi)))
+
+
+def _esm(ebi: int, pti: int, msg: int, rest: bytes = b"") -> bytes:
+    return bytes([(ebi << 4) | 0x02, pti, msg]) + rest
+
+
+def _s1_frames() -> list[tuple[float, bytes]]:
+    t0 = 1_700_100_000.0
+    frames: list[tuple[float, bytes]] = []
+    tsn = {"up": 0, "down": 0}
+
+    def up(dt: float, pdu: bytes) -> None:
+        tsn["up"] += 1
+        frames.append((t0 + dt, _sctp_data(ENB_IP, MME_IP, 36412, 36412, 0x51A1, tsn["up"], 18, pdu)))
+
+    def down(dt: float, pdu: bytes) -> None:
+        tsn["down"] += 1
+        frames.append((t0 + dt, _sctp_data(MME_IP, ENB_IP, 36412, 36412, 0x51A2, tsn["down"], 18, pdu)))
+
+    def nas(ies: list[bytes], payload: bytes) -> list[bytes]:
+        return [*ies, _s1_ie(26, 0, _nas_lv(payload))]
+
+    # UE A: attach with authentication and security mode, then accept, complete and release.
+    up(0.000, _s1ap("initiating", 12, 1, [*nas(_s1_ids(None, 1), _attach_request(_nas_imsi(NAS_IMSI_A))),
+                                          _s1_tai(), _s1_ecgi(), _s1_ie(134, 1, b"\x30")]))
+    down(0.020, _s1ap("initiating", 11, 1, nas(_s1_ids(101, 1), bytes([0x07, 0x52, 0x00]) + b"\x00" * 16
+                                                + b"\x10" + b"\x00" * 16)))
+    up(0.060, _s1ap("initiating", 13, 1, [*nas(_s1_ids(101, 1), bytes([0x07, 0x53, 0x08]) + b"\x00" * 8),
+                                          _s1_ecgi(), _s1_tai()]))
+    down(0.080, _s1ap("initiating", 11, 1, nas(_s1_ids(101, 1), _nas_protected(
+        bytes([0x07, 0x5D, 0x02, 0x00, 0x02, 0xE0, 0xE0]), header=3))))
+    up(0.100, _s1ap("initiating", 13, 1, [*nas(_s1_ids(101, 1), _nas_protected(bytes([0x07, 0x5E]), header=4)),
+                                          _s1_ecgi(), _s1_tai()]))
+    down(0.150, _s1ap("initiating", 9, 0, _s1_ids(101, 1)))
+    down(0.151, _s1ap("initiating", 11, 1, nas(_s1_ids(101, 1), _nas_protected(_attach_accept(NAS_M_TMSI_A)))))
+    up(0.180, _s1ap("successful", 9, 0, _s1_ids(101, 1)))
+    up(0.250, _s1ap("initiating", 13, 1, [*nas(_s1_ids(101, 1), _nas_protected(
+        bytes([0x07, 0x43]) + _nas_lve(_esm(5, 0, 0xC2)), header=2, seq=2)), _s1_ecgi(), _s1_tai()]))
+    # UE A: intra-LTE handover, completed.
+    up(1.000, _s1ap("initiating", 0, 0, [*_s1_ids(101, 1), _s1_ie(1, 0, b"\x00"), _s1_cause(0, 16)]))
+    down(1.030, _s1ap("successful", 0, 0, [*_s1_ids(101, 1), _s1_ie(1, 0, b"\x00")]))
+    up(1.090, _s1ap("initiating", 2, 1, [*_s1_ids(101, 1), _s1_ecgi(0x0001002), _s1_tai()]))
+    # UE A: dedicated bearer for voice refused by the UE (ESM cause 26).
+    down(1.500, _s1ap("initiating", 11, 1, nas(_s1_ids(101, 1), _nas_protected(
+        _esm(6, 0, 0xC5, b"\x05" + _nas_lv(b"\x01") + _nas_lv(bytes.fromhex("21310003400fa0"))), seq=3))))
+    up(1.520, _s1ap("initiating", 13, 1, [*nas(_s1_ids(101, 1), _nas_protected(_esm(6, 0, 0xC7, b"\x1a"), seq=3)),
+                                          _s1_ecgi(), _s1_tai()]))
+    # UE A: inactivity release.
+    up(5.000, _s1ap("initiating", 18, 1, [*_s1_ids(101, 1), _s1_cause(0, 20)]))
+    down(5.010, _s1ap("initiating", 23, 0, [_s1_ie(99, 0, b"\x00\x65\x00\x01"), _s1_cause(2, 0)]))
+    up(5.020, _s1ap("successful", 23, 0, _s1_ids(101, 1)))
+    # UE A: service request on a new S1 context, keyed by the S-TMSI; ICS answers in 40 ms.
+    up(6.000, _s1ap("initiating", 12, 1, [*nas(_s1_ids(None, 2), b"\xc7\x01\x00\x00"), _s1_tai(), _s1_ecgi(),
+                                          _s1_ie(134, 1, b"\x30"), _s1_s_tmsi(NAS_MMEC, NAS_M_TMSI_A)]))
+    down(6.020, _s1ap("initiating", 9, 0, _s1_ids(102, 2)))
+    up(6.040, _s1ap("successful", 9, 0, _s1_ids(102, 2)))
+    # UE B: attach rejected, EMM cause 15.
+    up(7.000, _s1ap("initiating", 12, 1, [*nas(_s1_ids(None, 3), _attach_request(_nas_imsi(NAS_IMSI_B))),
+                                          _s1_tai(), _s1_ecgi(), _s1_ie(134, 1, b"\x30")]))
+    down(7.300, _s1ap("initiating", 11, 1, nas(_s1_ids(103, 3), bytes([0x07, 0x44, 0x0F]))))
+    down(7.310, _s1ap("initiating", 23, 0, [_s1_ie(99, 0, b"\x00\x67\x00\x03"), _s1_cause(2, 3)]))
+    up(7.320, _s1ap("successful", 23, 0, _s1_ids(103, 3)))
+    # UE C: TAU rejected (9), then an attach whose PDN connectivity is refused (EMM 19, ESM 33).
+    up(8.000, _s1ap("initiating", 12, 1, [*nas(_s1_ids(None, 4), _nas_protected(
+        bytes([0x07, 0x48, 0x70]) + _nas_lv(_nas_guti(NAS_M_TMSI_C)))), _s1_tai(), _s1_ecgi(),
+        _s1_ie(134, 1, b"\x30")]))
+    down(8.050, _s1ap("initiating", 11, 1, nas(_s1_ids(104, 4), bytes([0x07, 0x4B, 0x09]))))
+    up(8.200, _s1ap("initiating", 13, 1, [*nas(_s1_ids(104, 4), _attach_request(_nas_guti(NAS_M_TMSI_C))),
+                                          _s1_ecgi(), _s1_tai()]))
+    down(8.400, _s1ap("initiating", 11, 1, nas(_s1_ids(104, 4), bytes([0x07, 0x44, 0x13])
+                                                + b"\x78" + _nas_lve(_esm(0, 1, 0xD1, b"\x21")))))
+    # UE A: paged for downlink data; no service request follows before the capture ends.
+    down(9.000, _s1ap("initiating", 10, 1, [_s1_ie(80, 0, b"\x01\x40"),
+                                            _s1_ie(43, 1, bytes([NAS_MMEC >> 4, (NAS_MMEC & 0xF) << 4])
+                                                   + struct.pack("!I", NAS_M_TMSI_A)),
+                                            _s1_ie(109, 1, b"\x00")]))
+    # UE D: attach whose answers are ciphered: the tool cannot read them.
+    up(10.000, _s1ap("initiating", 12, 1, [*nas(_s1_ids(None, 5), _attach_request(_nas_imsi(NAS_IMSI_D))),
+                                           _s1_tai(), _s1_ecgi(), _s1_ie(134, 1, b"\x30")]))
+    down(10.050, _s1ap("initiating", 11, 1, nas(_s1_ids(105, 5), _nas_protected(b"\x9a\x41\x17\x5c\x23\x88", header=2))))
+    up(10.080, _s1ap("initiating", 13, 1, [*nas(_s1_ids(105, 5), _nas_protected(b"\x33\x12\xa0\x04", header=2)),
+                                           _s1_ecgi(), _s1_tai()]))
+    return frames
+
+
+def write_s1ap_nas_pcap(path: Path) -> Path:
+    """Four UEs over S1-MME: a full attach (authentication, security mode, accept, complete),
+    an S1 handover, a refused dedicated bearer, an inactivity release, a service request on a
+    new context, an attach reject (15), a TAU reject (9) then an attach reject carrying a PDN
+    connectivity reject (19 + ESM 33), an unanswered paging, and an attach whose answers are
+    ciphered."""
+    return _frames_to_pcap(path, _s1_frames())
+
+
+def write_ran_pcaps(directory: Path) -> dict[str, Path]:
+    """The radio-side (S1-MME) captures, in their own directory like the voice ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {"s1ap_nas": write_s1ap_nas_pcap(directory / "s1ap_nas.pcap")}
+
+
 # --------------------------------------------------------------------------- examples/
 # The captures committed under examples/ in the repository. Each tells one story in a
 # few dozen packets; ``tests/test_examples.py`` regenerates them and checks that the
