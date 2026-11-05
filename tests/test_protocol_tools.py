@@ -166,6 +166,7 @@ class TestRegistration:
             "quic_connections",
             "call_legs",
             "nas_procedures",
+            "volte_call_chain",
         ])
         by_name = {t.name: t for t in tools}
 

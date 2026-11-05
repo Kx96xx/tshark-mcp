@@ -46,6 +46,7 @@ EXPECTED_TOOLS = {
     "tls_certificates",
     "quic_connections",
     "nas_procedures",
+    "volte_call_chain",
 }
 
 
@@ -102,6 +103,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("call_kpis", {"path": f"{d}/voice/call_mix.pcap", "group_by": "destination_prefix"}),
         ("call_legs", {"path": f"{d}/voice/call_legs.pcap", "call_id": "legs-a1@ue.example"}),
         ("nas_procedures", {"path": f"{d}/ran/s1ap_nas.pcap", "imsi": pcapgen.NAS_IMSI_B}),
+        ("volte_call_chain", {"path": f"{d}/volte/volte_chain.pcap", "call_id": pcapgen.VOLTE_CALL["bearer"]}),
         ("diameter_avps", {"path": f"{d}/ims/diameter_apps.pcap", "command_code": 265, "detail": "key"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
@@ -299,6 +301,8 @@ def test_every_tool_call_returns_structured_content(client_run):
     nas = by_name[("nas_procedures", ("imsi", "path"))]
     (nas_ue,) = nas["ues"]
     assert nas_ue["procedures"][0]["cause"]["code"] == 15 and nas_ue["verdict"].startswith("attach rejected")
+    (volte_call,) = by_name[("volte_call_chain", ("call_id", "path"))]["calls"]
+    assert volte_call["first_broken_link"] == "gtp_create_bearer" and "cause 73" in volte_call["verdict"]
     roam = by_name[("roaming_attach_check", ("imsi", "path"))]
     (attempt,) = roam["attempts"]
     assert attempt["first_failure"]["code"] == 78 and "Create Session failed" in attempt["verdict"]

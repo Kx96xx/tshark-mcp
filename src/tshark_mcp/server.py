@@ -12,6 +12,7 @@ import argparse
 import contextvars
 import functools
 import inspect
+import ipaddress
 import json
 import os
 import re
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_float, to_int, validate_fields,
@@ -67,7 +68,7 @@ WRITES_NEW_FILE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, ide
 
 INSTRUCTIONS = """\
 Read-only analysis of existing packet captures with tshark. Captures must live
-inside the allowed directories (see the error message if a path is refused).
+inside the allowed directories.
 Every call is bounded: file size, packets dissected, output bytes and run time.
 A capture nobody has looked at yet: incident_summary gives ranked findings, each
 with its evidence and the next call to make.
@@ -82,10 +83,10 @@ diameter_transactions, diameter_avps (the AVPs), gtp_sessions, gtp_ies (the IEs)
 gtpv1_sessions,
 pfcp_sessions, sigtran_messages or sip_dialogs with imsi, session_id, call_id,
 ... or a display filter. A roamer that cannot attach or gets no bearer:
-roaming_attach_check (the first failure). Attach, TAU or service request
-rejected on S1-MME: nas_procedures. Voice: sip_call_detail (one call), media_path_check
+roaming_attach_check (the first failure). S1-MME attach, TAU or service
+rejects: nas_procedures. Voice: sip_call_detail (one call), media_path_check
 (one-way audio, 488), rtp_streams (loss, jitter, MOS), dtmf_events, call_kpis
-(ASR, NER, PDD, ACD per peer, trunk, prefix or interval). IMS:
+(ASR, NER, PDD, ACD), volte_call_chain (where a VoLTE setup broke). IMS:
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
@@ -2879,6 +2880,65 @@ def nas_procedures(path: str, imsi: str | None = None, guti: str | int | None = 
     return _guarded("nas_procedures", {"path": path, "imsi": imsi, "guti": guti, "ue_id": ue_id,
                                        "procedure": procedure, "null_cipher": null_cipher, "filter": filter,
                                        "limit": limit, "offset": offset}, run)
+@_tool(title="VoLTE call chain: SIP, Rx, Gx, bearer, media", annotations=READ_ONLY)
+def volte_call_chain(path: str, call_id: str | None = None, ue_ip: str | None = None, window_s: float = 10.0,
+                     filter: str | None = None, limit: int = 20, offset: int = 0) -> models.VolteCallChainResult:
+    """Follow one VoLTE call through every element and say where the setup broke. One row
+    per INVITE call with `links` in time order: `invite` (SDP address and ports, icid,
+    preconditions), `rx_aar` (P-CSCF to PCRF), `gx_rar_install` (PCRF to PGW, QCI, rule
+    names), `gtp_create_bearer` (every leg: TEID, QCI, cause, EBI), `pfcp_modification`,
+    `sip_183`/`sip_prack`/`sip_update`/`sip_180`/`sip_final`, `rtp_from_ue`/`rtp_to_ue`
+    (first packet, before or after the dedicated bearer), then `bye`, `rx_str`,
+    `gx_rar_remove`, `gtp_delete_bearer`. Each link: `status` (ok, failed, missing,
+    not_captured, late, skipped), frame, `found_by` (icid, ue_ip, time), result or cause
+    named, `delay_ms` from the link before. Per call: `first_broken_link` and a one-line
+    `verdict`. Narrow with `call_id` or `ue_ip`; `window_s` bounds each join.
+
+    Details: Rx is found by the P-Charging-Vector icid as AF-Charging-Identifier, else by
+    the UE address as Framed-IP-Address; Gx by the session whose CCR carried that address,
+    else the first rule install after the AAR (time); GTPv2-C by the TEIDs a Create
+    Session Response with the UE's PAA used, plus proxy legs just before them (time); PFCP
+    by the UE address in a PDR. The UE address is `ue_ip`, else the call's SDP address
+    that Diameter, GTP or PFCP names as a UE, else the INVITE's SDP address. `missing`
+    means the protocol is in the capture but this call's message is not; `not_captured`
+    means the protocol is absent from the file. `late`: the bearer came after the 200 OK.
+    `summary` counts calls, intact chains and first broken links. Content-free: addresses,
+    codes, timings and frames."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        cid = lint_quoted_value(call_id, "call_id") if call_id else None
+        ip = None
+        if ue_ip:
+            try:
+                ip = str(ipaddress.IPv4Address(str(ue_ip).strip()))
+            except ValueError:
+                raise ToolError("invalid_argument", f"ue_ip must be an IPv4 address, got {echo(ue_ip)}") from None
+        try:
+            window = float(window_s)
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", "window_s must be a number of seconds") from None
+        if not 0.5 <= window <= 120.0:
+            raise ToolError("invalid_argument", "window_s must be 0.5 to 120 seconds")
+        cap = clamp_limit(limit, st.limits.max_packets, 20)
+        stdout, scan = _fields_run(capture, _filter(filter, base=volte.DISPLAY_FILTER), volte.FIELDS,
+                                   st.limits.max_scan_packets)
+        rows = volte.parse(stdout)
+        idx = volte.build_index(rows)
+        explained: dict[tuple[Any, ...], Any] = {}
+
+        def explain(protocol: str, code: Any, application: str | None = None) -> Any:
+            if code is None:
+                return None
+            key = (protocol, code, application)
+            if key not in explained:
+                explained[key] = causes.brief(st.runner, protocol, code, application)
+            return explained[key]
+        chains = [volte.chain(c, idx, ip, window, explain) for c in volte.select(volte.calls(rows), cid, ip, None)]
+        return _envelope("calls", chains, cap, scan, offset=offset, summary=volte.summary(chains, idx),
+                         method=volte.METHOD)
+    return _guarded("volte_call_chain", {"path": path, "call_id": call_id, "ue_ip": ue_ip, "window_s": window_s,
+                                         "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)

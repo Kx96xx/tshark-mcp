@@ -116,6 +116,11 @@ the project uses [semantic versioning](https://semver.org/).
   packets both ways, 0-RTT, CONNECTION_CLOSE when in clear, migration to a new address or port,
   a spin-bit RTT, the outcome per connection, the TCP fallback after a failed attempt and a
   `udp_443_blocked_likely` summary flag.
+- `volte_call_chain`: one VoLTE call followed through SIP, Rx (by icid or UE address), Gx (the
+  UE's session), GTPv2-C Create Bearer on every leg (by the TEIDs of the UE's PDN connection),
+  PFCP and the first RTP per direction, then the teardown; each link has a status (ok, failed,
+  missing, not_captured, late), how it was found and its delay, and each call a first broken link
+  and a verdict.
 
 ### Changed
 
