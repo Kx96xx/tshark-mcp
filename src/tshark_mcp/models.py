@@ -830,6 +830,27 @@ class SigtranHealthResult(RowsResult, total=False):
     method: dict[str, str]
 
 
+class SmsAttempt(TypedDict, total=False):
+    """One short message's delivery attempt over MAP or SGs, with its steps and verdict."""
+    __pydantic_config__ = _EXTRA_OK
+    path: str
+    direction: str
+    first_frame: int
+    time: str
+    imsi: str
+    msisdn: str
+    steps: list[dict[str, Any]]
+    verdict: str
+    reasons: list[str]
+    ref: str
+
+
+class SmsDeliveryResult(RowsResult, total=False):
+    attempts: list[SmsAttempt]
+    summary: dict[str, Any]
+    method: dict[str, str]
+
+
 class GtpIeTransaction(TypedDict, total=False):
     """One paired GTPv2-C transaction with its IEs (``request_ies``/``response_ies``:
     key view or full tree); ``likely_causes`` explains a reject from the request."""

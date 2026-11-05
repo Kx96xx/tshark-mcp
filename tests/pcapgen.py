@@ -2068,6 +2068,129 @@ def write_ss7_pcaps(directory: Path) -> dict[str, Path]:
     return {"sigtran_health": write_sigtran_health_pcap(directory / "sigtran_health.pcap")}
 
 
+# --------------------------------------------------------------------------- SMS delivery (MAP and SGs)
+SGS_MSC_IP = "192.0.2.65"
+SMS_GT = {"smsc": "15550109003", "hlr": "15550109002", "msc": "15550109005"}
+SMS_IMSI = {"map_ok": "001010000000201", "map_absent": "001010000000202", "map_full": "001010000000203",
+            "sgs_ok": "001010000000204", "sgs_reject": "001010000000205", "sgs_mo": "001010000000206"}
+SMS_MSISDN = {"map_ok": "15550100201", "map_absent": "15550100202", "map_full": "15550100203"}
+
+
+def _return_error(invoke_id: int, code: int, param: bytes = b"") -> bytes:
+    return _ber(0xA3, _ber(0x02, bytes([invoke_id])) + _ber(0x02, bytes([code])) + param)
+
+
+def _tcap_continue(otid: bytes, dtid: bytes, components: bytes) -> bytes:
+    return _ber(0x65, _ber(0x48, otid) + _ber(0x49, dtid) + _ber(0x6C, components))
+
+
+def _sgs_ie(iei: int, value: bytes) -> bytes:
+    return bytes([iei, len(value)]) + value
+
+
+def _sgs_imsi(imsi: str) -> bytes:
+    first = (int(imsi[0]) << 4) | (0x08 if len(imsi) % 2 else 0) | 0x01
+    rest = imsi[1:] + ("F" if len(imsi[1:]) % 2 else "")
+    return _sgs_ie(0x01, bytes([first]) + bytes((int(rest[i + 1], 16) << 4) | int(rest[i], 16)
+                                                for i in range(0, len(rest), 2)))
+
+
+_SGS_VLR = _sgs_ie(0x02, b"\x03msc\x04test\x07example")
+
+
+def _cp_data(rp: bytes, from_ue: bool) -> bytes:
+    return bytes([0x89 if from_ue else 0x09, 0x01, len(rp)]) + rp
+
+
+def _cp_ack(from_ue: bool) -> bytes:
+    return bytes([0x89 if from_ue else 0x09, 0x04])
+
+
+def _sms_delivery_frames() -> list[tuple[float, bytes]]:
+    frames: list[tuple[float, bytes]] = []
+    tsn = [0]
+    t0 = 1_700_400_000.0
+
+    def m3ua(t: float, src: str, dst: str, opc: int, dpc: int, called: str, calling: str, tcap: bytes) -> None:
+        tsn[0] += 1
+        udt = _sccp_udt(_sccp_gt(called, 8 if called != SMS_GT["hlr"] else 6),
+                        _sccp_gt(calling, 8 if calling != SMS_GT["hlr"] else 6), tcap)
+        frames.append((t, _sctp_data(src, dst, 2905, 2905, 0x5501, tsn[0], 3, _m3ua_data(opc, dpc, udt))))
+
+    def sgs(t: float, to_msc: bool, payload: bytes) -> None:
+        tsn[0] += 1
+        src, dst = (MME_IP, SGS_MSC_IP) if to_msc else (SGS_MSC_IP, MME_IP)
+        frames.append((t, _sctp_data(src, dst, 29118, 29118, 0x5502, tsn[0], 0, payload)))
+
+    smsc, hlr, msc = SMS_GT["smsc"], SMS_GT["hlr"], SMS_GT["msc"]
+
+    def sri(t: float, n: int, msisdn: str) -> bytes:
+        arg = _ber(0x30, _ber(0x80, _addr_string(msisdn)) + _ber(0x81, b"\x01") + _ber(0x82, _addr_string(smsc)))
+        tid = bytes([0, 0, 0x20, n])
+        m3ua(t, STP_A, STP_B, 300, 200, hlr, smsc, _tcap_begin(tid, _invoke(1, 45, arg)))
+        return tid
+
+    def mt_forward(t: float, n: int, imsi: str) -> bytes:
+        arg = _ber(0x30, _ber(0x80, _tbcd(imsi)) + _ber(0x84, _addr_string(smsc)) + _ber(0x04, _tp_deliver(SMSC)))
+        tid = bytes([0, 0, 0x21, n])
+        m3ua(t, STP_A, STP_B, 300, 400, msc, smsc, _tcap_begin(tid, _invoke(1, 44, arg)))
+        return tid
+
+    # 1. MAP MT: SRI-for-SM answered, MT-ForwardSM answered: delivered.
+    tid = sri(t0, 1, SMS_MSISDN["map_ok"])
+    res = _ber(0x30, _ber(0x04, _tbcd(SMS_IMSI["map_ok"])) + _ber(0xA0, _ber(0x81, _addr_string(msc))))
+    m3ua(t0 + 0.1, STP_B, STP_A, 200, 300, smsc, hlr, _tcap_end(tid, _return_result_last(1, 45, res)))
+    tid = mt_forward(t0 + 0.2, 1, SMS_IMSI["map_ok"])
+    m3ua(t0 + 0.6, STP_B, STP_A, 400, 300, smsc, msc, _tcap_end(tid, _ber(0xA2, _ber(0x02, b"\x01"))))
+    # 2. MAP MT: SRI-for-SM answers absentSubscriberSM (6); the SMSC reports the delivery status.
+    tid = sri(t0 + 5, 2, SMS_MSISDN["map_absent"])
+    m3ua(t0 + 5.1, STP_B, STP_A, 200, 300, smsc, hlr, _tcap_end(tid, _return_error(1, 6)))
+    rep = _ber(0x30, _ber(0x04, _addr_string(SMS_MSISDN["map_absent"])) + _ber(0x04, _addr_string(smsc))
+               + _ber(0x0A, b"\x00"))
+    rtid = bytes([0, 0, 0x22, 2])
+    m3ua(t0 + 5.2, STP_A, STP_B, 300, 200, hlr, smsc, _tcap_begin(rtid, _invoke(1, 47, rep)))
+    m3ua(t0 + 5.3, STP_B, STP_A, 200, 300, smsc, hlr, _tcap_end(rtid, _ber(0xA2, _ber(0x02, b"\x01"))))
+    # 3. MAP MT: MT-ForwardSM answers sm-DeliveryFailure (32), memoryCapacityExceeded.
+    tid = sri(t0 + 10, 3, SMS_MSISDN["map_full"])
+    res = _ber(0x30, _ber(0x04, _tbcd(SMS_IMSI["map_full"])) + _ber(0xA0, _ber(0x81, _addr_string(msc))))
+    m3ua(t0 + 10.1, STP_B, STP_A, 200, 300, smsc, hlr, _tcap_end(tid, _return_result_last(1, 45, res)))
+    tid = mt_forward(t0 + 10.2, 3, SMS_IMSI["map_full"])
+    m3ua(t0 + 10.5, STP_B, STP_A, 400, 300, smsc, msc, _tcap_end(tid, _return_error(1, 32, _ber(0x30, _ber(0x0A, b"\x00")))))
+    # 4. SGs MT: paging for SMS, service request, CP/RP exchange: delivered.
+    imsi = SMS_IMSI["sgs_ok"]
+    sgs(t0 + 20.0, True, b"\x01" + _sgs_imsi(imsi) + _SGS_VLR + _sgs_ie(0x20, b"\x02"))
+    sgs(t0 + 20.4, False, b"\x06" + _sgs_imsi(imsi) + _sgs_ie(0x20, b"\x02"))
+    sgs(t0 + 20.5, True, b"\x07" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_data(_rp_data_mt(7, _tp_deliver(SMSC)), False)))
+    sgs(t0 + 20.6, False, b"\x08" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_ack(True)))
+    sgs(t0 + 20.7, False, b"\x08" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_data(_rp_ack(0x02, 7), True)))
+    sgs(t0 + 20.8, True, b"\x07" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_ack(False)))
+    # 5. SGs MT: paging rejected, SGs cause 6 (UE unreachable).
+    imsi = SMS_IMSI["sgs_reject"]
+    sgs(t0 + 30.0, True, b"\x01" + _sgs_imsi(imsi) + _SGS_VLR + _sgs_ie(0x20, b"\x02"))
+    sgs(t0 + 30.2, False, b"\x02" + _sgs_imsi(imsi) + _sgs_ie(0x08, b"\x06"))
+    # 6. SGs MO: RP-DATA, then RP-ERROR 21 (short message transfer rejected).
+    imsi = SMS_IMSI["sgs_mo"]
+    sgs(t0 + 40.0, False, b"\x08" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_data(_rp_data_mo(9, _tp_submit(9, MSISDN_OTHER)), True)))
+    sgs(t0 + 40.1, True, b"\x07" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_ack(False)))
+    sgs(t0 + 40.5, True, b"\x07" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_data(_rp_error(0x05, 9, 21), False)))
+    sgs(t0 + 40.6, False, b"\x08" + _sgs_imsi(imsi) + _sgs_ie(0x16, _cp_ack(True)))
+    return frames
+
+
+def write_sms_delivery_pcap(path: Path) -> Path:
+    """Six SMS attempts. MAP: one MT delivered (SRI-for-SM then MT-ForwardSM), one stopped by
+    absentSubscriberSM with a ReportSM-DeliveryStatus, one refused with sm-DeliveryFailure
+    memoryCapacityExceeded. SGs: one MT delivered after paging, one paging rejected (SGs cause
+    6), one MO refused with RP-ERROR 21."""
+    return _frames_to_pcap(path, _sms_delivery_frames())
+
+
+def write_sms_pcaps(directory: Path) -> dict[str, Path]:
+    """The SMS delivery capture, in its own directory like the voice ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {"sms_delivery": write_sms_delivery_pcap(directory / "sms_delivery.pcap")}
+
+
 # --------------------------------------------------------------------------- examples/
 # The captures committed under examples/ in the repository. Each tells one story in a
 # few dozen packets; ``tests/test_examples.py`` regenerates them and checks that the
