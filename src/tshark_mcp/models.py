@@ -47,7 +47,11 @@ class ToolResult(TypedDict, total=False):
     made, how long they stay stable, ``replaced`` (distinct tokens per kind) and ``complete``
     (false when a capture could not be pre-scanned in full; a warning names it).
     ``tokens_estimate`` is the result's JSON size divided by 3.6; ``columns`` and ``output``
-    echo the row projection and the summary mode when the call asked for them."""
+    echo the row projection and the summary mode when the call asked for them.
+    ``window`` is present when the call passed ``start`` or ``end``: the arguments as given,
+    what they resolved to (``start``/``end`` ISO and epoch), the display-filter clause put ahead
+    of the tool's own filter, the capture's first and last packet and ``overlaps_capture``;
+    ``captures`` lists the same per file when the call read several."""
     __pydantic_config__ = _EXTRA_OK
     error: ErrorInfo
     truncated: bool
@@ -60,6 +64,7 @@ class ToolResult(TypedDict, total=False):
     tokens_estimate: int
     columns: list[str]
     output: str
+    window: dict[str, Any]
 
 
 class RowsResult(ToolResult, total=False):
@@ -107,6 +112,8 @@ class PcapInfoResult(ToolResult, total=False):
     limits: dict[str, Any]
     metadata_available: bool
     interface_drops: int
+    window_hint: dict[str, Any]
+    frames_in_window: int
 
 
 class CopyExample(TypedDict, total=False):
@@ -1656,6 +1663,54 @@ class FindIdentifierResult(RowsResult, total=False):
     errors: list[FileError]
     partially_scanned: list[str]
     files_not_scanned: int
+    files_outside_window: int
+
+
+class CaptureIndexFile(TypedDict, total=False):
+    """One capture file of a directory, in time order. ``gap_before_s`` is the hole between
+    the previous file's last packet and this file's first; ``overlap_before_s`` the time both
+    files cover. ``covers_window`` is present when the call passed ``start`` or ``end``."""
+    __pydantic_config__ = _EXTRA_OK
+    path: str
+    name: str
+    first: str
+    last: str
+    first_epoch: float
+    last_epoch: float
+    duration_s: float
+    packets: int
+    bytes: int
+    interfaces: int
+    file_type: str
+    link_type: str
+    covers_window: bool
+    gap_before_s: float
+    overlap_before_s: float
+    error: str
+    message: str
+
+
+class CaptureIndexHole(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    after: str
+    before: str
+    start: str
+    end: str
+    seconds: float
+    in_window: bool
+
+
+class CaptureIndexResult(RowsResult, total=False):
+    """``files`` in time order; ``summary``: span, packets and bytes, ``holes`` (gaps between
+    files longer than ``min_gap_s``), ``overlaps``, ``ordering`` (whether name order is time
+    order) and, with a window, the files that cover it and whether they cover it whole."""
+    path: str
+    files: list[CaptureIndexFile]
+    files_found: int
+    files_indexed: int
+    files_not_indexed: int
+    summary: dict[str, Any]
+    issues: list[str]
 
 
 # ----------------------------------------------------------------- capture comparison
