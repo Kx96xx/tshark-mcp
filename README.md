@@ -212,7 +212,7 @@ what it cost in `tokens_estimate`.
 | `open_capture` | Pin one capture (and a filter and time window) under a handle every capture tool takes as `path`; repeated runs come from a memory cache |
 | `diff_captures` | Before and after a change: per destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, what appeared, vanished, got worse or better |
 | `throughput_timeline` | Bytes, goodput, retransmissions, window stalls, SYNs, DNS and ICMP per interval; per-stream verdict (loss, receiver, idle, sender) |
-| `tunnels_overview` | GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE/ESP), WireGuard, OpenVPN, L2TP and GTP-U tunnels: endpoints, traffic each way, inner protocols, overhead against the MTU, handshake outcome |
+| `tunnels_overview` | GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE/ESP), WireGuard, OpenVPN, L2TP, GTP-U and Teredo tunnels: endpoints, traffic each way, inner protocols, overhead against the MTU, handshake outcome |
 | `export_subset` | Off unless `--export-dir`: write the packets matching a filter and window to a new pcapng file for a vendor (never overwrites, size-capped, `headers_only` cuts payloads) |
 | `tls_certificates` | Certificate chains servers sent (TLS 1.2 and older): expiry and days left, SAN against SNI, self-signed, missing or misordered intermediates, weak signatures and keys, OCSP stapling, clients that refused them |
 | `quic_connections` | QUIC / HTTP/3 per connection from the clear headers: version, Retry, Version Negotiation, handshake both ways, 1-RTT both ways, migration, spin-bit RTT, TCP fallback, UDP 443 blocked |

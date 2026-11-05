@@ -17,9 +17,10 @@ from .fields import compact, iso, parse_time, split_fields_line, to_int
 
 AGGREGATOR = "|"
 
-KINDS = ("gre", "erspan", "vxlan", "geneve", "ipip", "ipsec", "wireguard", "openvpn", "l2tp", "gtpu")
+KINDS = ("gre", "erspan", "vxlan", "geneve", "ipip", "ipsec", "wireguard", "openvpn", "l2tp", "gtpu", "teredo")
 KIND_NAMES = {"gre": "GRE", "erspan": "ERSPAN", "vxlan": "VXLAN", "geneve": "Geneve", "ipip": "IP-in-IP",
-              "ipsec": "IPsec", "wireguard": "WireGuard", "openvpn": "OpenVPN", "l2tp": "L2TP", "gtpu": "GTP-U"}
+              "ipsec": "IPsec", "wireguard": "WireGuard", "openvpn": "OpenVPN", "l2tp": "L2TP", "gtpu": "GTP-U",
+              "teredo": "Teredo"}
 
 # Field names that differ between tshark releases: the first one the binary knows is used.
 FIELD_ALTERNATIVES = {"isakmp.exchangetype": ("isakmp.exchangetype", "isakmp.exchtype")}
@@ -35,12 +36,13 @@ BASE_FIELDS = [
 ]
 
 # Protocols the display filter selects; each is kept only if the binary knows it.
-FILTER_PROTOCOLS = ("gre", "vxlan", "geneve", "esp", "ah", "isakmp", "wg", "openvpn", "l2tp")
+FILTER_PROTOCOLS = ("gre", "vxlan", "geneve", "esp", "ah", "isakmp", "wg", "openvpn", "l2tp", "teredo")
 IPIP_FILTER = "ip.proto == 4 || ip.proto == 41 || ipv6.nxt == 4 || ipv6.nxt == 41"
 GTPU_FILTER = "gtp.message == 0xff"
 
 # Bytes outside the inner IP packet when no packet showed both lengths (outer IPv4).
-DEFAULT_OVERHEAD = {"gre": 24, "erspan": 50, "vxlan": 50, "geneve": 50, "ipip": 20, "gtpu": 36, "l2tp": 40}
+DEFAULT_OVERHEAD = {"gre": 24, "erspan": 50, "vxlan": 50, "geneve": 50, "ipip": 20, "gtpu": 36, "l2tp": 40,
+                    "teredo": 28}
 ENCRYPTED = ("ipsec", "wireguard", "openvpn")
 
 IKE_EXCHANGES = {2: "Main Mode", 4: "Aggressive Mode", 5: "Informational (v1)", 32: "Quick Mode",
@@ -56,6 +58,10 @@ IKE_ERROR_HINTS = {
     17: "the responder wants another DH group; the initiator should retry with it",
     38: "the traffic selectors (subnets) differ between the two configurations",
 }
+# IKEv2 error notifies that ask the initiator to try again rather than end the negotiation (RFC 7296 1.3, 2.7):
+# INVALID_KE_PAYLOAD names the DH group the responder wants; the initiator retries IKE_SA_INIT with it.
+IKE_RETRY_ERRORS = {17}
+
 OPENVPN_OPCODES = {1: "control_hard_reset_client_v1", 2: "control_hard_reset_server_v1", 3: "control_soft_reset",
                    4: "control", 5: "ack", 6: "data_v1", 7: "control_hard_reset_client_v2",
                    8: "control_hard_reset_server_v2", 9: "data_v2", 10: "control_hard_reset_client_v3",
@@ -117,6 +123,8 @@ def _kind(layers: list[str]) -> tuple[str | None, int]:
             return "ipsec", i
         if p == "gtp":
             return "gtpu", i
+        if p == "teredo":
+            return "teredo", i
         if p in ("ip", "ipv6") and i == first_ip + 1:
             return "ipip", first_ip
         if p in ("tcp", "sctp", "icmp", "icmpv6"):
@@ -316,7 +324,7 @@ def _row(b: dict[str, Any], mtu: int) -> dict[str, Any]:
         row["l2tp_messages"] = dict(b["l2tp"])
     elif kind == "gtpu":
         row["teids"] = len(b["teids"])
-    if b["ports"] and kind in ("vxlan", "geneve", "wireguard", "openvpn", "l2tp", "gtpu", "ipsec"):
+    if b["ports"] and kind in ("vxlan", "geneve", "wireguard", "openvpn", "l2tp", "gtpu", "ipsec", "teredo"):
         row["udp_ports"] = sorted(b["ports"], key=str)[:5]
     if kind in ENCRYPTED:
         row["inner"] = "encrypted"
@@ -350,16 +358,20 @@ def _ipsec(b: dict[str, Any]) -> dict[str, Any]:
     if b["ah"]:
         out["ah_spis"] = sorted(b["ah"])
     if b["ike"]:
-        out["handshake"] = _ike(b["ike"])
+        out["handshake"] = _ike(b["ike"], esp_both_ways=out.get("esp_pairs") == "both directions")
     nat_t = 4500 in b["ports"]
     if nat_t:
         out["nat_traversal"] = True
     return out
 
 
-def _ike(msgs: list[dict[str, Any]]) -> dict[str, Any]:
+def _ike(msgs: list[dict[str, Any]], esp_both_ways: bool = False) -> dict[str, Any]:
+    """IKE per tunnel. The outcome follows how the negotiation ended, not the first error on the way:
+    an IKE_AUTH answered without an error, or ESP flowing both ways, is ``established`` even after an
+    INVALID_KE_PAYLOAD retry (``retried`` names it)."""
     exchanges: Counter = Counter()
     errors: Counter = Counter()
+    retries: Counter = Counter()
     requests: dict[tuple[str, str], dict[str, Any]] = {}
     answered: set[tuple[str, str]] = set()
     v2 = any(m["version"].startswith("0x2") or m["version"] == "2.0" for m in msgs)
@@ -370,6 +382,8 @@ def _ike(msgs: list[dict[str, Any]]) -> dict[str, Any]:
         for n in m["notify"]:
             if n < 16384:
                 errors[IKE_ERRORS.get(n, f"error notify {n}")] += 1
+                if n in IKE_RETRY_ERRORS:
+                    retries[IKE_ERRORS[n]] += 1
         key = (m["ispi"], m["msgid"])
         if m["response"]:
             answered.add(key)
@@ -386,18 +400,30 @@ def _ike(msgs: list[dict[str, Any]]) -> dict[str, Any]:
         "dpd_unanswered": sum(1 for m in unanswered if m["exchange"] == 37) or None,
         "nat_t": any(str(m.get("port")) == "4500" for m in msgs) or None,
     }
+    fatal = sum(errors.values()) - sum(retries.values())
+    if retries:
+        first = next(i for i, m in enumerate(msgs) if any(n in IKE_RETRY_ERRORS for n in m["notify"]))
+        came_back = any(m["exchange"] == 34 and not m["response"] for m in msgs[first + 1:])
+        out["retried"] = [f"{name} x{n}: the responder asked for another DH group and the initiator "
+                          + ("retried with it (normal, RFC 7296 1.3)" if came_back else "did not try again in the capture")
+                          for name, n in retries.items()]
     if v2:
-        if errors:
-            out["outcome"] = "failed"
-        elif auth_ok:
+        if auth_ok or esp_both_ways:
             out["outcome"] = "established"
+        elif fatal:
+            out["outcome"] = "failed"
+        elif retries:
+            out["outcome"] = "incomplete"
         elif any(m["exchange"] == 34 for m in unanswered):
             out["outcome"] = "no response"
         else:
             out["outcome"] = "incomplete"
     else:
         quick_both = {m["from_a"] for m in msgs if m["exchange"] == 32} == {True, False}
-        out["outcome"] = "failed" if errors else ("established" if quick_both else "incomplete")
+        if quick_both or esp_both_ways:
+            out["outcome"] = "established"
+        else:
+            out["outcome"] = "failed" if errors else "incomplete"
     return compact(out)
 
 
@@ -467,6 +493,8 @@ def _issues(row: dict[str, Any], b: dict[str, Any], overhead: int | None, mtu: i
         if hs.get("error_notifies"):
             for err in hs["error_notifies"]:
                 code = next((c for c, n in IKE_ERRORS.items() if n == err), None)
+                if code in IKE_RETRY_ERRORS and hs.get("outcome") == "established":
+                    continue  # a DH-group retry that worked: in handshake.retried, not an issue
                 hint = IKE_ERROR_HINTS.get(code or -1)
                 issues.append(f"IKE between {b['a']} and {b['b']} returned {err}" + (f": {hint}" if hint else ""))
         if hs.get("outcome") == "no response":
@@ -505,4 +533,8 @@ def summary(rows: list[dict[str, Any]], recs: list[dict[str, Any]]) -> dict[str,
         "tunnels": len(rows), "packets": len(recs), "by_kind": dict(kinds),
         "tunnels_with_issues": sum(1 for r in rows if r.get("issues")),
         "one_way": sum(1 for r in rows if r.get("one_way")),
+        **({"note": "no tunnel of the kinds this tool reads (" + ", ".join(KIND_NAMES.values()) + ") in the capture. "
+            "A tunnel tshark does not decode on its port (an ERSPAN marker or VXLAN on another UDP port, a vendor "
+            "encapsulation) shows up as plain UDP or TCP: look at conversations, then filter_packets on that port"}
+           if not rows else {}),
     }
