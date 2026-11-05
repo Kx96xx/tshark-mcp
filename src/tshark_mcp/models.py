@@ -906,7 +906,8 @@ class GtpIesResult(RowsResult, total=False):
 
 
 class FilterPacketsResult(RowsResult, total=False):
-    packets: list[dict[str, str]]
+    # field values are strings; the "frame" column the server adds when fields omit frame.number is an int
+    packets: list[dict[str, str | int]]
     fields: list[str]
     display_filter: str
 
