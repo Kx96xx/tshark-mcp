@@ -5,6 +5,8 @@ the project uses [semantic versioning](https://semver.org/).
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-05
+
 ### Added
 
 - Claude Code plugin in `plugin/` with a marketplace entry in `.claude-plugin/marketplace.json`:
