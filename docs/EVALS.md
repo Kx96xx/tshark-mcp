@@ -49,6 +49,42 @@ python -m evals --driver llm --model scripted    # the offline stand-in: same lo
 `--min-pass` sets the fraction that must pass for exit status 0 (default 1.0). Model results
 vary between runs; keep the JSON transcripts when comparing tool descriptions or models.
 
+## The mcp-builder XML question set
+
+`evals/tshark_mcp_eval.xml` holds 19 questions in the evaluation format of Anthropic's mcp-builder
+skill (`<evaluation><qa_pair><question/><answer/></qa_pair>`): read-only, independent questions
+with one exact-string answer each, several needing two tools in sequence (an S6a failure, then
+the GTP session of the same subscriber; a Create Session, then the GTP-U volume of its UE). They
+paraphrase rather than quote the packet text. One is a True/False trap: a Delete Session reported
+unanswered only because the capture ends. Each `<qa_pair>` also has an `id` and `<verify tool
+args check op value>` children in the harness check syntax; `evals/xml_bridge.py` turns them into
+harness steps, so the scripted driver proves every answer is still in the tool output
+(`tests/test_eval_xml.py`, in CI):
+
+```sh
+python -m evals --xml evals/tshark_mcp_eval.xml                      # scripted, no API cost
+python -m evals --xml evals/tshark_mcp_eval.xml --driver llm --model claude-opus-5-5 --json /tmp/xml.json
+```
+
+With the model driver the final answer must be the answer alone (anchored match, surrounding
+whitespace ignored). The reference harness of the skill, `scripts/evaluation.py`, reads only
+`<question>` and `<answer>`, so the file runs there unchanged. Known limits of that script (none
+is a tshark-mcp issue, do not patch the skill): it imports `streamablehttp_client`, which mcp 2.x
+no longer exports, so run it from its own venv with an mcp 1.x client; pass the capture
+directory with `-e TSHARK_MCP_ALLOW_DIRS=<captures>` (argparse rejects `-a --allow-dir ...`); it
+answers only the first `tool_use` block of a turn, so a model calling tools in parallel gets an
+API error; it stringifies `result.content` and drops `isError`. Write the captures first
+(`python -c "from evals.harness import build_captures; from pathlib import Path; build_captures(Path('/tmp/caps'))"`), then:
+
+```sh
+python scripts/evaluation.py -t stdio -c tshark-mcp -e TSHARK_MCP_ALLOW_DIRS=/tmp/caps \
+  -m <model id> evals/tshark_mcp_eval.xml
+```
+
+The questions name paths relative to the capture directory (`all.pcap`); the tools take absolute
+paths, so a model run through that script must be told the directory (the harness's own driver
+says it in its system prompt).
+
 ## Results (scripted driver)
 
 Token counts are approximate: results that carry file paths grow with the length of the
