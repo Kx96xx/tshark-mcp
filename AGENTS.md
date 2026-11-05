@@ -34,11 +34,13 @@ passes start with `/captures`.
 
 Claude Code plugin: `plugin/` (manifest `plugin/.claude-plugin/plugin.json`, marketplace entry
 `.claude-plugin/marketplace.json`), installed with `/plugin install tshark-mcp --marketplace
-Kx96xx/tshark-mcp`. It starts the server with `uvx --from git+https://github.com/Kx96xx/tshark-mcp`
-(the main branch, so the skills and the tools match), asks for the capture directory and redaction,
+Kx96xx/tshark-mcp`. It starts the server with `uvx --from "tshark-mcp-server>=0.2.0" tshark-mcp`
+(the released package from PyPI), asks for the capture directory and redaction,
 and adds seven skills: `pcap-investigation` (when to reach for the tools) and one per MCP prompt,
 each pointing at that prompt. Tools appear as `mcp__plugin_tshark-mcp_tshark-mcp__<tool>`.
 `tests/test_plugin.py` checks every prompt has a skill and every tool a skill names exists.
+Skills ship from the main branch but the server comes from PyPI, so a skill names only tools
+that are in a release.
 
 Claude Desktop extension (MCPB): `python mcpb/build.py` writes the bundle directory `build/mcpb`
 (`uv` server type: the host installs Python and the dependencies), `npx -y @anthropic-ai/mcpb@2.1.2

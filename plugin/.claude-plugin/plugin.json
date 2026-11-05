@@ -15,7 +15,7 @@
     "tshark-mcp": {
       "command": "uvx",
       "args": [
-        "--from", "git+https://github.com/Kx96xx/tshark-mcp", "tshark-mcp",
+        "--from", "tshark-mcp-server>=0.2.0", "tshark-mcp",
         "--allow-dir", "${user_config.capture_dir}",
         "--redact", "${user_config.redact}"
       ]
