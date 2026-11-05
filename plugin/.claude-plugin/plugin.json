@@ -1,0 +1,39 @@
+{
+  "name": "tshark-mcp",
+  "displayName": "tshark-mcp",
+  "version": "0.1.0",
+  "description": "Read-only packet capture analysis with tshark (Diameter, GTP, PFCP, SIP, RTP, IMS, SIGTRAN, DNS, TLS, TCP), with investigation skills.",
+  "author": {
+    "name": "Karl Hulse",
+    "url": "https://github.com/Kx96xx"
+  },
+  "homepage": "https://github.com/Kx96xx/tshark-mcp",
+  "repository": "https://github.com/Kx96xx/tshark-mcp",
+  "license": "MIT",
+  "keywords": ["pcap", "tshark", "wireshark", "diameter", "gtp", "sip", "telecom", "mcp"],
+  "mcpServers": {
+    "tshark-mcp": {
+      "command": "uvx",
+      "args": [
+        "--from", "git+https://github.com/Kx96xx/tshark-mcp", "tshark-mcp",
+        "--allow-dir", "${user_config.capture_dir}",
+        "--redact", "${user_config.redact}"
+      ]
+    }
+  },
+  "userConfig": {
+    "capture_dir": {
+      "type": "directory",
+      "title": "Capture directory",
+      "description": "Directory whose capture files the server may read (read-only); nothing outside it is opened.",
+      "required": true
+    },
+    "redact": {
+      "type": "string",
+      "title": "Redaction",
+      "description": "off, ids (IMSI, MSISDN, IMEI and SIP identities become stable tokens) or ids+ips (addresses too).",
+      "options": ["off", "ids", "ids+ips"],
+      "default": "off"
+    }
+  }
+}

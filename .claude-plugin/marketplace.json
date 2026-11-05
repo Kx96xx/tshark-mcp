@@ -1,0 +1,17 @@
+{
+  "name": "tshark-mcp",
+  "owner": {
+    "name": "Karl Hulse",
+    "url": "https://github.com/Kx96xx"
+  },
+  "metadata": {
+    "description": "tshark-mcp: read-only packet capture analysis for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "tshark-mcp",
+      "source": "./plugin",
+      "description": "The tshark-mcp server and investigation skills for packet captures."
+    }
+  ]
+}

@@ -7,6 +7,14 @@ the project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
+- Claude Code plugin in `plugin/` with a marketplace entry in `.claude-plugin/marketplace.json`:
+  `/plugin install tshark-mcp --marketplace Kx96xx/tshark-mcp` adds the server (started with `uvx`
+  from the main branch, so tools and skills match), asks for the capture directory and redaction
+  (off, ids, ids+ips), and adds seven skills: `pcap-investigation` and one per MCP prompt, each
+  pointing at that prompt. `tests/test_plugin.py` checks the manifests against the package, that
+  every prompt has a skill and every tool a skill names exists, and starts the server with the
+  plugin's own arguments over stdio; a CI `plugin` job also runs `claude plugin validate` on the
+  plugin and the marketplace.
 - README first screen: a one-line `claude mcp add` with `uvx --from tshark-mcp-server`, PyPI version
   and downloads badges, and a demo GIF recorded with vhs from a live MCP client session against the
   PyPI package (docs/media/demo.tape, docs/media/demo_client.py). A "Found a bug or a wrong answer?"

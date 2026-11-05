@@ -149,3 +149,37 @@ jobs:
         env:
           TSHARK_MCP_TEST_BUNDLE: "1"
         run: python -m pytest -v tests/test_mcpb.py
+
+  plugin:
+    # Validates the Claude Code plugin and its marketplace entry, and starts the server with
+    # the plugin's own arguments over stdio.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tshark
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install package, test dependencies and the claude CLI (validate only, no login)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+          npm install -g @anthropic-ai/claude-code@2.1.302
+
+      - name: claude plugin validate (plugin and marketplace)
+        run: |
+          claude plugin validate ./plugin
+          claude plugin validate .
+
+      - name: Plugin tests
+        run: python -m pytest -v tests/test_plugin.py
