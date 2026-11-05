@@ -68,7 +68,8 @@ def test_server_config_uses_only_declared_settings() -> None:
     assert refs == set(MANIFEST["userConfig"])
     assert MANIFEST["userConfig"]["capture_dir"] == {**MANIFEST["userConfig"]["capture_dir"], "type": "directory", "required": True}
     assert MANIFEST["userConfig"]["redact"]["options"] == ["off", "ids", "ids+ips"]
-    assert SERVER["command"] == "uvx" and SERVER["args"][:3] == ["--from", "git+https://github.com/Kx96xx/tshark-mcp", "tshark-mcp"]
+    # The released package from PyPI (not the main branch), at least the first release with the plugin.
+    assert SERVER["command"] == "uvx" and SERVER["args"][:3] == ["--from", "tshark-mcp-server>=0.2.0", "tshark-mcp"]
 
 
 @requires_tshark
