@@ -126,7 +126,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Forty-six tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Forty-seven tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (131 KB instead of 330 KB at 46 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](docs/TOOLS.md).
@@ -139,6 +139,7 @@ what it cost in `tokens_estimate`.
 | `incident_summary` | First call on an unknown capture: ranked findings with evidence frames, confidence and the next call to make |
 | `diff_captures` | Before and after a change: per destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, what appeared, vanished, got worse or better |
 | `throughput_timeline` | Bytes, goodput, retransmissions, window stalls, SYNs, DNS and ICMP per interval; per-stream verdict (loss, receiver, idle, sender) |
+| `tunnels_overview` | GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE/ESP), WireGuard, OpenVPN, L2TP and GTP-U tunnels: endpoints, traffic each way, inner protocols, overhead against the MTU, handshake outcome |
 | `find_identifier` | Which captures in a directory mention an IMSI, MSISDN, IP, Call-ID or Session-Id |
 | `capture_index` | A directory of ring-buffer files in time order: span, packets, holes and overlaps between files, which files cover an incident window |
 | `pcap_info` | Packet count, duration, link type, protocol hierarchy, active limits |
@@ -237,7 +238,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 943 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 951 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

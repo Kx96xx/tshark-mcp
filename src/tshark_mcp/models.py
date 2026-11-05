@@ -1170,6 +1170,50 @@ class GtpTunnelHealthResult(RowsResult, total=False):
     outer_icmp: list[OuterIcmpError]
 
 
+class TunnelOverviewRow(TypedDict, total=False):
+    """One tunnel: ``kind`` (GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec, WireGuard, OpenVPN, L2TP, GTP-U),
+    outer ``endpoint_a`` (first sender) and ``endpoint_b``, ``key``/``vni``/``tunnel_id``, packets and bytes per
+    direction, ``one_way``, first/last, ``inner_protocols`` and ``inner_conversations`` (or ``inner:
+    "encrypted"``), ``overhead_bytes``, ``largest_outer_ip_len``, ``df_above_mtu``, ``fragmented_outer``,
+    ``inner_syn_mss``, ``handshake`` (IKE, WireGuard, OpenVPN), ``esp_sas`` and ``esp_pairs``, ``issues``."""
+    __pydantic_config__ = _EXTRA_OK
+    kind: str
+    endpoint_a: str
+    endpoint_b: str
+    key: int
+    vni: int
+    tunnel_id: int
+    packets_a_to_b: int
+    packets_b_to_a: int
+    bytes_a_to_b: int
+    bytes_b_to_a: int
+    one_way: bool
+    first: str
+    last: str
+    first_frame: int
+    last_frame: int
+    inner: str
+    inner_protocols: dict[str, int]
+    inner_conversations: list[dict[str, Any]]
+    overhead_bytes: int
+    largest_outer_ip_len: int
+    df_above_mtu: int
+    fragmented_outer: int
+    inner_syn_mss: dict[str, int]
+    handshake: dict[str, Any]
+    esp_sas: list[dict[str, Any]]
+    esp_pairs: str
+    issues: list[str]
+
+
+class TunnelsOverviewResult(RowsResult, total=False):
+    """``tunnels`` with issues first; ``summary`` tunnels per kind, with issues, one way; ``path_mtu``."""
+    tunnels: list[TunnelOverviewRow]
+    path_mtu: int
+    display_filter: str
+    summary: dict[str, Any]
+
+
 class SipMessage(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     frame: int
