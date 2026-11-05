@@ -7,6 +7,14 @@ the project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
+- Task-success evals (`python -m evals`, docs/EVALS.md): sixteen scenarios over the synthetic
+  captures, each an operator question, the calls that answer it and the facts the results must
+  hold, with call and token budgets. The harness runs them over the stdio server and scores them
+  deterministically, in CI through `tests/test_evals.py`. `--driver llm` lets a model choose the
+  calls and scores its final answer as well; it is optional, off by default and never run in CI.
+  `--server-dir` and a command after `--` run the scenarios against another stdio server (a
+  container). AGENTS.md now names `path_not_allowed` as the error for a path outside the allowlist.
+
 - Six MCP prompts as guided workflows: `one_way_audio`, `subscriber_cannot_attach`,
   `trust_this_capture`, `working_vs_failing`, `ims_registration_or_sms` and `slow_data_session`.
   Each returns the tool calls in order, what to cite, when to stop and the shape of the answer;

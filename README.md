@@ -244,13 +244,16 @@ works: [docs/SAFETY.md](docs/SAFETY.md#redaction).
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest
+python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 974 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 995 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
 traffic from a real network (the list of scenarios is in [docs/TOOLS.md](docs/TOOLS.md#how-the-tools-are-tested)).
+Sixteen task-success scenarios ([docs/EVALS.md](docs/EVALS.md)) check that the right tool answers an
+operator's question with the right facts; a model-driven mode is there and off by default.
 Conventions for contributors and for agents: [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md).
 
 ## Licence
