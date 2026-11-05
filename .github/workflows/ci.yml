@@ -45,6 +45,17 @@ jobs:
       - name: Run tests
         run: python -m pytest -v
 
+      - name: Task-success evals (scripted driver, results as an artifact)
+        if: matrix.python-version == '3.12'
+        run: python -m evals --json evals-results.json
+
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.python-version == '3.12'
+        with:
+          name: evals-results
+          path: evals-results.json
+          if-no-files-found: ignore
+
       - name: Dump dissection of the synthetic captures (diagnostics on failure)
         if: failure()
         run: |

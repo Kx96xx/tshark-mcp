@@ -491,7 +491,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 974 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 995 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
@@ -501,4 +501,5 @@ RP-ACK, RP-ERROR, status reports, a wrongly coded RP-ACK, a UE without smsip), a
 unanswered heartbeat, MAP updateLocation and mo-forwardSM over M3UA, and test-range IMSI,
 MSISDN, IMEISV and UE address values for the redaction tests), and the three captures
 committed under `examples/` come from the same generator, so nothing in the repository
-contains traffic from a real network.
+contains traffic from a real network. The task-success scenarios in `evals/`
+([EVALS.md](EVALS.md)) run over the stdio server in the same suite.
