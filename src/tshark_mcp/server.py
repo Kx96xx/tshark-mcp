@@ -38,6 +38,7 @@ from . import pfcp
 from . import output as shaping
 from . import capdiff
 from . import incident
+from . import throughput
 from . import progress
 from . import prompts as guided
 from . import window
@@ -82,7 +83,7 @@ ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
 http_transactions (HTTP and gRPC per endpoint), response_times (network, server
-or receiver time). Before reading missing packets or retransmissions as network
+or receiver time), throughput_timeline (when a transfer slowed and why). Before reading missing packets or retransmissions as network
 faults, capture_quality says whether the capture can be trusted; tcp_health
 tells real TCP loss, resets and MTU black holes from capture artifacts;
 tcp_connections gives each connection attempt's outcome and who closed it;
@@ -3500,6 +3501,60 @@ def diff_captures(path_a: str, path_b: str, by: str = "all", filter: str | None 
                          not_compared=skipped)
     return _guarded("diff_captures", {"path_a": path_a, "path_b": path_b, "by": by, "filter": filter,
                                       "include_same": include_same, "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="Throughput timeline (when it slowed down and why)", annotations=READ_ONLY)
+def throughput_timeline(path: str, interval: float = 1.0, per: str = "total", top: int = 10, filter: str | None = None,
+                        limit: int = 200, offset: int = 0) -> models.ThroughputTimelineResult:
+    """When did the transfer slow down, and was it loss, the receiver window, the sender or
+    an idle application? `intervals` (every `interval` seconds, default 1): packets, bytes,
+    `bps`, TCP `goodput_bps` (new bytes acknowledged, copies and retransmissions not
+    counted), retransmitted bytes, zero windows, window-full events, duplicate ACKs, SYNs
+    and SYNs never answered, DNS queries, TLS ClientHellos, ICMP errors. `per`
+    (conversation, host or stream) adds `series` for the `top` keys by bytes. `streams`:
+    per TCP stream peak and mean goodput, max bytes in flight, receiver-window-limited and
+    idle shares and a `verdict` (loss-limited, receiver-limited, application-idle,
+    sender-limited, fine). `issues` in plain words. `filter` narrows the packets.
+    Details: One -T fields pass over the capture (under the frame cap); everything else is
+    computed in the server. Copies (same IP ID, sequence, length and ACK within 1 s) are
+    dropped first. A segment that ends at or before the highest sequence already sent in
+    its direction counts as retransmitted. Verdicts: retransmitted share above 2% is
+    loss-limited; a zero or full window in at least 20% of the active intervals is
+    receiver-limited; no packet in at least half of the stream's life is application-idle;
+    bytes in flight never above a quarter of the advertised window is sender-limited.
+    Bursts: a counter at three times its usual rate per interval and at least 10. At most
+    10,000 intervals: raise `interval` or pass start/end. `intervals` pages with
+    limit/offset; `series` and `streams` are not paged."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        if per not in throughput.PERS:
+            raise ToolError("invalid_argument", f"per must be one of {', '.join(throughput.PERS)}, not {echo(per)}")
+        try:
+            step = float(interval)
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", f"interval must be a number of seconds, got {echo(interval)}") from None
+        if not (0.001 <= step <= 86_400):
+            raise ToolError("invalid_argument", "interval must be between 0.001 and 86400 seconds")
+        keys = clamp_limit(top, 50, 10)
+        cap = clamp_limit(limit, throughput.MAX_INTERVALS, 200)
+        flt = _filter(filter)
+        stdout, scan = _fields_run(capture, flt, throughput.FIELDS, st.limits.max_scan_packets)
+        packets = throughput.parse(stdout)
+        if packets:
+            span = max(p["_t"] for p in packets) - min(p["_t"] for p in packets)
+            if span / step + 1 > throughput.MAX_INTERVALS:
+                raise ToolError("invalid_argument", f"{round(span, 3)} s at interval={step} is more than "
+                                f"{throughput.MAX_INTERVALS} intervals; raise interval or pass start/end")
+        out = throughput.analyse(packets, step, per, keys)
+        if per == "total":
+            out.pop("series")
+        return _envelope("intervals", out["intervals"], cap, scan, offset=offset, interval_s=step, per=per,
+                         **({"display_filter": flt} if flt else {}), summary=out["summary"],
+                         **({"series": out["series"]} if "series" in out else {}), streams=out["streams"],
+                         issues=out["issues"])
+    return _guarded("throughput_timeline", {"path": path, "interval": interval, "per": per, "top": top,
+                                            "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SCTP associations", annotations=READ_ONLY)

@@ -39,6 +39,7 @@ EXPECTED_TOOLS = {
     "capture_index",
     "incident_summary",
     "diff_captures",
+    "throughput_timeline",
 }
 
 
@@ -72,6 +73,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("capture_index", {"path": d, "start": "+1s", "max_files": 5}),
         ("incident_summary", {"path": f"{d}/all.pcap", "focus": "mobile"}),
         ("diff_captures", {"path_a": f"{d}/all.pcap", "path_b": f"{d}/sip.pcap", "by": "tcp"}),
+        ("throughput_timeline", {"path": f"{d}/sip.pcap", "interval": 5, "per": "conversation"}),
         ("diameter_avps", {"path": f"{d}/diameter.pcap", "command_code": 316}),
         ("gtp_tunnel_health", {"path": f"{d}/gtpu.pcap"}),
         ("message_rates", {"path": f"{d}/all.pcap", "interval": 10}),
@@ -224,6 +226,8 @@ def test_every_tool_call_returns_structured_content(client_run):
     summary = by_name[("incident_summary", ("focus", "path"))]
     assert summary["findings"] and {f["evidence"]["tool"] for f in summary["findings"]} <= {
         "diameter_transactions", "gtp_sessions", "capture_quality"}
+    tput = by_name[("throughput_timeline", ("interval", "path", "per"))]
+    assert tput["interval_s"] == 5 and tput["summary"]["packets"] > 0 and tput["series"]
     changed = by_name[("diff_captures", ("by", "path_a", "path_b"))]
     assert changed["by"] == "tcp" and "tcp" in changed["summary"] and changed["a"]["packets"] > changed["b"]["packets"]
     index = by_name[("capture_index", ("max_files", "path", "start"))]
