@@ -40,6 +40,12 @@ the project uses [semantic versioning](https://semver.org/).
   destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, and labels each key
   worse, vanished, appeared, better or same with a sentence and the delta; volumes are also per
   minute because the captures differ in length.
+- `throughput_timeline`: bytes, bps and TCP goodput (bytes newly acknowledged, copies and
+  retransmissions not counted) per interval, with the retransmitted bytes, zero windows,
+  window-full events, duplicate ACKs, SYNs never answered, DNS queries, TLS ClientHellos and
+  ICMP errors beside them; series per conversation, host or stream; a verdict per TCP stream
+  (loss-limited, receiver-limited, application-idle, sender-limited, fine) and issues that say
+  where goodput fell and why, and which counters burst.
 
 ### Fixed
 

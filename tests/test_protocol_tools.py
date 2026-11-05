@@ -159,6 +159,7 @@ class TestRegistration:
             "capture_index",
             "incident_summary",
             "diff_captures",
+            "throughput_timeline",
         ])
         by_name = {t.name: t for t in tools}
 

@@ -1727,6 +1727,55 @@ class DiffCapturesResult(RowsResult, total=False):
     not_compared: list[dict[str, Any]]
 
 
+class ThroughputInterval(TypedDict, total=False):
+    """One interval: ``index``, ``start``, ``offset_s``, ``packets``, ``bytes``, ``bps``, ``goodput_bps`` (TCP
+    bytes newly acknowledged), ``acked_bytes``, ``retransmitted_bytes``, ``zero_windows``, ``window_full``,
+    ``duplicate_acks``, ``syns``, ``syns_unanswered``, ``dns_queries``, ``tls_client_hellos``, ``icmp_errors``;
+    in a series also ``bytes_a_to_b``/``bytes_b_to_a`` or ``bytes_sent``/``bytes_received``. Zero counters
+    are left out."""
+    __pydantic_config__ = _EXTRA_OK
+    index: int
+    start: str
+    offset_s: float
+    packets: int
+    bytes: int
+    bps: float
+    goodput_bps: float
+    retransmitted_bytes: int
+
+
+class ThroughputStream(TypedDict, total=False):
+    """One TCP stream: ``flow`` (client -> server), bytes, retransmitted share, ``peak_bps`` and ``mean_bps``
+    of goodput, ``max_bytes_in_flight``, ``max_window``, ``rwnd_limited_share``, ``idle_share``, ``verdict``."""
+    __pydantic_config__ = _EXTRA_OK
+    stream: int
+    flow: str
+    client: str
+    server: str
+    bytes: int
+    retransmitted_share: float
+    peak_bps: float
+    mean_bps: float
+    max_bytes_in_flight: int
+    rwnd_limited_share: float
+    idle_share: float
+    verdict: str
+    first_frame: int
+
+
+class ThroughputTimelineResult(RowsResult, total=False):
+    """``intervals`` (paged); ``series`` per top key with ``per``; ``streams`` with verdicts; ``summary`` (span,
+    totals, peaks, counters); ``issues``."""
+    intervals: list[ThroughputInterval]
+    interval_s: float
+    per: str
+    display_filter: str
+    summary: dict[str, Any]
+    series: list[dict[str, Any]]
+    streams: list[ThroughputStream]
+    issues: list[str]
+
+
 class CaptureIndexFile(TypedDict, total=False):
     """One capture file of a directory, in time order. ``gap_before_s`` is the hole between
     the previous file's last packet and this file's first; ``overlap_before_s`` the time both
