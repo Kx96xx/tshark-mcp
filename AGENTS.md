@@ -15,6 +15,15 @@ IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture qualit
 
 ## Using the server
 
+### Start here
+
+On any capture, call `incident_summary(path)` first. It runs the overview and every protocol check
+the capture carries under one time budget and returns ranked `findings`, each with evidence frames
+and the `next_call` that shows the detail; `not_analysed` lists the protocols in the file that no
+check reads, with the call that shows them. Narrow with `focus` (web, dns, tls, voip, mobile) or a
+`start`/`end` window. Go straight to a specialist tool only when the question already names one
+(a subscriber: `trace_subscriber`; a call: `media_path_check`; see the table below).
+
 ### Install and run
 
 ```sh

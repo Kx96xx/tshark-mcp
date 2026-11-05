@@ -8,7 +8,7 @@ description: Investigate a packet capture (pcap, pcapng) with the tshark-mcp too
 The tshark-mcp server reads capture files inside the directory set in the plugin settings.
 Paths are absolute. It never captures, writes or runs a shell.
 
-1. Unknown file: `incident_summary(path)` ranks the findings, each with its `next_call`.
+1. Start here on any capture: `incident_summary(path)` ranks the findings, each with its `next_call`.
    Unknown file name: `find_identifier(path=<directory>, identifier=...)`; ring buffers:
    `capture_index(path=<directory>, start=..., end=...)`.
 2. Before blaming the network for loss: `capture_quality(path)` and read its `verdict`.

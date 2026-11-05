@@ -8,7 +8,7 @@ Per RTP stream (SSRC and source/destination address:port): the SIP Call-ID whose
 destination (or source) address and port, payload type and codec from the SDP rtpmap or the static
 table, packets, expected, lost and lost %, duplicates, sequence errors, out-of-order packets,
 max/mean interarrival delta, RFC 3550 max/mean jitter, duration, first and last frame, the reverse
-stream or `one_way`, RTCP reception reports about it (fraction and cumulative lost, jitter, round
+stream or `one_way` (with `expected_one_way` when the SDP asks for one-way media), RTCP reception reports about it (fraction and cumulative lost, jitter, round
 trip where the LSR matches a captured SR), RTCP XR VoIP metrics as reported, and `mos_estimate`: a
 simplified ITU-T G.107 E-model score from loss, jitter, delay and the codec's G.113 Ie/Bpl, returned
 with its method and inputs because it is an estimate, not a measured MOS. `call_id` reads the RTP to

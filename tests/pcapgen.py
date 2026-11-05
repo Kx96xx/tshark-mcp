@@ -588,6 +588,164 @@ def write_sigtran_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# --------------------------------------------------------------------------- incident_summary coverage
+# One capture per pass that incident_summary gained in Wave 4 (validation defect D3), the SDP
+# one-way case (D8) and protocols no pass reads (not_analysed).
+def _incident_sctp(t0: float) -> list[tuple[float, bytes]]:
+    """Three INITs answered by ABORT, then an association that comes up and whose
+    heartbeats go unanswered."""
+    frames: list[tuple[float, bytes]] = []
+    a_tag, b_tag = 0xAAAA0101, 0xBBBB0202
+
+    def a2b(ts: float, chunk, tag: int) -> None:
+        frames.append((ts, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=STP_A, dst=STP_B) / SCTP(sport=2906, dport=2905, tag=tag) / chunk)))
+
+    def b2a(ts: float, chunk, tag: int) -> None:
+        frames.append((ts, bytes(Ether(src=MAC_B, dst=MAC_A) / IP(src=STP_B, dst=STP_A) / SCTP(sport=2905, dport=2906, tag=tag) / chunk)))
+
+    for i in range(3):
+        a2b(t0 + i, SCTPChunkInit(init_tag=a_tag, a_rwnd=65535, n_out_streams=2, n_in_streams=2, init_tsn=1), 0)
+        b2a(t0 + i + 0.01, SCTPChunkAbort(), a_tag)
+    a2b(t0 + 4, SCTPChunkInit(init_tag=a_tag, a_rwnd=65535, n_out_streams=2, n_in_streams=2, init_tsn=1), 0)
+    b2a(t0 + 4.01, SCTPChunkInitAck(init_tag=b_tag, a_rwnd=65535, n_out_streams=2, n_in_streams=2, init_tsn=1,
+                                    params=[SCTPChunkParamStateCookie(cookie=b"\x02" * 16)]), a_tag)
+    a2b(t0 + 4.02, SCTPChunkCookieEcho(cookie=b"\x02" * 16), b_tag)
+    b2a(t0 + 4.03, SCTPChunkCookieAck(), a_tag)
+    for i in range(3):
+        a2b(t0 + 10 + 10 * i, SCTPChunkHeartbeatReq(params=[SCTPChunkParamHeartbeatInfo(data=b"hb%d" % i)]), b_tag)
+    return frames
+
+
+def _incident_map_error(t0: float) -> list[tuple[float, bytes]]:
+    """A MAP sendRoutingInfoForSM answered with returnError systemFailure (34) and an
+    updateLocation Begin never answered."""
+    hlr_gt, smsc_gt, vlr_gt = "15550109002", "15550109003", "15550109001"
+    sri = _ber(0x30, _ber(0x80, _addr_string(MSISDN)) + _ber(0x81, b"\x01") + _ber(0x82, _addr_string(smsc_gt)))
+    begin = _tcap_begin(b"\x00\x00\x00\x11", _invoke(1, 45, sri))
+    end = _tcap_end(b"\x00\x00\x00\x11", _return_error(1, 34))
+    ul = _ber(0x30, _ber(0x04, _tbcd(IMSI)) + _ber(0x81, _addr_string(vlr_gt)) + _ber(0x04, _addr_string(vlr_gt)))
+    lost = _tcap_begin(b"\x00\x00\x00\x12", _invoke(1, 2, ul))
+    return [
+        (t0, _sctp_data(STP_A, STP_B, 2905, 2905, 0x5555, 900, 3,
+                        _m3ua_data(300, 200, _sccp_udt(_sccp_gt(hlr_gt, 6), _sccp_gt(smsc_gt, 8), begin)))),
+        (t0 + 0.2, _sctp_data(STP_B, STP_A, 2905, 2905, 0x6666, 901, 3,
+                              _m3ua_data(200, 300, _sccp_udt(_sccp_gt(smsc_gt, 8), _sccp_gt(hlr_gt, 6), end)))),
+        (t0 + 1.0, _sctp_data(STP_A, STP_B, 2905, 2905, 0x5555, 902, 3,
+                              _m3ua_data(100, 200, _sccp_udt(_sccp_gt(hlr_gt, 6), _sccp_gt(vlr_gt, 7), lost)))),
+    ]
+
+
+def _gtpv1(msg_type: int, teid: int, seq: int, ies: bytes) -> bytes:
+    body = struct.pack("!HBB", seq, 0, 0) + ies
+    return bytes([0x32, msg_type]) + struct.pack("!HI", len(body), teid) + body
+
+
+def _incident_n4_gn(t0: float) -> list[tuple[float, bytes]]:
+    """GTPv1-C: a Create PDP Context rejected with cause 199 (No resources available) and one
+    never answered; PFCP: a Session Establishment never answered. Echo traffic a minute
+    later, so none of them is near the end of the capture."""
+    sgsn, ggsn = "192.0.2.80", "192.0.2.81"
+    req = lambda seq, imsi: _gtpv1(16, 0, seq, bytes([2]) + _tbcd(imsi) + bytes([20, 5]) + bytes([133]) + struct.pack("!H", 4) + _ipv4(sgsn) + bytes([133]) + struct.pack("!H", 4) + _ipv4(sgsn))  # noqa: E731
+    frames = [
+        (t0, _udp_frame(sgsn, ggsn, 2123, 2123, req(0x101, IMSI))),
+        (t0 + 0.1, _udp_frame(ggsn, sgsn, 2123, 2123, _gtpv1(17, 0, 0x101, bytes([1, 199])))),
+        (t0 + 1.0, _udp_frame(sgsn, ggsn, 2123, 2123, req(0x102, IMSI_OTHER))),
+    ]
+    pdr = _pfcp_ie(1, _pfcp_ie(56, struct.pack("!H", 1)) + _pfcp_ie(29, struct.pack("!I", 255)))
+    body = struct.pack("!Q", 0) + struct.pack("!I", 0x77 << 8) + _pfcp_ie(60, bytes([0]) + _ipv4(SMF_IP)) + pdr
+    frames.append((t0 + 2.0, _udp_frame(SMF_IP, UPF_IP, 8805, 8805, bytes([0x21, 50]) + struct.pack("!H", len(body)) + body)))
+    for i in range(2):  # GTPv1 Echo Request/Response much later
+        frames.append((t0 + 60 + i, _udp_frame(sgsn, ggsn, 2123, 2123, _gtpv1(1, 0, 0x200 + i, b""))))
+        frames.append((t0 + 60.1 + i, _udp_frame(ggsn, sgsn, 2123, 2123, _gtpv1(2, 0, 0x200 + i, bytes([14, 0])))))
+    return frames
+
+
+def _ikev2(ispi: int, rspi: int, exchange: int, response: bool, msgid: int) -> bytes:
+    return struct.pack(">QQBBBBII", ispi, rspi, 0, 0x20, exchange, 0x20 if response else 0x08, msgid, 28)
+
+
+def _quic_initial(dcid: bytes, scid: bytes, size: int = 1100) -> bytes:
+    b = bytes([0xC3]) + struct.pack(">I", 1) + bytes([len(dcid)]) + dcid + bytes([len(scid)]) + scid + b"\x00"
+    body = b"\x00\x00\x00\x01" + b"\x00" * size
+    return b + struct.pack(">H", 0x4000 | len(body)) + body
+
+
+def _incident_web(t0: float) -> list[tuple[float, bytes]]:
+    """IKE_SA_INIT sent three times and never answered, GRE one way only, and QUIC
+    Initials to a server that never answers."""
+    from scapy.layers.inet import GRE  # type: ignore
+
+    frames = []
+    for i in range(3):
+        frames.append((t0 + i, _udp_frame("192.0.2.11", "192.0.2.12", 500, 500, _ikev2(0x5151, 0, 34, False, 0))))
+    for i in range(3):
+        frames.append((t0 + 5 + i, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src="192.0.2.1", dst="192.0.2.2") / GRE()
+                                         / IP(src="10.1.0.1", dst="10.2.0.1") / UDP(sport=1000, dport=2000) / Raw(b"g" * 20))))
+    for i in range(3):
+        frames.append((t0 + 10 + 0.3 * i, _udp_frame("198.51.100.30", "203.0.113.90", 50004, 443,
+                                                     _quic_initial(bytes.fromhex("8182838485868788"), b"\x91\x92"))))
+    return frames
+
+
+CALL_ID_RECVONLY = "voice-recvonly-9@ue.example"
+
+
+def _incident_recvonly_call(t0: float) -> list[tuple[float, bytes]]:
+    """A call whose offer is a=recvonly and answer a=sendonly (an announcement): RTP flows
+    only from the answerer, as the SDP asks."""
+    req, resp = _voice_sip(CALL_ID_RECVONLY, "r9")
+    offer = _sdp(UE_SIP_IP, 40100, [8], ["8 PCMA/8000"], ["a=ptime:20", "a=recvonly"])
+    answer = _sdp(MEDIA_GW_IP, 30100, [8], ["8 PCMA/8000"], ["a=ptime:20", "a=sendonly"])
+    frames: list[tuple[float, bytes]] = [
+        (t0, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, req("INVITE", 1, body=offer))),
+        (t0 + 0.5, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, resp(200, "OK", 1, "INVITE", body=answer))),
+        (t0 + 0.52, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, req("ACK", 1, to_tag="net"))),
+    ]
+    _audio(frames, t0 + 0.6, MEDIA_GW_IP, 30100, UE_SIP_IP, 40100, 0x0A0B0C0D, 8, 8000, 50, 100, 8000)
+    frames.append((t0 + 2.0, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, req("BYE", 2, to_tag="net", body=""))))
+    frames.append((t0 + 2.05, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, resp(200, "OK", 2, "BYE"))))
+    return frames
+
+
+def _incident_unanalysed(t0: float) -> list[tuple[float, bytes]]:
+    """Protocols no incident pass reads (DHCP, CoAP, MQTT) and one malformed GTP-U packet."""
+    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
+    from scapy.layers.inet import TCP  # type: ignore
+
+    dhcp = Ether(src=MAC_A, dst="ff:ff:ff:ff:ff:ff") / IP(src="0.0.0.0", dst="255.255.255.255") / UDP(sport=68, dport=67) \
+        / BOOTP(chaddr=bytes.fromhex("020000000001")) / DHCP(options=[("message-type", "discover"), "end"])
+    coap_req = bytes([0x40, 0x01, 0x12, 0x34, 0xB4]) + b"temp"
+    coap_resp = bytes([0x60, 0x81, 0x12, 0x34])
+    mqtt = bytes([0x10, 14]) + b"\x00\x04MQTT" + bytes([4, 2, 0, 60]) + b"\x00\x02c1"
+    return [
+        (t0, bytes(dhcp)),
+        (t0 + 1, _udp_frame("192.0.2.150", "192.0.2.151", 40000, 5683, coap_req)),
+        (t0 + 1.1, _udp_frame("192.0.2.151", "192.0.2.150", 5683, 40000, coap_resp)),
+        (t0 + 2, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src="192.0.2.152", dst="192.0.2.153")
+                       / TCP(sport=40001, dport=1883, flags="PA", seq=1000, ack=1) / Raw(mqtt))),
+        (t0 + 3, _udp_frame("192.0.2.1", "192.0.2.2", 2152, 2152, b"\x30\xff\x00")),
+    ]
+
+
+def write_incident_coverage_pcaps(directory: Path) -> dict[str, Path]:
+    """One capture per new incident_summary pass: ``sctp_map`` (INIT/ABORT storm, unanswered
+    heartbeats, a MAP returnError and an unanswered TCAP Begin), ``n4_gn`` (GTPv1-C reject and
+    unanswered request, unanswered PFCP), ``web_tunnels`` (unanswered IKE, one-way GRE,
+    unanswered QUIC), ``recvonly_call`` (SDP one-way media) and ``unanalysed`` (DHCP, CoAP,
+    MQTT, a malformed GTP-U packet)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    t0 = 1_700_600_000.0
+    parts = {
+        "sctp_map": sorted(_incident_sctp(t0) + _incident_map_error(t0 + 2.5), key=lambda f: f[0]),
+        "n4_gn": _incident_n4_gn(t0),
+        "web_tunnels": _incident_web(t0),
+        "recvonly_call": _incident_recvonly_call(t0),
+        "unanalysed": _incident_unanalysed(t0),
+    }
+    return {name: _frames_to_pcap(directory / f"{name}.pcap", sorted(frames, key=lambda f: f[0]))
+            for name, frames in parts.items()}
+
+
 # --------------------------------------------------------------------------- RTP / voice
 MEDIA_GW_IP = "192.0.2.70"
 UE_NAT_IP = "203.0.113.7"

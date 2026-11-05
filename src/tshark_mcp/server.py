@@ -76,11 +76,10 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotent
 WRITES_NEW_FILE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
 
 INSTRUCTIONS = """\
-Read-only analysis of existing packet captures with tshark. Captures must live
-inside the allowed directories.
-Every call is bounded in size and time.
-A capture nobody has looked at yet: incident_summary gives ranked findings, each
-with its evidence and the next call to make.
+Read-only analysis of existing packet captures with tshark, inside the allowed
+directories. START HERE on any capture: incident_summary(path) gives ranked
+findings with evidence frames and the next call; not_analysed names protocols no
+check reads.
 Which file holds a subscriber: find_identifier on the directory. Start on a file
 with pcap_info (capture_metadata: pcapng writer, interfaces, drop counters).
 Incident at a known time: capture_index on the directory gives the files in time
@@ -464,6 +463,8 @@ CAPTURE_FREE_TOOLS = frozenset({"find_fields", "check_filter", "cause_lookup"}) 
 
 
 _DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("tshark_mcp_call_depth", default=0)
+# Set by incident_summary: pcap_info adds the whole protocol hierarchy to this list.
+_PHS_SINK: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar("phs_sink", default=None)
 
 
 def _guarded(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -930,6 +931,9 @@ def pcap_info(path: str) -> models.PcapInfoResult:
         elif "packets" not in info and hierarchy:
             info["packets"] = max(r["frames"] for r in hierarchy)
         info["protocol_hierarchy"] = sorted(hierarchy, key=lambda r: -r["frames"])[:15]
+        sink = _PHS_SINK.get()
+        if sink is not None:  # incident_summary reads every protocol, not only the top 15
+            sink.extend(hierarchy)
         meta = _capture_metadata(capture)
         info["metadata_available"] = bool(meta.get("metadata_available"))
         if meta.get("drops_total") is not None:
@@ -3473,6 +3477,8 @@ def rtp_streams(path: str, call_id: str | None = None, ssrc: str | int | None = 
             "with_loss": sum(1 for r in rows if r.get("lost")),
             "rtcp_packets": len(reports),
         }
+        if any(r.get("expected_one_way") for r in rows):  # one way because the SDP asks for it
+            summary["expected_one_way"] = sum(1 for r in rows if r.get("expected_one_way"))
         moses = [r["mos_estimate"]["value"] for r in rows if r.get("mos_estimate")]
         if moses:
             summary["lowest_mos_estimate"] = min(moses)
@@ -3782,26 +3788,33 @@ def _capinfos_interfaces(stdout: str) -> int | None:
 
 @_tool(title="Incident summary (what is wrong in this capture)", annotations=READ_ONLY)
 def incident_summary(path: str, focus: str = "auto", budget_s: float | None = None) -> models.IncidentSummaryResult:
-    """First call on a capture nobody has looked at yet: "what is wrong here?". Runs
+    """Start here on any capture nobody has looked at yet: "what is wrong here?". Runs
     pcap_info, capture_quality, conversations and the protocol tools the capture carries
     under one time budget and returns `findings` ranked by severity (high, medium, low):
     one plain sentence each, `evidence` (tool, arguments, frames), `confidence` and the
     `next_call` that shows the detail. Also `capture` (span, packets, protocols, trust
-    verdict, what the capture cannot show), `top_talkers` (5), `timeline` and `not_checked`
-    (passes skipped and why). `focus`: auto (default), web, dns, tls, voip or mobile;
+    verdict, what the capture cannot show), `top_talkers` (5), `timeline`, `not_checked`
+    (passes skipped and why) and `not_analysed` (protocols present that no pass reads, each
+    with its `next_call`). `focus`: auto (default), web, dns, tls, voip or mobile;
     `budget_s` caps the whole call (default and maximum: the server's run timeout).
     Details: Passes after the first three: tcp_connections, tcp_health, dns_transactions,
-    tls_handshakes, http_transactions, icmp_errors (web, dns, tls), call_kpis and
-    rtp_streams (voip), diameter_transactions and gtp_sessions (mobile); each runs only
-    when the protocol hierarchy shows its protocol. Thresholds are fixed so the wording
-    is deterministic: TCP retransmissions above 1% of at least 20 data segments, 5xx
-    above 5% of answered HTTP requests, more than 10% of DNS queries unanswered (not
+    tls_handshakes, quic_connections, http_transactions, icmp_errors, tunnels_overview
+    (web, dns, tls), call_kpis, rtp_streams, ims_registration (voip), diameter_transactions,
+    gtp_sessions, gtpv1_sessions, pfcp_sessions, sctp_associations, sigtran_messages,
+    ims_registration, tunnels_overview (mobile), expert_info errors (every focus); each runs
+    only when the protocol hierarchy shows its protocol. Thresholds are fixed so the
+    wording is deterministic: TCP retransmissions above 1% of at least 20 data segments,
+    5xx above 5% of answered HTTP requests, more than 10% of DNS queries unanswered (not
     counting those near the capture end), DNS p90 above 500 ms, any failed TLS handshake
-    or certificate problem, a destination where connection attempts failed, ICMP routing
-    loops, path-MTU and prohibited errors, failed calls (high below 80% NER), one-way RTP,
-    failed or unanswered Diameter and GTPv2-C transactions. Loss findings take their
-    `confidence` from capture_quality's verdict. With `start`/`end` every pass reads only
-    that window."""
+    (QUIC is judged by its own pass) or certificate problem, failed QUIC connections, a
+    destination where connection attempts failed, ICMP routing loops, path-MTU and
+    prohibited errors, tunnel handshakes failed, one-way tunnels, tunnel MTU overruns,
+    failed calls (high below 80% NER), one-way RTP (not when the SDP asks for one-way
+    media), failed IMS registrations and challenge loops, failed or unanswered Diameter,
+    GTPv2-C, GTPv1-C and PFCP transactions, PFCP peer restarts, SCTP INIT/ABORT storms,
+    aborts and unanswered heartbeats, TCAP errors, rejects and unanswered Begins, and
+    tshark's error-level expert items. Loss findings take their `confidence` from
+    capture_quality's verdict. With `start`/`end` every pass reads only that window."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -3843,10 +3856,16 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
             results[name] = out
             return out
 
-        info = call("pcap_info", pcap_info) or {}
+        hierarchy: list[dict[str, Any]] = []
+        sink_token = _PHS_SINK.set(hierarchy)
+        try:
+            info = call("pcap_info", pcap_info) or {}
+        finally:
+            _PHS_SINK.reset(sink_token)
+        hierarchy = hierarchy or info.get("protocol_hierarchy") or []
         quality = call("capture_quality", capture_quality) or {}
         talkers = call("conversations", conversations, layer="ip", limit=5) or {}
-        present = incident.protocols(info.get("protocol_hierarchy") or [])
+        present = incident.protocols(hierarchy)
         confidence = incident.trust_confidence(quality)
         findings: list[dict[str, Any]] = []
         if quality:
@@ -3864,14 +3883,24 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
                                       lambda r, a: incident.from_signalling(r, a, "diameter_transactions", "Diameter")),
             "gtp_sessions": (gtp_sessions, {"limit": 200},
                              lambda r, a: incident.from_signalling(r, a, "gtp_sessions", "GTPv2-C")),
+            "quic_connections": (quic_connections, {"limit": 50}, incident.from_quic),
+            "tunnels_overview": (tunnels_overview, {"limit": 50}, incident.from_tunnels),
+            "ims_registration": (ims_registration, {"limit": 50}, incident.from_ims),
+            "gtpv1_sessions": (gtpv1_sessions, {"limit": 200}, incident.from_gtpv1),
+            "pfcp_sessions": (pfcp_sessions, {"view": "transactions", "limit": 200}, incident.from_pfcp),
+            "sctp_associations": (sctp_associations, {"limit": 50}, incident.from_sctp),
+            "sigtran_messages": (sigtran_messages, {"limit": 200}, incident.from_sigtran),
+            "expert_info": (expert_info, {"severity": "error", "limit": 20}, incident.from_expert),
         }
+        if "quic" in present:  # QUIC handshakes belong to the quic_connections pass, not to tls_failed
+            rules["tls_handshakes"] = (tls_handshakes, {"filter": "!quic", "limit": 50}, incident.from_tls)
         wanted = incident.passes_for(focus)
         for name in incident.PASSES:
-            proto = incident.PASSES[name][0]
+            protos = incident.pass_protocols(name)
             if name not in wanted:
                 continue
-            if info and proto not in present:
-                not_checked.append({"pass": name, "reason": f"no {proto} in the capture"})
+            if info and protos and not present.intersection(protos):
+                not_checked.append({"pass": name, "reason": f"no {' or '.join(protos[:3])} in the capture"})
                 continue
             fn, kw, rule = rules[name]
             out = call(name, fn, **kw)
@@ -3903,9 +3932,15 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
         by_sev = Counter(f["severity"] for f in findings)
         summary = (f"{len(findings)} finding(s): " + ", ".join(f"{by_sev[s]} {s}" for s in incident.SEVERITIES if by_sev[s])
                    if findings else "no finding passed the thresholds in the passes that ran")
+        unread = incident.not_analysed(hierarchy, base)
+        if window.active() is not None:
+            for u in unread:
+                u["next_call"]["args"].update(_window_args())
+        if unread:
+            summary += "; no checks exist for: " + ", ".join(u["protocol"] for u in unread)
         return {"path": p, "focus": focus, "summary": summary, "findings": findings, "capture": cap, "top_talkers": top,
-                "timeline": timeline, "not_checked": not_checked, "passes": passes, "budget_s": round(budget, 3),
-                "thresholds": dict(incident.THRESHOLDS)}
+                "timeline": timeline, "not_checked": not_checked, "not_analysed": unread, "passes": passes,
+                "budget_s": round(budget, 3), "thresholds": dict(incident.THRESHOLDS)}
     return _guarded("incident_summary", {"path": path, "focus": focus, "budget_s": budget_s}, run)
 
 

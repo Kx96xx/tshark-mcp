@@ -46,6 +46,8 @@ def caps(tmp_path_factory: pytest.TempPathFactory) -> Path:
     g.write_all(d / "sig")
     g.write_merged_pcap(d / "signalling.pcap", d / "sig")
     g.write_voice_pcaps(d / "voice")
+    g.write_incident_coverage_pcaps(d / "cov")
+    g.write_ims_pcaps(d / "ims")
     return d
 
 
@@ -103,8 +105,9 @@ def test_capture_block_top_talkers_and_timeline(inc, caps: Path):
 def test_focus_limits_the_passes(inc, caps: Path):
     out = inc.incident_summary(str(caps / "web.pcap"), focus="dns")
     names = {p["pass"] for p in out["passes"]}
-    assert names == {"pcap_info", "capture_quality", "conversations", "dns_transactions", "icmp_errors"}
-    assert {f["evidence"]["tool"] for f in out["findings"]} <= {"dns_transactions", "icmp_errors", "capture_quality"}
+    assert names == {"pcap_info", "capture_quality", "conversations", "dns_transactions", "icmp_errors", "expert_info"}
+    assert {f["evidence"]["tool"] for f in out["findings"]} <= {"dns_transactions", "icmp_errors", "capture_quality",
+                                                                "expert_info"}
     bad = inc.incident_summary(str(caps / "web.pcap"), focus="email")
     assert bad["error"]["type"] == "invalid_argument"
 
@@ -151,6 +154,120 @@ def test_runner_deadline_caps_each_run(inc, caps: Path):
     assert out["error"]["type"] == "timeout"
 
 
+def _by_kind(out) -> dict[str, dict]:
+    return {f["kind"]: f for f in out["findings"]}
+
+
+def test_sctp_and_sigtran_passes(inc, caps: Path):
+    """D3: an INIT/ABORT storm, unanswered heartbeats, a MAP error and an unanswered Begin
+    were all silent before the sctp_associations and sigtran_messages passes."""
+    out = inc.incident_summary(str(caps / "cov" / "sctp_map.pcap"))
+    TypeAdapter(models.IncidentSummaryResult).validate_python(out)
+    f = _by_kind(out)
+    assert f["sctp_init_rejected"]["text"] == ("192.0.2.60:2906 <-> 192.0.2.61:2905: 4 INITs and 3 ABORTs before "
+                                               "the association came up")
+    assert f["sctp_heartbeat_loss"]["text"].endswith("(3 of 3)")
+    assert f["map_errors"]["text"] == "1 MAP/TCAP error(s) returned: systemFailure x1"
+    assert f["tcap_unanswered"]["severity"] == "medium" and f["tcap_unanswered"]["evidence"]["frames"]
+    # focus=mobile now runs them too, instead of only Diameter and GTPv2-C
+    mobile = inc.incident_summary(str(caps / "cov" / "sctp_map.pcap"), focus="mobile")
+    assert {"sctp_associations", "sigtran_messages"} <= {p["pass"] for p in mobile["passes"]}
+    assert "map_errors" in _kinds(mobile)
+
+
+def test_gtpv1_and_pfcp_passes(inc, caps: Path):
+    out = inc.incident_summary(str(caps / "cov" / "n4_gn.pcap"), focus="mobile")
+    f = _by_kind(out)
+    assert f["gtpv1-c_failed"]["text"] == "1 GTPv1-C request(s) were rejected"
+    assert f["gtpv1-c_failed"]["evidence"]["frames"] == [1]
+    assert f["gtpv1-c_unanswered"]["evidence"]["frames"] == [3]
+    assert f["pfcp_unanswered"]["text"] == "1 PFCP request(s) got no answer"
+    assert f["pfcp_unanswered"]["evidence"]["args"]["view"] == "transactions"
+
+
+def test_tunnel_and_quic_passes(inc, caps: Path):
+    out = inc.incident_summary(str(caps / "cov" / "web_tunnels.pcap"))
+    f = _by_kind(out)
+    ike = f["tunnel_handshake_failed"]
+    assert ike["severity"] == "high" and "IPsec 192.0.2.11 <-> 192.0.2.12 (no response)" in ike["text"]
+    assert ike["next_call"] == {"tool": "tunnels_overview", "args": {"path": str(caps / "cov" / "web_tunnels.pcap"),
+                                                                     "endpoint": "192.0.2.11"}}
+    assert "GRE 192.0.2.1 <-> 192.0.2.2" in f["tunnel_one_way"]["text"]
+    assert f["quic_failed"]["text"] == "1 of 1 QUIC connections did not complete (1 no response)"
+
+
+def test_one_packet_tunnel_is_not_one_way_finding(inc, caps: Path):
+    out = inc.incident_summary(str(caps / "cov" / "unanalysed.pcap"))
+    assert "tunnel_one_way" not in _kinds(out)  # a single malformed GTP-U packet
+
+
+def test_ims_registration_pass(inc, caps: Path):
+    out = inc.incident_summary(str(caps / "ims" / "ims_register.pcap"), focus="mobile")
+    f = _by_kind(out)
+    failed = f["ims_registration_failed"]
+    assert failed["severity"] == "high" and failed["text"].startswith("4 of 9 IMS user(s) failed to register; first: 403")
+    assert failed["next_call"]["tool"] == "ims_registration" and failed["next_call"]["args"]["impu"]
+    assert f["ims_challenge_loop"]["severity"] == "medium"
+
+
+def test_sdp_one_way_media_is_not_one_way_audio(inc, caps: Path):
+    """D8: a=recvonly offer, a=sendonly answer: RTP one way is what the call asked for."""
+    p = str(caps / "cov" / "recvonly_call.pcap")
+    rtp = inc.rtp_streams(p)
+    assert rtp["summary"]["one_way"] == 1 and rtp["summary"]["expected_one_way"] == 1
+    (stream,) = rtp["streams"]
+    assert stream["expected_one_way"] == "a=recvonly in the SDP of frame 1"
+    assert "as the call asks" in stream["issues"][0]
+    out = inc.incident_summary(p)
+    assert "one_way_audio" not in _kinds(out)
+    # a sendrecv call that is one way is still a high finding
+    voice = inc.incident_summary(str(caps / "voice" / "voice_problems.pcap"), focus="voip")
+    assert _by_kind(voice)["one_way_audio"]["text"] == "1 of 3 RTP streams have no reverse stream (one-way audio)"
+
+
+def test_not_analysed_and_expert_errors(inc, caps: Path):
+    p = str(caps / "cov" / "unanalysed.pcap")
+    out = inc.incident_summary(p)
+    unread = {u["protocol"]: u for u in out["not_analysed"]}
+    assert set(unread) == {"coap", "dhcp", "mqtt"}
+    assert unread["coap"] == {"protocol": "coap", "frames": 2,
+                              "next_call": {"tool": "filter_packets", "args": {"path": p, "display_filter": "coap",
+                                                                                "limit": 20}}}
+    assert out["summary"].endswith("; no checks exist for: coap, dhcp, mqtt")
+    expert = _by_kind(out)["expert_errors"]
+    assert expert["severity"] == "low" and expert["evidence"]["frames"] == [5]
+    assert expert["evidence"]["args"]["severity"] == "error"
+    # a capture fully covered by the passes has nothing unread
+    assert inc.incident_summary(str(caps / "web.pcap"))["not_analysed"] == []
+
+
+def test_not_analysed_unit():
+    rows = [{"protocol": "eth/ip/udp/coap", "frames": 4}, {"protocol": "eth/ip/tcp/tls", "frames": 9},
+            {"protocol": "eth/ip/sctp/s1ap", "frames": 3}, {"protocol": "eth/arp", "frames": 20},
+            {"protocol": "eth/ip/udp/_ws.malformed", "frames": 1}]
+    out = incident.not_analysed(rows, {"path": "/x.pcap"})
+    assert [u["protocol"] for u in out] == ["coap", "s1ap"]
+    assert out[1]["next_call"] == {"tool": "nas_procedures", "args": {"path": "/x.pcap"}}
+
+
+def test_tls_rule_leaves_quic_to_the_quic_pass():
+    """D9c: a QUIC handshake seen up to the ServerHello is not a failed TLS handshake."""
+    result = {"summary": {"outcomes": {"established": 1, "server_hello": 1}},
+              "connections": [{"transport": "tcp", "outcome": "established", "frame": 1},
+                              {"transport": "quic", "outcome": "server_hello", "frame": 9}]}
+    assert incident.from_tls(result, {"path": "/x"}) == []
+    result["connections"].append({"transport": "tcp", "outcome": "alert", "frame": 20})
+    result["summary"]["outcomes"]["alert"] = 1
+    (f,) = incident.from_tls(result, {"path": "/x"})
+    assert f["text"] == "1 of 2 TLS handshakes did not complete" and f["evidence"]["frames"] == [20]
+
+
+def test_tls_pass_filters_quic_out(inc, caps: Path):
+    out = inc.incident_summary(str(caps / "cov" / "web_tunnels.pcap"), focus="tls")
+    assert "quic_connections" in {p["pass"] for p in out["passes"]}
+    assert "tls_failed" not in _kinds(out)
+
+
 async def _over_stdio(caps: Path) -> dict:
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -159,7 +276,10 @@ async def _over_stdio(caps: Path) -> dict:
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            return {"web": await session.call_tool("incident_summary", {"path": str(caps / "web.pcap"), "focus": "web"})}
+            return {"web": await session.call_tool("incident_summary", {"path": str(caps / "web.pcap"), "focus": "web"}),
+                    "unread": await session.call_tool("incident_summary", {"path": str(caps / "cov" / "unanalysed.pcap")}),
+                    "sctp": await session.call_tool("incident_summary", {"path": str(caps / "cov" / "sctp_map.pcap"),
+                                                                         "focus": "mobile"})}
 
 
 def test_incident_summary_over_stdio(caps: Path):
@@ -167,3 +287,18 @@ def test_incident_summary_over_stdio(caps: Path):
     out = got["web"].structured_content
     assert not got["web"].is_error and out["findings"][0]["severity"] == "high"
     assert "http_5xx" in [f["kind"] for f in out["findings"]]
+    unread = got["unread"].structured_content
+    assert not got["unread"].is_error and [u["protocol"] for u in unread["not_analysed"]] == ["coap", "dhcp", "mqtt"]
+    sctp = got["sctp"].structured_content
+    assert {"sctp_init_rejected", "map_errors"} <= {f["kind"] for f in sctp["findings"]}
+
+
+def test_every_next_call_runs(inc, caps: Path):
+    """Each finding's and each not_analysed entry's next_call is a valid call of an existing tool."""
+    for name in ("sctp_map", "n4_gn", "web_tunnels", "recvonly_call", "unanalysed"):
+        out = inc.incident_summary(str(caps / "cov" / f"{name}.pcap"))
+        for step in [f["next_call"] for f in out["findings"]] + [u["next_call"] for u in out["not_analysed"]]:
+            result = inc.TOOLS[step["tool"]](**step["args"])
+            assert "error" not in result, (name, step, result.get("error"))
+    restart = incident.from_pfcp({"summary": {"peer_restarts": 1}}, {"path": "/x", "view": "transactions"})
+    assert restart[0]["next_call"]["args"]["view"] == "sessions"
