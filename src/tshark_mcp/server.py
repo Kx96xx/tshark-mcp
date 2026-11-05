@@ -1789,6 +1789,26 @@ def _diameter_fetch(capture: Path, base: str, select: str | None, keep_raw: bool
 AVP_DETAIL = ("key", "full")
 
 
+def _explain_digest(view: dict[str, Any], runner: Runner, cache: dict[tuple[int, str], Any]) -> None:
+    """Add cause_lookup's name, meaning and reference to every failed result code of an
+    application digest (the message's own codes and each Gy MSCC's)."""
+    for key, _ in avps.DIGESTS.values():
+        digest = view.get(key)
+        if not isinstance(digest, dict):
+            continue
+        found = list(digest.get("results") or [])
+        found += [m["result"] for m in digest.get("mscc") or [] if isinstance(m.get("result"), dict)]
+        for res in found:
+            code = res.get("code")
+            if not isinstance(code, int) or code < 3000:
+                continue
+            app = key if res.get("avp") == "Experimental-Result-Code" else "base"
+            if (code, app) not in cache:
+                cache[(code, app)] = causes.brief(runner, "diameter", code, app)
+            if cache[(code, app)]:
+                res["explained"] = {k: v for k, v in cache[(code, app)].items() if not (k == "name" and v == res.get("name"))}
+
+
 @_tool(title="Diameter AVP detail", annotations=READ_ONLY)
 def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = None, command_code: int | None = None,
                   frame: int | None = None, filter: str | None = None, detail: str = "key", max_avps: int = 200,
@@ -1801,10 +1821,25 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
     IDR/NOR flags with bit names, Cancellation-Type, RAT-Type, Visited-PLMN-Id, AIR
     vectors, Gx CC-Request-Type, Event-Trigger, rule reports and QoS, and a digest of
     Subscription-Data (MSISDN, status, ODB, access restrictions, AMBR, one line per APN
-    with PDN type, QCI, ARP, AMBR and PGW). `detail="full"` gives every AVP as a nested
-    tree, at most `max_avps` leaf AVPs per message (server cap 2000); `avps_dropped`
-    counts the rest. Enumerated values are named, e.g. "SUBSCRIPTION_WITHDRAWAL (2)".
-    `limit` caps transactions (default 20). `filter` is ANDed with `diameter`."""
+    with PDN type, QCI, ARP, AMBR and PGW), plus a per-application digest under `gy`,
+    `rx`, `cx`, `sh` or `s13` whose failed codes carry cause_lookup's `explained`.
+    `detail="full"` gives every AVP as a nested tree, at most `max_avps` leaf AVPs per
+    message (server cap 2000); `avps_dropped` counts the rest. Authentication material is
+    never returned. `limit` caps transactions (default 20). `filter` is ANDed with `diameter`.
+
+    Details: Digests, picked by application id: `gy` (Gy/Ro: request type and number,
+    Service-Context-Id, Subscription-Id, per Multiple-Services-Credit-Control the rating
+    group, service id, requested, granted and used units with reporting reason, validity
+    and quota holding time, thresholds, Final-Unit-Indication, MSCC Result-Code); `rx`
+    (Rx-Request-Type, UE address, AF identifiers, per media component the type, flow
+    status, first Codec-Data line, bandwidths and flow count, Specific-Action, Abort-Cause);
+    `cx` (authorization and assignment types, IMPI, IMPUs, Server-Name or capability counts,
+    authentication scheme and item count, associated identities, deregistration reason);
+    `sh` (User-Identity, Data-Reference names, domain, Current-Location, Identity-Set,
+    Sh-User-Data as size and element names); `s13` (IMEI, software version,
+    Equipment-Status). RAND, XRES, AUTN, KASME, SRES, Kc, CK, IK, SIP-Authenticate and
+    SIP-Authorization read `withheld (authentication material)` in both views. Enumerated
+    values are named, e.g. "SUBSCRIPTION_WITHDRAWAL (2)"."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
@@ -1833,6 +1868,7 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
             return _envelope("transactions", [], cap, scan, offset=offset, detail=detail, selection=select)
         txs = diameter.pair(messages)
         mine = diameter.subscriber_sessions(messages, imsi_d, None, exact_imsi=True) if imsi_d else None
+        explained: dict[tuple[int, str], Any] = {}
         rows = []
         for tx in txs:
             anchor = tx.request or tx.answer
@@ -1855,7 +1891,9 @@ def diameter_avps(path: str, session_id: str | None = None, imsi: str | None = N
                 if msg is None:
                     continue
                 tree, dropped = avps.avp_tree(msg.fields.get("raw") or {}, leaves)
-                out[f"{side}_avps"] = tree if detail == "full" else avps.key_view(tree)
+                out[f"{side}_avps"] = tree if detail == "full" else avps.key_view(tree, msg.fields.get("application_id"))
+                if detail == "key":
+                    _explain_digest(out[f"{side}_avps"], st.runner, explained)
                 if dropped and detail == "full":
                     out[f"{side}_avps_dropped"] = dropped
             rows.append(out)

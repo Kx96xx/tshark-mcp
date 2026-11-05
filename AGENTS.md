@@ -52,6 +52,7 @@ a `TSHARK_MCP_*` environment variable.
 | Everything that happened to one subscriber | `trace_subscriber(path, imsi=... or msisdn=...)` |
 | Why can this roamer not attach, or attach but get no bearer? | `roaming_attach_check(path, imsi=..., home_plmn=...)`: attempts, subscription versus request, `checks`, `first_failure`, `verdict` |
 | Why did the attach or Diameter procedure fail? | `diameter_sessions(path, imsi=...)`, then `diameter_avps(path, imsi=..., detail="key")` for the AVPs behind a result code |
+| Why did charging, the VoLTE bearer, IMS registration, an Sh read or the IMEI check fail? | `diameter_avps(path, command_code=272 / 265 / 300-303 / 306 / 324)`: the `gy`, `rx`, `cx`, `sh` or `s13` digest, failed codes `explained` |
 | GTPv2-C: was the session created, with which cause, which PAA? | `gtp_sessions(path, imsi=... / apn=... / teid=...)`; GTPv1-C (Gn/Gp): `gtpv1_sessions` |
 | Why did the PGW reject, what did the MME ask for, which cell was the UE in? | `gtp_ies(path, imsi=... or frame=...)`: the IEs of request and response, the offending IE and `likely_causes` |
 | Session is up but no data, or slow data | `gtp_user_plane`, then `gtp_tunnel_health` (inner TCP loss, MSS/MTU, ICMP); `pfcp_sessions` for the N4/Sx side |

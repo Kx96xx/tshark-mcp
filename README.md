@@ -128,7 +128,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 Forty-six tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
-compact by default (131 KB instead of 328 KB at 46 tools); each tool's full schema is the resource `schema://tools/<name>`, and
+compact by default (131 KB instead of 330 KB at 46 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
@@ -153,7 +153,7 @@ what it cost in `tokens_estimate`.
 | `cause_lookup` | What a Diameter, GTP, PFCP, NAS, S1AP/NGAP, SIP, Q.850, MAP, SCCP, SGsAP or SMS cause means, with the 3GPP/ITU reference |
 | `diameter_transactions` | Requests paired with answers, result codes named, RTT, unanswered |
 | `diameter_sessions` | The same grouped by Session-Id, with per-session counts |
-| `diameter_avps` | The AVPs behind each transaction: flags with bit names, Subscription-Data digest, full tree |
+| `diameter_avps` | The AVPs behind each transaction: flags with bit names, Subscription-Data digest, Gy/Rx/Cx/Sh/S13 digests with failed codes explained, full tree; authentication material never returned |
 | `gtp_sessions` | GTPv2-C requests paired with responses across NATs and proxy chains, cause names, PAA |
 | `gtp_ies` | The IEs behind each GTPv2-C transaction: APN, PDN type, QoS, ULI, PCO names, offending IE, likely causes of a reject |
 | `gtpv1_sessions` | GTPv1-C (Gn/Gp) PDP contexts paired, with cause names |
@@ -237,7 +237,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 932 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 943 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
