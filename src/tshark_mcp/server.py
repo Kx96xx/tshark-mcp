@@ -4391,7 +4391,8 @@ def export_subset(path: str, display_filter: str, name: str, max_packets: int = 
 def sctp_associations(path: str, limit: int = 200, offset: int = 0) -> models.SctpAssociationsResult:
     """Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK
     frames and initiate tags), DATA chunk count, heartbeats sent versus acknowledged,
-    retransmissions, and whether ABORT or SHUTDOWN was seen. Useful for Diameter and
+    retransmissions, whether ABORT or SHUTDOWN was seen, and `issues` (INITs answered
+    with ABORT, an INIT collision). Useful for Diameter and
     SIGTRAN transport health before looking at the application layer."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
@@ -4407,8 +4408,8 @@ def sctp_associations(path: str, limit: int = 200, offset: int = 0) -> models.Sc
 def sigtran_messages(path: str, filter: str | None = None, limit: int = 200, offset: int = 0) -> models.SigtranMessagesResult:
     """List M3UA/SCCP/TCAP/MAP messages: SCCP type (UDT, XUDT with segmentation info),
     calling and called global titles and SSNs, point codes, TCAP primitive and
-    transaction ids, components (invoke, returnResultLast, returnError) with MAP opcode and
-    operation name (updateLocation, sendAuthenticationInfo, mo-forwardSM, ...), IMSI and
+    transaction ids, components (invoke, returnResultLast, returnError) with MAP or CAMEL
+    opcode and operation name (updateLocation, sendAuthenticationInfo, initialDP, ...), IMSI and
     MSISDN. Begins are linked to their End/Continue when the transaction id matches.
     `filter` is ANDed with `sccp || m3ua`, e.g. `gsm_old.localValue == 2`."""
     def run() -> dict[str, Any]:
