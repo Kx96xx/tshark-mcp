@@ -273,11 +273,11 @@
     },
     {
       "name": "sctp_associations",
-      "description": "Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK frames and initiate tags), DATA chunk count, heartbeats sent versus acknowledged, retransmissions, and whether ABORT or SHUTDOWN was seen."
+      "description": "Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK frames and initiate tags), DATA chunk count, heartbeats sent versus acknowledged, retransmissions, whether ABORT or SHUTDOWN was seen, and `issues` (INITs answered with ABORT, an INIT collision)."
     },
     {
       "name": "sigtran_messages",
-      "description": "List M3UA/SCCP/TCAP/MAP messages: SCCP type (UDT, XUDT with segmentation info), calling and called global titles and SSNs, point codes, TCAP primitive and transaction ids, components (invoke, returnResultLast, returnError) with MAP opcode and operation name (updateLocation, ..."
+      "description": "List M3UA/SCCP/TCAP/MAP messages: SCCP type (UDT, XUDT with segmentation info), calling and called global titles and SSNs, point codes, TCAP primitive and transaction ids, components (invoke, returnResultLast, returnError) with MAP or CAMEL opcode and operation name (updateLocation, ..."
     },
     {
       "name": "trace_subscriber",

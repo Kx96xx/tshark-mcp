@@ -257,8 +257,8 @@ what it cost in `tokens_estimate`.
 | `dtmf_events` | RFC 4733 and SIP INFO digits in order, checked against the SDP |
 | `ims_registration` | REGISTER flows per UE with a verdict: registered, expired, deregistered, challenge-loop, failed |
 | `sms_over_ims` | Each SMS over IMS with its RP answer and a verdict |
-| `sctp_associations` | Handshake, heartbeats, retransmissions, aborts per association |
-| `sigtran_messages` | M3UA, SCCP, TCAP and MAP with operation names, IMSI and MSISDN |
+| `sctp_associations` | Handshake, heartbeats, retransmissions, aborts, INITs refused with ABORT and INIT collisions per association |
+| `sigtran_messages` | M3UA, SCCP, TCAP, MAP and CAMEL with operation names, IMSI and MSISDN |
 | `trace_subscriber` | One timeline for a subscriber across Diameter, GTP, PFCP, MAP and SIP |
 | `nas_procedures` | Attach, TAU, service request, PDN and bearer procedures per UE from S1AP and NAS EPS: outcome, EMM/ESM and S1AP causes named, timing, ciphered messages counted, unanswered paging |
 | `roaming_attach_check` | Why a roamer cannot attach or get a bearer: each attempt's steps, the ULA subscription held against the Create Session, checks and a verdict |
