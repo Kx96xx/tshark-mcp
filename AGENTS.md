@@ -152,14 +152,20 @@ names exists.
   compiled against an empty capture first; quotes and backslashes are refused inside
   structured selectors. Use `check_filter` when unsure, `find_fields` to find field names.
 - Paging: tools with `limit` also take `offset` and return `total_matched`, `returned`,
-  `offset`, `dropped` and `next_offset` (present only when more rows exist). `truncated: true`
+  `offset`, `dropped` and `next_offset` (present only when more rows exist, with `has_more: true`; `has_more: false` on the last page). `truncated: true`
   always comes with `truncated_reason`. `total_is_lower_bound: true` means a packet or frame
   cap stopped the scan: narrow the filter rather than page.
 - Output size: tools with `limit` also take `columns` (row keys to keep; frame keys always
-  stay; an unknown name is an `invalid_argument` error listing the valid ones),
-  `output="summary"` (everything but the rows plus the first three rows, under 4 KB; paging
+  stay; the valid names are the `items.enum` of `columns` in the full schema,
+  `schema://tools/<name>`; an unknown name is an `invalid_argument` error listing them),
+  `output="summary"` (everything but the rows plus the first three rows, under 8 KB; paging
   says where the rest starts) and `max_output_kb` (lowers the server's output cap for this
   call, never raises it). Every successful result carries `tokens_estimate` (JSON bytes / 3.6).
+  The text content of a result is the same JSON as `structuredContent`, compact (no
+  indentation, no spaces after separators).
+- Every argument of every tool has a one-line schema `description` (from
+  `src/tshark_mcp/argdocs.py`; a new argument name needs a line there, or its own
+  `Field(description=...)`, or tests/test_tool_list.py fails).
 - Every call may pass `redact="ids"` or `"ids+ips"`; it can raise the server's redaction
   level, never lower it. Tokens such as `imsi:3f2a9c1b0d` work as arguments in later calls.
 - Cancelling a request kills tshark within a quarter of a second. With a `progressToken`,

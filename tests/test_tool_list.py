@@ -21,7 +21,9 @@ from .conftest import TSHARK, requires_tshark
 # description runs past DESCRIPTION_MAX moves its detail into a `Details:` paragraph.
 # 2,750 until the row tools took columns / output / max_output_kb (about 260 bytes each on 33 tools).
 # 2,900 until the start/end window arguments on every capture tool (about 180 bytes each).
-AVERAGE_TOOL_BYTES_MAX = 3_000
+# 3,000 until every argument got a schema description (mcp-builder G1, about 320 bytes per tool;
+# measured 2,892 -> 3,210 on 55 tools).
+AVERAGE_TOOL_BYTES_MAX = 3_250
 TOOL_BYTES_MAX = 4_608
 DESCRIPTION_MAX = 1_500
 INSTRUCTIONS_MAX = 3_900
@@ -173,3 +175,33 @@ def test_optional_arguments_become_a_type_list():
         "imsi": {"type": ["string", "null"]},
         "teid": {"type": ["string", "integer", "null"]},
         "view": {"default": "sessions", "enum": ["sessions", "transactions"], "type": "string"}}
+
+
+# ------------------------------------------------------------------ mcp-builder audit (G1, G7)
+def test_every_argument_has_a_description():
+    """G1: every argument of every tool has a one-line description, in both profiles."""
+    from tshark_mcp import argdocs
+    for profile in ("compact", "full"):
+        for tool in _listed(profile):
+            for name, prop in tool.input_schema["properties"].items():
+                text = prop.get("description")
+                assert text, f"{tool.name}.{name} has no description: add it to src/tshark_mcp/argdocs.py"
+                assert len(text) <= argdocs.MAX_CHARS and "\n" not in text, (tool.name, name, text)
+
+
+def test_columns_enum_in_full_schema_only():
+    """G7: the valid columns are an items enum in the full schema; the compact list leaves it out."""
+    from tshark_mcp import output
+    full = {t.name: t for t in _listed("full")}
+    compact = {t.name: t for t in _listed("compact")}
+    for name, fn in server.TOOLS.items():
+        if "columns" not in full[name].input_schema["properties"]:
+            continue
+        known = output.row_keys(server.inspect.signature(fn).return_annotation)
+        prop = full[name].input_schema["properties"]["columns"]
+        arrays = [v for v in prop.get("anyOf", [prop]) if v.get("type") == "array"]
+        if known:
+            assert arrays[0]["items"]["enum"] == sorted(known), name
+        else:  # filter_packets: untyped rows, any field name
+            assert "enum" not in arrays[0]["items"], name
+        assert "enum" not in json.dumps(compact[name].input_schema["properties"]["columns"]), name

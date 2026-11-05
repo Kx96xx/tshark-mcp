@@ -14,7 +14,7 @@ Every tool with `limit` also takes three output arguments, left out of the table
   the rows never have is an `invalid_argument` error that lists the valid ones (for
   `filter_packets` the columns are the `fields` asked for).
 - `output`: `"rows"` (default) or `"summary"`: everything but the row list plus its first three
-  rows, fitted into 4 KB, with `output: "summary"` in the result and `next_offset` /
+  rows, fitted into 8 KB, with `output: "summary"` in the result and `next_offset` /
   `truncated_reason` pointing at the rest. Call it first on a big capture.
 - `max_output_kb`: lowers the server's output cap (`--max-output-kb`) for this call, at least
   1 KB; a larger value than the server cap changes nothing.

@@ -111,8 +111,9 @@ def test_a_failing_producer_still_leaves_a_fix():
 
 def test_as_call_result_flags_errors_only():
     from tshark_mcp.server import as_call_result
-    ok = {"packets": 1}
-    assert as_call_result(ok) is ok
+    ok = as_call_result({"packets": 1, "name": "\u00e9"})
+    assert ok.is_error is False and ok.structured_content == {"packets": 1, "name": "\u00e9"}
+    assert ok.content[0].text == '{"packets":1,"name":"\u00e9"}'  # compact JSON, mcp-builder G2
     res = as_call_result({"error": {"type": "not_found", "message": "m", "fix": "f"}})
     assert res.is_error is True
     assert res.structured_content["error"]["type"] == "not_found"

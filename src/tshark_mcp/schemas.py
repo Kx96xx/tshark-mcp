@@ -11,7 +11,7 @@ default, ``--schema-profile``) publishes the same tools with:
   instructions already explain (``truncated``, ``warnings``, ``redaction``, ...) are left
   out; ``error`` and the paging keys stay. ``additionalProperties`` stays true, so every
   result that matches the full schema also matches the compact one;
-* the input schema without the generated ``title`` keys, and an optional argument
+* the input schema without the generated ``title`` keys and the ``columns`` enum, and an optional argument
   (``anyOf`` string or null, default null) written as ``"type": ["string", "null"]`` (an
   optional list as ``"type": ["array", "null"]`` with its ``items``); enums,
   defaults and descriptions are unchanged;
@@ -171,6 +171,11 @@ def compact_input_schema(schema: dict[str, Any]) -> dict[str, Any]:
     if isinstance(out.get("properties"), dict):
         out["properties"] = {name: _simple_union(prop) if isinstance(prop, dict) else prop
                              for name, prop in out["properties"].items()}
+        columns = out["properties"].get("columns")
+        if isinstance(columns, dict) and isinstance(columns.get("items"), dict) and "enum" in columns["items"]:
+            # The valid row keys stay in the full schema (resource schema://tools/<name>); listing them in
+            # every compact entry would double the tool list. An unknown name gets an error listing them.
+            columns["items"] = {k: v for k, v in columns["items"].items() if k != "enum"}
     return out
 
 

@@ -70,7 +70,8 @@ class ToolResult(TypedDict, total=False):
 class RowsResult(ToolResult, total=False):
     """One page of rows. ``total_matched`` rows were found; ``returned`` of them are in
     this page, starting at ``offset``; ``dropped`` come after it and ``next_offset``
-    (present when more rows exist) fetches the next page with the same arguments.
+    (present when more rows exist, and then ``has_more`` is true) fetches the next page
+    with the same arguments.
     ``total_is_lower_bound`` means a packet or frame cap stopped the scan, so more rows
     exist than were counted and paging cannot reach them: narrow the filter.
     ``count`` and ``total_found`` are the older names of ``returned`` and ``total_matched``.
@@ -83,6 +84,7 @@ class RowsResult(ToolResult, total=False):
     dropped: int
     offset: int
     next_offset: int
+    has_more: bool
     total_is_lower_bound: bool
     packets_scanned: int
     packets_matched: int
