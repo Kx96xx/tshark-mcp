@@ -2476,6 +2476,67 @@ def write_merged_pcap(path: Path, directory: Path) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------- RTP call attribution
+def write_port_reuse_calls_pcap(path: Path, second_signalled: bool = True) -> Path:
+    """Two calls in a row from the UE, both offering the same media port (UE_SIP_IP:40000).
+    Call 1 (PCMU) is answered from MEDIA_GW_IP:30000 and released with a BYE; call 2 (PCMA) is
+    answered from MEDIA_GW_IP:30010 and its RTP starts after call 1's BYE. With
+    ``second_signalled=False`` call 2's SIP is not in the file, only its RTP."""
+    t0 = 1_700_002_000.0
+    frames: list[tuple[float, bytes]] = []
+
+    def ue(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(UE_SIP_IP, PCSCF_IP, 5060, 5060, msg)))
+
+    def net(ts: float, msg: bytes) -> None:
+        frames.append((ts, _udp_frame(PCSCF_IP, UE_SIP_IP, 5060, 5060, msg)))
+
+    calls = [("reuse-1@test.invalid", "r1", 0, "0 PCMU/8000", 30000, 0x0A0A0001, t0)]
+    if second_signalled:
+        calls.append(("reuse-2@test.invalid", "r2", 8, "8 PCMA/8000", 30010, 0x0A0A0002, t0 + 5.1))
+    for call_id, tag, pt, rtpmap, gw_port, ssrc, start in calls:
+        req, resp = _voice_sip(call_id, tag)
+        ue(start, req("INVITE", 1, body=_sdp(UE_SIP_IP, 40000, [pt], [rtpmap], ["a=sendrecv"])))
+        net(start + 0.01, resp(200, "OK", 1, "INVITE", body=_sdp(MEDIA_GW_IP, gw_port, [pt], [rtpmap], ["a=sendrecv"])))
+        ue(start + 0.02, req("ACK", 1, to_tag="net"))
+        if call_id.startswith("reuse-1"):
+            ue(start + 5.0, req("BYE", 2, to_tag="net"))
+            net(start + 5.01, resp(200, "OK", 2, "BYE"))
+    _audio(frames, t0 + 0.1, MEDIA_GW_IP, 30000, UE_SIP_IP, 40000, 0x0A0A0001, 0, 8000, 200, 100, 1000)
+    _audio(frames, t0 + 5.2, MEDIA_GW_IP, 30010, UE_SIP_IP, 40000, 0x0A0A0002, 8, 8000, 200, 700, 9000)
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
+def _stun(msg_type: int, txid: bytes, attrs: list[tuple[int, bytes]]) -> bytes:
+    """A STUN message (RFC 5389) with the given attributes and a FINGERPRINT."""
+    import zlib
+
+    body = b"".join(struct.pack("!HH", t, len(v)) + v + b"\x00" * (-len(v) % 4) for t, v in attrs)
+    head = struct.pack("!HHI", msg_type, len(body) + 8, 0x2112A442) + txid
+    crc = zlib.crc32(head + body) ^ 0x5354554E
+    return head + body + struct.pack("!HHI", 0x8028, 4, crc)
+
+
+def write_rtp_over_stun_pcap(path: Path) -> Path:
+    """WebRTC-style media through a TURN server (RFC 8656): an Allocate request and its success
+    response, then 20 RTP packets each inside a Send indication's DATA attribute; no SIP or SDP."""
+    t0 = 1_700_002_100.0
+    a, b, pa, pb = "198.51.100.40", "203.0.113.41", 50500, 50600  # not 3478: STUN found by its heuristic
+    txid = bytes.fromhex("0102030405060708090a0b0c")
+    xaddr = struct.pack("!BBH", 0, 1, 50500 ^ 0x2112) + bytes(x ^ y for x, y in zip(bytes([198, 51, 100, 40]), bytes.fromhex("2112a442")))
+    frames = [(t0, _udp_frame(a, b, pa, pb, _stun(0x0003, txid, [(0x0019, b"\x11\x00\x00\x00")]))),
+              (t0 + 0.01, _udp_frame(b, a, pb, pa, _stun(0x0103, txid, [(0x0016, xaddr), (0x0020, xaddr),
+                                                                         (0x000D, struct.pack("!I", 600))])))]
+    # Each RTP packet travels inside a TURN Send indication (XOR-PEER-ADDRESS, DATA), as a browser
+    # behind a TURN relay sends it.
+    for i in range(20):
+        rtp = _rtp(111, 10 + i, 5000 + 960 * i, 0x0B0B0001, bytes(40))
+        txi = struct.pack("!III", 0x0B0B0000, 0, i)
+        frames.append((t0 + 0.1 + 0.02 * i,
+                       _udp_frame(a, b, pa, pb, _stun(0x0016, txi, [(0x0012, xaddr), (0x0013, rtp)]))))
+    return _frames_to_pcap(path, frames)
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

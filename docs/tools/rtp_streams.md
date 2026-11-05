@@ -12,5 +12,8 @@ stream or `one_way`, RTCP reception reports about it (fraction and cumulative lo
 trip where the LSR matches a captured SR), RTCP XR VoIP metrics as reported, and `mos_estimate`: a
 simplified ITU-T G.107 E-model score from loss, jitter, delay and the codec's G.113 Ie/Bpl, returned
 with its method and inputs because it is an estimate, not a measured MOS. `call_id` reads the RTP to
-or from the call's SDP addresses, so a NATed source is still found; `heuristic` decodes RTP without
-SDP in the capture. Packets, lost, max delta and max jitter match `tshark -z rtp,streams`
+or from the call's SDP addresses, so a NATed source is still found; each stream is still linked
+against every SDP in the capture (the most recent advertisement of its address and port before it
+starts), and a call whose BYE or CANCEL came before a stream started never owns it, so a later call
+that reuses a port keeps its own stream; `heuristic` decodes RTP without SDP in the capture, over
+plain UDP and inside STUN/TURN (WebRTC through a relay). Packets, lost, max delta and max jitter match `tshark -z rtp,streams`

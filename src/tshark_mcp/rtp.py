@@ -40,6 +40,20 @@ RTP_OR_RTCP = "rtp || rtcp"
 DISPLAY_FILTER = f"({RTP_OR_RTCP}) && (ip || ipv6)"
 # Heuristic RTP/RTCP decoding for captures without the SDP that would set the streams up.
 HEURISTIC_ARGS = ("--enable-heuristic", "rtp_udp", "--enable-heuristic", "rtcp_udp")
+# RTP multiplexed with STUN on one port (WebRTC, RFC 7983): rtp_stun for STUN with the RFC 5389
+# magic cookie, rtp_classicstun for RFC 3489 STUN. Enabled only when this tshark has the carrier
+# protocol, because tshark refuses an unknown heuristic name.
+STUN_HEURISTICS = (("stun", "rtp_stun"), ("classicstun", "rtp_classicstun"))
+
+
+def heuristic_args(known: frozenset[str] | set[str]) -> tuple[str, ...]:
+    """``--enable-heuristic`` arguments for RTP over UDP and over STUN (``known``: tshark's field
+    and protocol catalogue)."""
+    extra: tuple[str, ...] = ()
+    for proto, heur in STUN_HEURISTICS:
+        if proto in known:
+            extra += ("--enable-heuristic", heur)
+    return HEURISTIC_ARGS + extra
 
 # Thresholds behind the per-stream `issues`.
 LOSS_ISSUE_PCT = 1.0
@@ -171,11 +185,15 @@ def ep(addr: str, port: int | None) -> str:
 
 
 # ----------------------------------------------------------------- linking to SDP
-def _pick(refs: list[dict[str, Any]], start: float | None) -> dict[str, Any]:
+def _pick(refs: list[dict[str, Any]], start: float | None) -> dict[str, Any] | None:
     """The SDP that advertised an endpoint most recently before the stream started
-    (ports are reused across calls), else the earliest one."""
-    before = [r for r in refs if r["entry"]["time"] is not None and start is not None and r["entry"]["time"] <= start + 1.0]
-    return before[-1] if before else refs[0]
+    (ports are reused across calls), else the earliest one. A call whose dialog ended (BYE
+    or CANCEL, ``dialog_end``) before the stream started cannot own it."""
+    live = [r for r in refs if start is None or r["entry"].get("dialog_end") is None or start <= r["entry"]["dialog_end"]]
+    if not live:
+        return None
+    before = [r for r in live if r["entry"]["time"] is not None and start is not None and r["entry"]["time"] <= start + 1.0]
+    return before[-1] if before else live[0]
 
 
 def link(stream: dict[str, Any], endpoints: dict[tuple[str, int], list[dict[str, Any]]],
@@ -185,14 +203,19 @@ def link(stream: dict[str, Any], endpoints: dict[tuple[str, int], list[dict[str,
     the sender advertised (``sdp_source``, symmetric RTP), or tshark set the stream up
     from that SDP frame (``setup_frame``)."""
     refs = [r for r in endpoints.get((stream["dst"], stream["dport"]), []) if not r["rtcp"]]
-    if refs:
-        return _pick(refs, stream["first_time"]), "sdp_destination"
+    picked = _pick(refs, stream["first_time"]) if refs else None
+    if picked is not None:
+        return picked, "sdp_destination"
     refs = [r for r in endpoints.get((stream["src"], stream["sport"]), []) if not r["rtcp"]]
-    if refs:
-        return _pick(refs, stream["first_time"]), "sdp_source"
+    picked = _pick(refs, stream["first_time"]) if refs else None
+    if picked is not None:
+        return picked, "sdp_source"
     frame = stream.get("setup_frame")
     if frame is not None and frame in by_frame:
         entry = by_frame[frame]
+        start = stream["first_time"]
+        if entry.get("dialog_end") is not None and start is not None and start > entry["dialog_end"]:
+            return None, None
         return {"entry": entry, "media": entry["sdp"]["media"][0], "index": 0, "rtcp": False}, "setup_frame"
     return None, None
 
