@@ -160,6 +160,7 @@ the project uses [semantic versioning](https://semver.org/).
   the AVP with a `3GPP-` prefix.
 
 ### Fixed
+- `filter_packets` no longer fails with an unstructured "Error executing tool" when `fields` leaves out `frame.number`: the output schema now allows the integer frame number it adds to each row (found by the public-capture validation, D1).
 - PyPI page: README links are absolute, so they work on pypi.org as well as GitHub; a test keeps them absolute and pointing at real files. More project links (documentation, changelog, releases).
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared

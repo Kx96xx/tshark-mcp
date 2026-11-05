@@ -69,6 +69,8 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("pfcp_sessions", {"path": f"{d}/all.pcap"}),
         ("conversations", {"path": f"{d}/gtpv2.pcap", "layer": "udp", "filter": "gtpv2"}),
         ("filter_packets", {"path": f"{d}/diameter.pcap", "display_filter": "diameter.cmd.code == 318"}),
+        # fields without frame.number: the server adds a "frame" column to every row (public-validation D1)
+        ("filter_packets", {"path": f"{d}/diameter.pcap", "display_filter": "diameter", "fields": ["diameter.cmd.code"]}),
         ("diameter_transactions", {"path": f"{d}/diameter.pcap"}),
         ("diameter_sessions", {"path": f"{d}/diameter.pcap", "imsi": pcapgen.IMSI}),
         ("gtp_sessions", {"path": f"{d}/gtpv2.pcap", "teid": "0xc001"}),
@@ -232,6 +234,8 @@ def test_every_tool_call_returns_structured_content(client_run):
 
     # Every call but the last two is a happy path, one per tool; the last two are the error paths.
     by_name = {(n, tuple(sorted(a))): _attr(r, "structured_content", "structuredContent") for n, a, r in results[:-2]}
+    picked = by_name[("filter_packets", ("display_filter", "fields", "path"))]
+    assert picked["packets"] and all(isinstance(r["frame"], int) for r in picked["packets"])
     info = by_name[("pcap_info", ("path",))]
     assert info["packets"] == 7 and info["protocol_hierarchy"][0]["frames"] == 7
 
