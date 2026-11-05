@@ -5,7 +5,7 @@
     python -m evals --report docs/EVALS.md   # rewrite the results table in the docs
     python -m evals --xml evals/tshark_mcp_eval.xml   # the mcp-builder XML question set instead
     python -m evals --driver llm --model claude-opus-5-5   # a model picks the calls (costs tokens)
-    python -m evals --server-dir /captures -- docker run -i --rm -v "$DIR:/captures:ro" tshark-mcp
+    python -m evals --server-dir /captures -- docker run -i --rm -e TSHARK_MCP_TOOLSETS=all -v "$DIR:/captures:ro" tshark-mcp
 
 The exit status is 1 when fewer than --min-pass scenarios pass (default: all of them).
 """

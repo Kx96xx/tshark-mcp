@@ -95,7 +95,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/captures"
           python -m evals --captures "$RUNNER_TEMP/captures" --server-dir /captures -- \
             docker run --rm -i --read-only --tmpfs /tmp --cap-drop ALL --network none \
-              --security-opt no-new-privileges --memory 2g \
+              --security-opt no-new-privileges --memory 2g -e TSHARK_MCP_TOOLSETS=all \
               -v "$RUNNER_TEMP/captures:/captures:ro" tshark-mcp:ci
 
       - name: Healthcheck reports healthy
