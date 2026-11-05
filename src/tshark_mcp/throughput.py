@@ -77,6 +77,17 @@ class _Stream:
     first_frame: int | None = None
 
 
+AUTO_INTERVALS = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0, 21_600.0, 86_400.0)
+
+
+def auto_interval(span: float) -> float:
+    """The smallest round interval that covers ``span`` seconds in at most MAX_INTERVALS intervals."""
+    for step in AUTO_INTERVALS:
+        if span / step + 1 <= MAX_INTERVALS:
+            return step
+    return AUTO_INTERVALS[-1]
+
+
 def _bin() -> dict[str, float]:
     return defaultdict(float)
 

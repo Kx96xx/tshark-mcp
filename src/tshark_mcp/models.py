@@ -605,6 +605,7 @@ class CauseCode(TypedDict, total=False):
     avp: str
     explained: bool
     meaning: str
+    protocol: str
 
 
 class CauseLookupResult(RowsResult, total=False):
@@ -635,6 +636,7 @@ class CauseLookupResult(RowsResult, total=False):
     related: list[str]
     check_next: list[str]
     also: dict[str, str]
+    other_tables: list[dict[str, str]]
     note: str
     codes: list[CauseCode]
     query: str
@@ -2056,6 +2058,8 @@ class FindIdentifierResult(RowsResult, total=False):
     partially_scanned: list[str]
     files_not_scanned: int
     files_outside_window: int
+    subdirectories_with_captures: list[str]
+    note: str
 
 
 class IncidentFinding(TypedDict, total=False):
@@ -2162,6 +2166,7 @@ class ThroughputTimelineResult(RowsResult, total=False):
     totals, peaks, counters); ``issues``."""
     intervals: list[ThroughputInterval]
     interval_s: float
+    interval_auto: bool
     per: str
     display_filter: str
     summary: dict[str, Any]

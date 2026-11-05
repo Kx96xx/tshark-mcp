@@ -90,9 +90,20 @@ TABLES: dict[str, Table] = {
     "tp_status": Table("tp_status", "TS 23.040 9.2.3.15", data.TP_STATUS, next=("sms_over_ims(path) for the status report",)),
     "http_sbi": Table("http_sbi", "TS 29.500 5.2.7 and the service's own ProblemDetails table", data.HTTP_SBI,
                       next=("response_times(path, filter='http2') for the SBI exchange",)),
+    "dns": Table("dns", "RFC 1035 4.1.1, RFC 6895 2.3 (IANA DNS RCODEs)", data.DNS_RCODE,
+                 next=("dns_transactions(path) for the queries and the server per rcode",)),
+    "tls": Table("tls", "RFC 8446 6 (alert descriptions)", data.TLS_ALERT,
+                 next=("tls_handshakes(path) for the connection that sent the alert and who sent it",)),
+    "icmp": Table("icmp", "RFC 792, RFC 1812 5.2.7.1", data.ICMP,
+                  next=("icmp_errors(path) for the sender and the packet the error quotes",)),
+    "icmpv6": Table("icmpv6", "RFC 4443", data.ICMPV6, next=("icmp_errors(path)",)),
+    "http": Table("http", "RFC 9110 15 (RFC 6585 for 429, 431, 511)", data.HTTP_STATUS,
+                  next=("http_transactions(path, view='requests', status='{code}')",)),
 }
+NAS_TABLES = ("nas_emm", "nas_esm", "nas_5gmm", "nas_5gsm")
+"""``protocol="nas"`` looks a code up in each NAS cause table: the same number means different things."""
 
-PROTOCOLS: tuple[str, ...] = tuple(k for k in TABLES if k != "diameter_experimental")
+PROTOCOLS: tuple[str, ...] = tuple(k for k in TABLES if k != "diameter_experimental") + ("nas",)
 NOT_CODES: dict[str, str] = {
     "rtcp_xr": "RTCP XR carries quality metrics, not cause codes: use rtp_streams for loss, jitter and MOS",
 }
@@ -211,7 +222,8 @@ def check_protocol(protocol: Any) -> str:
     key = protocol.strip().lower().replace("-", "_")
     key = {"nas_eps_emm": "nas_emm", "emm": "nas_emm", "esm": "nas_esm", "5gmm": "nas_5gmm", "5gsm": "nas_5gsm",
            "gtp": "gtpv2", "gtpc": "gtpv2", "q.850": "q850", "sccp": "sccp_return", "tcap": "tcap_abort",
-           "sbi": "http_sbi", "tp": "tp_status", "camel": "camel_release"}.get(key, key)
+           "sbi": "http_sbi", "tp": "tp_status", "camel": "camel_release", "rcode": "dns", "tls_alert": "tls",
+           "alert": "tls", "icmp6": "icmpv6", "http_status": "http", "nas_eps": "nas", "nas_5gs": "nas"}.get(key, key)
     if key in NOT_CODES:
         raise ToolError("invalid_argument", f"{NOT_CODES[key]}. cause_lookup protocols: {', '.join(PROTOCOLS)}")
     if key not in PROTOCOLS:
@@ -260,6 +272,8 @@ def _name(table: Table, values: dict[str, Names], code: Any, group: str | None =
 def lookup(runner: Runner, protocol: str, code: Any, application: str | None = None,
            message: str | None = None) -> dict[str, Any]:
     proto = check_protocol(protocol)
+    if proto == "nas":
+        return _lookup_nas(runner, code, application, message)
     app = check_application(application)
     if app is not None and proto != "diameter":
         raise ToolError("invalid_argument", "application applies to protocol='diameter' only")
@@ -271,6 +285,11 @@ def lookup(runner: Runner, protocol: str, code: Any, application: str | None = N
         group, value = _group_code(proto, code)
         key = f"{group}:{value}"
         code_out: Any = key
+    elif proto in ("icmp", "icmpv6"):
+        m = re.fullmatch(r"\s*(\d{1,3})\s*[:/]\s*(\d{1,3})\s*", str(code))
+        if m is None:
+            raise ToolError("invalid_argument", f"{proto} codes are a type and a code, such as '3:13' (type 3, code 13)")
+        value = key = code_out = f"{int(m.group(1))}:{int(m.group(2))}"
     elif proto == "http_sbi":
         key = str(code).strip().upper()
         if not re.fullmatch(r"[A-Z0-9_]{2,64}", key):
@@ -376,9 +395,27 @@ def _codes(table: Table, values: dict[str, Names]) -> list[Any]:
     return list(dict.fromkeys(codes))
 
 
+def _lookup_nas(runner: Runner, code: Any, application: str | None, message: str | None) -> dict[str, Any]:
+    """``protocol="nas"``: the code in each NAS cause table (EMM, ESM, 5GMM, 5GSM). The result is the first
+    table that names it; ``other_tables`` lists the meaning of the same number in the others."""
+    if application is not None:
+        raise ToolError("invalid_argument", "application applies to protocol='diameter' only")
+    results = [lookup(runner, t, code, None, message) for t in NAS_TABLES]
+    named = [r for r in results if r.get("known")]
+    out = dict(named[0] if named else results[0])
+    others = [{"protocol": r["protocol"], "name": r["name"]} for r in named[1:]]
+    if others:
+        out["other_tables"] = others
+    out["note"] = ("protocol 'nas' searched EMM, ESM, 5GMM and 5GSM; the same number means something else in each: "
+                   "pass nas_emm, nas_esm, nas_5gmm or nas_5gsm to choose" + (f". {out['note']}" if out.get("note") else ""))
+    return out
+
+
 def search(runner: Runner, protocol: str, query: str, application: str | None = None) -> list[dict[str, Any]]:
     """Codes of ``protocol`` whose code, name, meaning or typical causes hold every word of ``query``."""
     proto = check_protocol(protocol)
+    if proto == "nas":
+        return [{**row, "protocol": t} for t in NAS_TABLES for row in search(runner, t, query, application)]
     check_application(application)
     if not isinstance(query, str) or not query.strip() or len(query) > MAX_QUERY or re.search(r"[\x00-\x1f\x7f]", query):
         raise ToolError("invalid_argument", f"query must be 1 to {MAX_QUERY} printable characters")

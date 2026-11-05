@@ -646,6 +646,125 @@ HTTP_SBI: dict[str, Entry] = {
     "UNSPECIFIED_NF_FAILURE": {"meaning": "Unspecified failure in the NF.", "typical": (), "ref": "TS 29.500 5.2.7.2"},
 }
 
+# ----------------------------------------------------------------- network protocols (names curated)
+# DNS RCODEs: RFC 1035 4.1.1, RFC 2136, RFC 6895 2.3 (IANA DNS RCODEs). 16-23 exist only in TSIG/TKEY/OPT.
+DNS_RCODE: dict[int, Entry] = {
+    0: {"name": "NOERROR", "meaning": "The query was answered (the answer section may still be empty: NODATA).", "typical": ()},
+    1: {"name": "FORMERR", "meaning": "The server could not parse the query.", "typical": ("a middlebox rewrote or cut the query", "EDNS options the server does not accept")},
+    2: {"name": "SERVFAIL", "meaning": "The server failed to answer: it could not reach the authoritative servers or DNSSEC validation failed.", "typical": ("upstream resolver or authoritative server down", "DNSSEC validation failure", "resolver overloaded")},
+    3: {"name": "NXDOMAIN", "meaning": "The name does not exist.", "typical": ("a typo or a stale configuration", "search-list suffixes tried first", "a blocked domain answered by a filtering resolver")},
+    4: {"name": "NOTIMP", "meaning": "The server does not implement this kind of query.", "typical": ()},
+    5: {"name": "REFUSED", "meaning": "The server refused to answer for policy reasons.", "typical": ("recursion not allowed for this client", "an ACL on the resolver")},
+    6: {"name": "YXDOMAIN", "meaning": "Dynamic update: a name that should not exist does (RFC 2136).", "typical": ()},
+    7: {"name": "YXRRSET", "meaning": "Dynamic update: an RR set that should not exist does (RFC 2136).", "typical": ()},
+    8: {"name": "NXRRSET", "meaning": "Dynamic update: an RR set that should exist does not (RFC 2136).", "typical": ()},
+    9: {"name": "NOTAUTH", "meaning": "The server is not authoritative for the zone, or the TSIG key is not accepted.", "typical": ()},
+    10: {"name": "NOTZONE", "meaning": "Dynamic update: a name is not within the zone (RFC 2136).", "typical": ()},
+    16: {"name": "BADVERS/BADSIG", "meaning": "EDNS version not supported, or TSIG signature failure (RFC 6891, RFC 8945).", "typical": ()},
+    17: {"name": "BADKEY", "meaning": "TSIG key not recognised (RFC 8945).", "typical": ()},
+    18: {"name": "BADTIME", "meaning": "TSIG signature out of the time window: the clocks differ (RFC 8945).", "typical": ("clock skew",)},
+    19: {"name": "BADMODE", "meaning": "Bad TKEY mode (RFC 2930).", "typical": ()},
+    20: {"name": "BADNAME", "meaning": "Duplicate key name (RFC 2930).", "typical": ()},
+    21: {"name": "BADALG", "meaning": "Algorithm not supported (RFC 2930).", "typical": ()},
+    22: {"name": "BADTRUNC", "meaning": "Bad truncation (RFC 8945).", "typical": ()},
+    23: {"name": "BADCOOKIE", "meaning": "Bad or missing server cookie (RFC 7873): resend with the cookie the server returned.", "typical": ()},
+}
+
+# TLS alert descriptions: RFC 8446 6 (and RFC 5246 7.2 for the TLS 1.2-only ones).
+TLS_ALERT: dict[int, Entry] = {
+    0: {"name": "close_notify", "meaning": "Orderly close of the connection, not an error.", "typical": ()},
+    10: {"name": "unexpected_message", "meaning": "A message arrived out of order in the handshake or record layer.", "typical": ("a middlebox injecting data", "an implementation bug")},
+    20: {"name": "bad_record_mac", "meaning": "A record failed authentication: corrupted on the way or wrong keys.", "typical": ("a middlebox rewriting payload", "packet corruption")},
+    21: {"name": "decryption_failed", "meaning": "TLS 1.0 only; must not be sent by newer versions.", "typical": ()},
+    22: {"name": "record_overflow", "meaning": "A record was longer than allowed.", "typical": ()},
+    40: {"name": "handshake_failure", "meaning": "No acceptable set of security parameters: no common cipher suite, group or signature algorithm.", "typical": ("legacy client or server with old cipher suites only", "TLS version pinned on one side")},
+    42: {"name": "bad_certificate", "meaning": "A certificate was corrupt or its signature did not verify.", "typical": ()},
+    43: {"name": "unsupported_certificate", "meaning": "A certificate of an unsupported type.", "typical": ()},
+    44: {"name": "certificate_revoked", "meaning": "A certificate was revoked by its signer.", "typical": ()},
+    45: {"name": "certificate_expired", "meaning": "A certificate has expired or is not yet valid.", "typical": ("an expired server certificate", "a wrong clock on the client")},
+    46: {"name": "certificate_unknown", "meaning": "Some other certificate problem made it unacceptable.", "typical": ("a private CA the client does not trust",)},
+    47: {"name": "illegal_parameter", "meaning": "A handshake field was out of range or inconsistent.", "typical": ()},
+    48: {"name": "unknown_ca", "meaning": "The certificate chain does not lead to a trusted CA.", "typical": ("missing intermediate certificate", "a TLS-inspecting proxy with its own CA")},
+    49: {"name": "access_denied", "meaning": "Valid certificate, but access control refused the handshake.", "typical": ()},
+    50: {"name": "decode_error", "meaning": "A message could not be decoded.", "typical": ()},
+    51: {"name": "decrypt_error", "meaning": "A handshake cryptographic operation failed (signature, Finished).", "typical": ()},
+    70: {"name": "protocol_version", "meaning": "The TLS version offered is not supported by the peer.", "typical": ("a client offering only TLS 1.0/1.1 to a modern server",)},
+    71: {"name": "insufficient_security", "meaning": "The server needs stronger ciphers than the client offers.", "typical": ()},
+    80: {"name": "internal_error", "meaning": "An error unrelated to the peer or the protocol (out of memory, a bug).", "typical": ()},
+    86: {"name": "inappropriate_fallback", "meaning": "A client retried with a lower version although the server supports a higher one (RFC 7507).", "typical": ()},
+    90: {"name": "user_canceled", "meaning": "The handshake was cancelled for a reason not related to a protocol failure.", "typical": ()},
+    100: {"name": "no_renegotiation", "meaning": "TLS 1.2 and older: renegotiation refused.", "typical": ()},
+    109: {"name": "missing_extension", "meaning": "A mandatory extension for the offered version was absent.", "typical": ()},
+    110: {"name": "unsupported_extension", "meaning": "An extension that the peer did not offer or does not allow here.", "typical": ()},
+    112: {"name": "unrecognized_name", "meaning": "The server has no certificate for the SNI the client asked for.", "typical": ("wrong host name or a missing virtual host",)},
+    113: {"name": "bad_certificate_status_response", "meaning": "The stapled OCSP response was invalid.", "typical": ()},
+    115: {"name": "unknown_psk_identity", "meaning": "No acceptable PSK identity.", "typical": ()},
+    116: {"name": "certificate_required", "meaning": "The server requires a client certificate and none was sent (mutual TLS).", "typical": ()},
+    120: {"name": "no_application_protocol", "meaning": "No ALPN protocol in common (for example h2 only against http/1.1 only).", "typical": ()},
+}
+
+# ICMP type:code (RFC 792, RFC 1812 5.2.7.1) and ICMPv6 type:code (RFC 4443), looked up as "type:code".
+ICMP: dict[str, Entry] = {
+    "0:0": {"name": "echo reply", "meaning": "Answer to an echo request (ping).", "typical": ()},
+    "8:0": {"name": "echo request", "meaning": "Ping.", "typical": ()},
+    "3:0": {"name": "net unreachable", "meaning": "A router has no route to the destination network.", "typical": ("missing route", "a route withdrawn")},
+    "3:1": {"name": "host unreachable", "meaning": "The last router could not reach the host (no ARP answer).", "typical": ("host down", "wrong address")},
+    "3:2": {"name": "protocol unreachable", "meaning": "The host does not support the transport protocol.", "typical": ()},
+    "3:3": {"name": "port unreachable", "meaning": "Nothing listens on that UDP port on the host.", "typical": ("service down", "wrong port")},
+    "3:4": {"name": "fragmentation needed", "meaning": "The packet is too large for the next hop and has DF set; the error carries the MTU (path MTU discovery).", "typical": ("a tunnel lowering the MTU",)},
+    "3:9": {"name": "net administratively prohibited", "meaning": "A firewall forbids traffic to that network.", "typical": ()},
+    "3:10": {"name": "host administratively prohibited", "meaning": "A firewall forbids traffic to that host.", "typical": ()},
+    "3:13": {"name": "communication administratively prohibited", "meaning": "A filter rejected the packet (RFC 1812).", "typical": ("firewall or ACL reject rule",)},
+    "11:0": {"name": "TTL exceeded in transit", "meaning": "The TTL reached 0 at a router: traceroute, or a routing loop.", "typical": ("traceroute", "routing loop")},
+    "11:1": {"name": "fragment reassembly time exceeded", "meaning": "The receiver did not get every fragment in time.", "typical": ("lost fragments",)},
+}
+ICMPV6: dict[str, Entry] = {
+    "128:0": {"name": "echo request", "meaning": "Ping.", "typical": ()},
+    "129:0": {"name": "echo reply", "meaning": "Answer to an echo request.", "typical": ()},
+    "1:0": {"name": "no route", "meaning": "No route to the destination.", "typical": ()},
+    "1:1": {"name": "administratively prohibited", "meaning": "A filter forbids traffic to the destination.", "typical": ("firewall",)},
+    "1:3": {"name": "address unreachable", "meaning": "The destination address could not be resolved on the last link (no ND answer).", "typical": ()},
+    "1:4": {"name": "port unreachable", "meaning": "Nothing listens on that port.", "typical": ()},
+    "2:0": {"name": "packet too big", "meaning": "The packet is larger than the next-hop MTU; carries the MTU (IPv6 path MTU discovery).", "typical": ("a tunnel lowering the MTU", "ICMPv6 filtered elsewhere breaks PMTUD")},
+    "3:0": {"name": "hop limit exceeded", "meaning": "The hop limit reached 0: traceroute, or a routing loop.", "typical": ()},
+    "3:1": {"name": "fragment reassembly time exceeded", "meaning": "Not every fragment arrived in time.", "typical": ()},
+}
+
+# HTTP status codes: RFC 9110 15 (RFC 6585 for 429, 431, 511).
+HTTP_STATUS: dict[int, Entry] = {
+    100: {"name": "Continue", "meaning": "Send the request body.", "typical": ()},
+    101: {"name": "Switching Protocols", "meaning": "Upgrade accepted (WebSocket, h2c).", "typical": ()},
+    200: {"name": "OK", "meaning": "Success.", "typical": ()},
+    201: {"name": "Created", "meaning": "A resource was created.", "typical": ()},
+    204: {"name": "No Content", "meaning": "Success without a body.", "typical": ()},
+    206: {"name": "Partial Content", "meaning": "A range of the resource was returned.", "typical": ()},
+    301: {"name": "Moved Permanently", "meaning": "Permanent redirect.", "typical": ()},
+    302: {"name": "Found", "meaning": "Temporary redirect.", "typical": ()},
+    304: {"name": "Not Modified", "meaning": "The cached copy is still valid.", "typical": ()},
+    307: {"name": "Temporary Redirect", "meaning": "Temporary redirect keeping the method.", "typical": ()},
+    308: {"name": "Permanent Redirect", "meaning": "Permanent redirect keeping the method.", "typical": ()},
+    400: {"name": "Bad Request", "meaning": "The server could not parse or accept the request.", "typical": ("malformed request", "invalid parameters")},
+    401: {"name": "Unauthorized", "meaning": "Authentication required or failed.", "typical": ("missing or expired token",)},
+    403: {"name": "Forbidden", "meaning": "Authenticated but not allowed.", "typical": ("permissions", "a WAF rule")},
+    404: {"name": "Not Found", "meaning": "No resource at that path.", "typical": ("wrong URL", "a route not deployed")},
+    405: {"name": "Method Not Allowed", "meaning": "The method is not supported for this resource.", "typical": ()},
+    408: {"name": "Request Timeout", "meaning": "The server gave up waiting for the request.", "typical": ("slow client", "a stalled upload")},
+    409: {"name": "Conflict", "meaning": "The request conflicts with the resource state.", "typical": ()},
+    413: {"name": "Content Too Large", "meaning": "The request body is larger than the server accepts.", "typical": ()},
+    414: {"name": "URI Too Long", "meaning": "The request target is too long.", "typical": ()},
+    415: {"name": "Unsupported Media Type", "meaning": "The Content-Type is not accepted.", "typical": ()},
+    429: {"name": "Too Many Requests", "meaning": "Rate limited (RFC 6585); Retry-After says when to retry.", "typical": ("client retry storm", "quota exceeded")},
+    431: {"name": "Request Header Fields Too Large", "meaning": "Headers too large (RFC 6585).", "typical": ("oversized cookies",)},
+    500: {"name": "Internal Server Error", "meaning": "The server failed while handling the request.", "typical": ("application exception",)},
+    501: {"name": "Not Implemented", "meaning": "The server does not support the functionality.", "typical": ()},
+    502: {"name": "Bad Gateway", "meaning": "A proxy or load balancer got an invalid answer from the upstream server.", "typical": ("upstream crashed or closed the connection", "TLS or protocol mismatch to the upstream")},
+    503: {"name": "Service Unavailable", "meaning": "The server is overloaded or down for maintenance.", "typical": ("no healthy upstream", "overload")},
+    504: {"name": "Gateway Timeout", "meaning": "A proxy did not get an answer from the upstream in time.", "typical": ("slow upstream", "network loss between proxy and upstream")},
+    505: {"name": "HTTP Version Not Supported", "meaning": "The HTTP version is not supported.", "typical": ()},
+    511: {"name": "Network Authentication Required", "meaning": "A captive portal wants a login (RFC 6585).", "typical": ()},
+}
+
+
 # Codes tshark names that have no curated text yet. Each still comes back with tshark's
 # name and ``explained: false``. Codes tshark marks reserved or spare are not listed.
 UNEXPLAINED: dict[str, frozenset[Any]] = {}  # filled in below by _unexplained()
