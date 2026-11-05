@@ -45,6 +45,7 @@ EXPECTED_TOOLS = {
     "export_subset",
     "tls_certificates",
     "quic_connections",
+    "nas_procedures",
 }
 
 
@@ -100,6 +101,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
         ("call_kpis", {"path": f"{d}/voice/call_mix.pcap", "group_by": "destination_prefix"}),
         ("call_legs", {"path": f"{d}/voice/call_legs.pcap", "call_id": "legs-a1@ue.example"}),
+        ("nas_procedures", {"path": f"{d}/ran/s1ap_nas.pcap", "imsi": pcapgen.NAS_IMSI_B}),
         ("diameter_avps", {"path": f"{d}/ims/diameter_apps.pcap", "command_code": 265, "detail": "key"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
@@ -294,6 +296,9 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert stitched["legs_count"] == 3 and stitched["where_it_failed"]["status"] == 480
     assert any(m["rewritten"] and m["sent"]["status"] == 503 for m in stitched["status_mapping"])
     assert {r["leg"] for r in stitched["ladder"]} == {0, 1, 2}
+    nas = by_name[("nas_procedures", ("imsi", "path"))]
+    (nas_ue,) = nas["ues"]
+    assert nas_ue["procedures"][0]["cause"]["code"] == 15 and nas_ue["verdict"].startswith("attach rejected")
     roam = by_name[("roaming_attach_check", ("imsi", "path"))]
     (attempt,) = roam["attempts"]
     assert attempt["first_failure"]["code"] == 78 and "Create Session failed" in attempt["verdict"]

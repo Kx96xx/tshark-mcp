@@ -114,6 +114,8 @@ FORBIDDEN_FLAGS: frozenset[str] = frozenset({
 # Lua path, a temp directory) is refused like any other forbidden flag.
 ALLOWED_PREFERENCES: frozenset[str] = frozenset({
     "ip.check_checksum:TRUE", "tcp.check_checksum:TRUE", "udp.check_checksum:TRUE",
+    # nas_procedures: read NAS sent with null ciphering (EEA0) only when asked, the same on every tshark.
+    "nas-eps.null_decipher:TRUE", "nas-eps.null_decipher:FALSE",
 })
 
 

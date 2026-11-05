@@ -165,6 +165,7 @@ class TestRegistration:
             "tls_certificates",
             "quic_connections",
             "call_legs",
+            "nas_procedures",
         ])
         by_name = {t.name: t for t in tools}
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_float, to_int, validate_fields,
@@ -82,7 +82,8 @@ diameter_transactions, diameter_avps (the AVPs), gtp_sessions, gtp_ies (the IEs)
 gtpv1_sessions,
 pfcp_sessions, sigtran_messages or sip_dialogs with imsi, session_id, call_id,
 ... or a display filter. A roamer that cannot attach or gets no bearer:
-roaming_attach_check (the first failure). Voice: sip_call_detail (one call), media_path_check
+roaming_attach_check (the first failure). Attach, TAU or service request
+rejected on S1-MME: nas_procedures. Voice: sip_call_detail (one call), media_path_check
 (one-way audio, 488), rtp_streams (loss, jitter, MOS), dtmf_events, call_kpis
 (ASR, NER, PDD, ACD per peer, trunk, prefix or interval). IMS:
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
@@ -2807,6 +2808,77 @@ def call_legs(path: str, call_id: str | None = None, number: str | None = None, 
         return _envelope("calls", calls, cap, scan, offset=offset, summary=summary, method=calllegs.METHOD)
     return _guarded("call_legs", {"path": path, "call_id": call_id, "number": number, "window_s": window_s,
                                   "ladder": ladder, "filter": filter, "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="NAS EPS procedures per UE", annotations=READ_ONLY)
+def nas_procedures(path: str, imsi: str | None = None, guti: str | int | None = None, ue_id: str | None = None,
+                   procedure: str | None = None, null_cipher: bool = False, filter: str | None = None,
+                   limit: int = 100, offset: int = 0) -> models.NasProceduresResult:
+    """EMM and ESM procedures per UE from S1AP and NAS EPS (S1-MME): attach, tracking
+    area update, service request, detach, PDN connectivity, dedicated bearer activation,
+    bearer modification and deactivation, S1 and X2 handover, UE context release. One row
+    per UE (`imsi` and `guti` seen in clear, S1 `contexts` with MME/eNB UE S1AP ids and
+    release cause) with `procedures` in time order: `kind`, `outcome` (accepted,
+    rejected, abandoned, in_progress), EMM/ESM `cause` and `s1ap_cause` named with their
+    TS 24.301 / TS 36.413 reference, `timing_ms`, `steps` (each NAS and S1AP message with
+    frame, direction and security header); `ciphered_count`, `pending_paging` (Paging
+    with no service request) and a `verdict`. Narrow with `imsi`, `guti` (M-TMSI, int or
+    0x hex), `ue_id` ("mme_ue_s1ap_id:enb_ue_s1ap_id") or `procedure` (a kind).
+
+    Details: Contexts are joined into one UE by IMSI or by the M-TMSI an Attach or TAU
+    Accept assigned and a later S-TMSI or GUTI names. NAS with security header 2 or 4 is
+    counted in `ciphered_count`, never guessed; `null_cipher=true` reads it only for a UE
+    whose Security Mode Command in the capture selected EEA0 (the preference
+    nas-eps.null_decipher, set the same way on every tshark), and `null_cipher` in the
+    result says so. A procedure without an answer is in_progress when the capture ended
+    inside its NAS timer (T3410/T3430 15 s, T3417 5 s, ESM 8 s), else abandoned.
+    `summary` counts procedures per kind and outcome, reject causes, ciphered messages
+    and paging. NGAP and NAS 5GS are not read yet. Content-free: identities, codes,
+    timings and frames; no keys, authentication vectors, APN or PCO contents."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        tmsi = None
+        if guti is not None and str(guti).strip() != "":
+            try:
+                tmsi = lint_teid(guti)
+            except ToolError:
+                raise ToolError("invalid_argument", f"guti must be the 32-bit M-TMSI (decimal or 0x hex), got {echo(guti)}") from None
+        pair = None
+        if ue_id:
+            m = re.fullmatch(r"\s*(\d{1,10})\s*:\s*(\d{1,8})\s*", str(ue_id))
+            if not m:
+                raise ToolError("invalid_argument", "ue_id must be 'mme_ue_s1ap_id:enb_ue_s1ap_id', for example '101:1', "
+                                f"got {echo(ue_id)}")
+            pair = (int(m.group(1)), int(m.group(2)))
+        if procedure is not None and procedure not in nasproc.KINDS:
+            raise ToolError("invalid_argument", f"unknown procedure {echo(procedure)}; one of: {', '.join(nasproc.KINDS)}")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        pref = nasproc.PREF_NULL_DECIPHER_ON if null_cipher else nasproc.PREF_NULL_DECIPHER_OFF
+        stdout, scan = _fields_run(capture, _filter(filter, base="s1ap"), nasproc.FIELDS, st.limits.max_scan_packets,
+                                   extra_args=("-o", pref))
+        end, _ = _last_packet_time(capture, stdout)
+        rows = nasproc.parse(stdout)
+        ues, extra = nasproc.build(rows, end, bool(null_cipher))
+        explained: dict[tuple[str, Any], Any] = {}
+
+        def explain(protocol: str, code: Any) -> Any:
+            if (protocol, code) not in explained:
+                explained[(protocol, code)] = causes.brief(st.runner, protocol, code)
+            return explained[(protocol, code)]
+        nasproc.explain(ues, explain)
+        summary = nasproc.summary(ues, extra)
+        ues = nasproc.select(ues, imsi_d, tmsi, pair, procedure)
+        nc = {"requested": bool(null_cipher), "preference": pref,
+              "applied_to_ues": sum(1 for u in ues if u.get("null_ciphering") and null_cipher)}
+        if null_cipher:
+            nc["note"] = ("ciphered NAS was read only for UEs whose Security Mode Command selected EEA0; "
+                          "other ciphered messages stay in ciphered_count")
+        return _envelope("ues", ues, cap, scan, offset=offset, summary=summary, null_cipher=nc, method=nasproc.METHOD)
+    return _guarded("nas_procedures", {"path": path, "imsi": imsi, "guti": guti, "ue_id": ue_id,
+                                       "procedure": procedure, "null_cipher": null_cipher, "filter": filter,
+                                       "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)

@@ -38,6 +38,7 @@ def pcap_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     # Voice captures sit in a subdirectory: directory scans of the signalling captures are unchanged.
     pcapgen.write_voice_pcaps(directory / "voice")
     pcapgen.write_ims_pcaps(directory / "ims")
+    pcapgen.write_ran_pcaps(directory / "ran")
     return directory
 
 

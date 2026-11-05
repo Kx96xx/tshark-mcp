@@ -179,9 +179,9 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-Fifty tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Fifty-one tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
-compact by default (131 KB instead of 330 KB at 46 tools); each tool's full schema is the resource `schema://tools/<name>`, and
+compact by default (148 KB instead of 375 KB at 51 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
@@ -237,6 +237,7 @@ what it cost in `tokens_estimate`.
 | `sctp_associations` | Handshake, heartbeats, retransmissions, aborts per association |
 | `sigtran_messages` | M3UA, SCCP, TCAP and MAP with operation names, IMSI and MSISDN |
 | `trace_subscriber` | One timeline for a subscriber across Diameter, GTP, PFCP, MAP and SIP |
+| `nas_procedures` | Attach, TAU, service request, PDN and bearer procedures per UE from S1AP and NAS EPS: outcome, EMM/ESM and S1AP causes named, timing, ciphered messages counted, unanswered paging |
 | `roaming_attach_check` | Why a roamer cannot attach or get a bearer: each attempt's steps, the ULA subscription held against the Create Session, checks and a verdict |
 | `compare_captures` | A working and a failing capture side by side, with the first divergence |
 
@@ -295,7 +296,7 @@ pytest
 python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 1000 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 1023 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

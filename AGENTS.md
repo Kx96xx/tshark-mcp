@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. Fifty
+when the operator enables `--export-dir`. Fifty-one
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -58,6 +58,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | Did the capture box drop packets? Which snaplen, filter, interfaces, writer? | `capture_metadata` (pcapng interface statistics, read without tshark) |
 | Can I trust loss and retransmission numbers from this file? | `capture_quality` (read its `verdict` before blaming the network) |
 | Everything that happened to one subscriber | `trace_subscriber(path, imsi=... or msisdn=...)` |
+| Attach, TAU or service request rejected on S1-MME, bearer refused, paging not answered? | `nas_procedures(path, imsi=... or guti=...)`: procedures per UE with outcome, EMM/ESM/S1AP cause named, `ciphered_count`, `pending_paging` |
 | Why can this roamer not attach, or attach but get no bearer? | `roaming_attach_check(path, imsi=..., home_plmn=...)`: attempts, subscription versus request, `checks`, `first_failure`, `verdict` |
 | Why did the attach or Diameter procedure fail? | `diameter_sessions(path, imsi=...)`, then `diameter_avps(path, imsi=..., detail="key")` for the AVPs behind a result code |
 | Why did charging, the VoLTE bearer, IMS registration, an Sh read or the IMEI check fail? | `diameter_avps(path, command_code=272 / 265 / 300-303 / 306 / 324)`: the `gy`, `rx`, `cx`, `sh` or `s13` digest, failed codes `explained` |
@@ -192,6 +193,7 @@ src/tshark_mcp/
   rates.py compare.py avps.py packets.py expert.py models.py (TypedDict output schemas)
   causes.py     cause_lookup; names from tshark -G values, text in causedata.py
   gtpies.py     gtp_ies: GTPv2-C IE key view, full tree and likely causes
+  nasproc.py    nas_procedures: S1 UE contexts, UEs and EMM/ESM procedures from S1AP and NAS EPS
   roaming.py    roaming_attach_check: attempts, subscription against request, checks and verdict
   prompts.py    the six MCP prompts (guided workflows) and path completion for their arguments
   window.py     start/end on every capture tool: parsing, per-capture resolution, the filter clause

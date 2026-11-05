@@ -85,6 +85,37 @@ the project uses [semantic versioning](https://semver.org/).
   (Data-Reference names, Sh-User-Data size and element names) and `s13` (IMEI, Equipment-Status).
   Failed Result-Codes and Experimental-Result-Codes carry `explained` from cause_lookup. Rx
   Experimental-Result-Codes 4261 and 5061 to 5068 are named in every Diameter tool.
+- `nas_procedures`: EMM, ESM and S1AP procedures per UE from S1-MME captures (attach, TAU,
+  service request, detach, PDN connectivity, dedicated bearer activation, bearer modification and
+  deactivation, S1 and X2 handover, UE context release). S1 contexts are joined into UEs by IMSI
+  or assigned M-TMSI; each procedure has an outcome, EMM/ESM and S1AP causes named through
+  cause_lookup, timing and its steps; ciphered NAS is counted, not guessed (`null_cipher=true` reads
+  EEA0 traffic), and a Paging nobody answered is listed. `nas-eps.null_decipher` joins the allowed
+  preferences.
+- `tunnels_overview`: every GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE, ESP, AH, NAT-T),
+  WireGuard, OpenVPN, L2TP and GTP-U tunnel in a capture with its outer endpoints, key or VNI,
+  packets and bytes each way, inner protocols, tunnel overhead, DF packets above the path MTU and
+  inner SYN MSS against the overhead; IKE exchanges and error notifies, WireGuard and OpenVPN
+  handshakes, ESP SAs per direction; issues such as unanswered WireGuard initiations, a missing
+  return SA or an MSS that does not fit once tunnelled.
+- `export_subset`: the first and only write tool, off unless the server is started with
+  `--export-dir DIR`. It writes the packets matching a display filter (and start/end) to a new
+  pcapng file in that directory for a vendor or another team: never overwrites, never follows a
+  planted symlink, sanitised names, `--export-max-mb` (50) and `max_packets` caps, `headers_only`
+  or `snaplen` to cut payloads with editcap, sha256 in the result and a `write` audit record. The
+  export directory may not overlap an `--allow-dir` unless `--export-inside-allow-dir`; `-w` and
+  `-F` stay refused on every other tshark run.
+- `tls_certificates`: the certificate chains servers sent in TLS 1.2 and older handshakes, per
+  server, SNI and leaf, with every certificate parsed from DER: subject, issuer, SANs, validity and
+  days left, key and signature algorithm, self-signed, fingerprint; whether the chain is in order
+  or misses the intermediate, whether the name matches the SNI, OCSP stapling, the TLS versions
+  and alerts seen and how many clients refused the certificate. TLS 1.3 connections are counted
+  as skipped because their certificates are encrypted. No private keys, no decryption.
+- `quic_connections`: QUIC / HTTP/3 connections read from their clear headers (no keys needed):
+  version, Retry, Version Negotiation with the versions the server offered, Handshake and 1-RTT
+  packets both ways, 0-RTT, CONNECTION_CLOSE when in clear, migration to a new address or port,
+  a spin-bit RTT, the outcome per connection, the TCP fallback after a failed attempt and a
+  `udp_443_blocked_likely` summary flag.
 
 ### Changed
 
@@ -93,34 +124,6 @@ the project uses [semantic versioning](https://semver.org/).
   `withheld (authentication material)` in both views, and Sh-User-Data is reduced to its size and
   element names. Enumerations, flags and text values are also read when a tshark dictionary spells
   the AVP with a `3GPP-` prefix.
-
-- `tunnels_overview`: every GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE, ESP, AH, NAT-T),
-  WireGuard, OpenVPN, L2TP and GTP-U tunnel in a capture with its outer endpoints, key or VNI,
-  packets and bytes each way, inner protocols, tunnel overhead, DF packets above the path MTU and
-  inner SYN MSS against the overhead; IKE exchanges and error notifies, WireGuard and OpenVPN
-  handshakes, ESP SAs per direction; issues such as unanswered WireGuard initiations, a missing
-  return SA or an MSS that does not fit once tunnelled.
-
-- `export_subset`: the first and only write tool, off unless the server is started with
-  `--export-dir DIR`. It writes the packets matching a display filter (and start/end) to a new
-  pcapng file in that directory for a vendor or another team: never overwrites, never follows a
-  planted symlink, sanitised names, `--export-max-mb` (50) and `max_packets` caps, `headers_only`
-  or `snaplen` to cut payloads with editcap, sha256 in the result and a `write` audit record. The
-  export directory may not overlap an `--allow-dir` unless `--export-inside-allow-dir`; `-w` and
-  `-F` stay refused on every other tshark run.
-
-- `tls_certificates`: the certificate chains servers sent in TLS 1.2 and older handshakes, per
-  server, SNI and leaf, with every certificate parsed from DER: subject, issuer, SANs, validity and
-  days left, key and signature algorithm, self-signed, fingerprint; whether the chain is in order
-  or misses the intermediate, whether the name matches the SNI, OCSP stapling, the TLS versions
-  and alerts seen and how many clients refused the certificate. TLS 1.3 connections are counted
-  as skipped because their certificates are encrypted. No private keys, no decryption.
-
-- `quic_connections`: QUIC / HTTP/3 connections read from their clear headers (no keys needed):
-  version, Retry, Version Negotiation with the versions the server offered, Handshake and 1-RTT
-  packets both ways, 0-RTT, CONNECTION_CLOSE when in clear, migration to a new address or port,
-  a spin-bit RTT, the outcome per connection, the TCP fallback after a failed attempt and a
-  `udp_443_blocked_likely` summary flag.
 
 ### Fixed
 - PyPI page: README links are absolute, so they work on pypi.org as well as GitHub; a test keeps them absolute and pointing at real files. More project links (documentation, changelog, releases).

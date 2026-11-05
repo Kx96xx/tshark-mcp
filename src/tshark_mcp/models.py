@@ -736,6 +736,46 @@ class CallLegsResult(RowsResult, total=False):
     calls: list[StitchedCall]
     summary: dict[str, Any]
     method: dict[str, str]
+class NasProcedure(TypedDict, total=False):
+    """One EMM, ESM or S1AP procedure of a UE with its outcome, causes and steps."""
+    __pydantic_config__ = _EXTRA_OK
+    kind: str
+    outcome: str
+    start_frame: int
+    end_frame: int
+    time: str
+    timing_ms: float
+    cause: dict[str, Any]
+    esm_cause: dict[str, Any]
+    s1ap_cause: dict[str, Any]
+    ebi: int
+    completed: bool
+    note: str
+    steps: list[dict[str, Any]]
+
+
+class NasUe(TypedDict, total=False):
+    """One UE: its S1 contexts, identities seen in clear and procedures in time order."""
+    __pydantic_config__ = _EXTRA_OK
+    ue: int
+    imsi: str | None
+    guti: list[dict[str, Any]]
+    contexts: list[dict[str, Any]]
+    first_frame: int | None
+    procedures: list[NasProcedure]
+    ciphered_count: int
+    null_ciphering: bool
+    pending_paging: list[dict[str, Any]]
+    verdict: str
+
+
+class NasProceduresResult(RowsResult, total=False):
+    ues: list[NasUe]
+    summary: dict[str, Any]
+    null_cipher: dict[str, Any]
+    method: dict[str, str]
+
+
 class GtpIeTransaction(TypedDict, total=False):
     """One paired GTPv2-C transaction with its IEs (``request_ies``/``response_ies``:
     key view or full tree); ``likely_causes`` explains a reject from the request."""

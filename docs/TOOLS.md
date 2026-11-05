@@ -72,12 +72,13 @@ Every successful result carries `tokens_estimate`: its JSON size divided by 3.6.
 | `sigtran_messages(path, filter, limit, offset)` | M3UA/SCCP/TCAP/MAP: SCCP type and segmentation, calling/called GT and SSN, point codes, TCAP primitive and ids, components with MAP operation name, IMSI, MSISDN; Begins linked to their End |
 | `compare_captures(path_a, path_b, imsi, msisdn, imsi_b, msisdn_b, collapse_repeats, limit, offset)` | A working and a failing capture of the same procedure side by side: both message ladders (the subscriber trace, or every transaction without an identity), keepalives dropped, identical retries merged with a `repeat` count, aligned by protocol and message; `first_divergence`, every step as same, changed, replaced, only_a or only_b, the `differences` of changed steps (result, pairing, key Diameter AVPs, GTP IEs; identities ignored) and the largest round-trip and offset gaps |
 | `trace_subscriber(path, imsi, msisdn, limit, offset)` | One time-ordered timeline for a subscriber across Diameter, GTPv2-C and GTPv1-C (following control-plane TEIDs), PFCP (by IMSI or the UE address GTP allocated, then by SEID), MAP and SIP, each row with protocol, message, result and pairing; all passes share one time budget and a spent budget returns the partial timeline with `truncated` |
+| `nas_procedures(path, imsi, guti, ue_id, procedure, null_cipher, filter, limit, offset)` | EMM, ESM and S1AP procedures per UE from S1-MME captures. S1 UE contexts (an InitialUEMessage opens one on its association and eNB-UE-S1AP-ID, the MME-UE-S1AP-ID joins on the first downlink message, UE Context Release Complete closes it) are joined into one UE by IMSI or by the M-TMSI an Attach or TAU Accept assigned and a later S-TMSI or GUTI names. Per UE: `imsi`, `guti` (MME code and M-TMSI), `contexts` (id pair, eNB, first and last frame, `release_cause` as group:value), `procedures` in time order and a `verdict`. Procedure kinds: attach, tau, service_request, detach, pdn_connectivity, dedicated_bearer_activation, bearer_modification, bearer_deactivation, pdn_disconnect, bearer_resource_allocation, bearer_resource_modification, handover (S1 with HandoverType, or X2 path switch), ue_context_release (who asked, cause). Each: `outcome` (accepted on the Accept and Complete or, for a service request, the Initial Context Setup Response; rejected on a Reject, a Setup or Preparation Failure, an Authentication or Security mode reject; abandoned when another procedure or a release came first or its timer ran out; in_progress when the capture ended inside T3410/T3430 15 s, T3417 5 s or the ESM 8 s), EMM or ESM `cause` and `esm_cause` (an ESM reject inside an Attach Reject), `s1ap_cause` (group and value), each named with meaning and reference from cause_lookup (TS 24.301 Annex A/B, TS 36.413 9.2.1.3), `timing_ms`, `completed` for an accepted attach, `paging_response`, and `steps` (frame, direction, S1AP message, NAS message, security header, causes). NAS with security header 2 or 4 is counted in `ciphered_count` and not read; `null_cipher=true` sets nas-eps.null_decipher and reads it only for a UE whose Security Mode Command selected EEA0. `pending_paging`: a Paging for the UE's S-TMSI with no service request within 10 s. `summary`: UEs, procedures per kind and outcome, reject causes, ciphered messages, pagings. NGAP and NAS 5GS are not read yet |
 | `roaming_attach_check(path, imsi, msisdn, home_plmn, limit, offset)` | Why a roamer cannot attach or get a bearer. The subscriber's steps (S6a AIR/AIA and ULR/ULA, MAP sendAuthenticationInfo, updateLocation and updateGprsLocation, GTPv2-C Create Session and Modify Bearer, Gx CCR-I/CCA-I, PFCP Session Establishment) grouped into `attempts` in time order (a new attempt when authentication or a location update follows a location update or PDN step, or a Create Session repeats an APN). Each attempt: `visited_plmn` (ULR Visited-PLMN-Id, GTPv2 Serving Network, or the MAP peer GT) with `visited_source`, `roaming`, `access` (RAT, TAI, ECGI), `steps` with result, code, `ref`, `cause_lookup` call, Error-Diagnostic, offending IE and `likely_causes` of a GTP reject, the ULA `subscription` digest (`subscription_from_earlier_attempt` when this attempt had no ULA), the Create Session `request`, `checks` (`pass`, `warn`, `fail` or `unknown`: authentication, location update, Create Session, ODB, RAT against Access-Restriction-Data, APN subscribed or wildcard, PDN type requested against subscribed, routing: home routed or local breakout from the APN operator identifier against VPLMN-Dynamic-Address-Allowed, APN-AMBR within the subscription), `first_failure` and a one-sentence `verdict`. `home_plmn` ("MCC-MNC") overrides the home network read from the IMSI (the MNC length follows the MCC). Content-free: authentication vectors are counted, never returned |
 
 Every tool returns JSON and publishes a typed `outputSchema`, a title and the MCP
 annotations `readOnlyHint`, `idempotentHint` and `openWorldHint: false` (all but `export_subset`, which writes a new file and is `readOnlyHint: false`, `destructiveHint: false`).
 
-`tools/list` is compact by default (131 KB for 46 tools instead of 330 KB): each output
+`tools/list` is compact by default (148 KB for 51 tools instead of 375 KB): each output
 schema keeps its top-level keys with their JSON types, a list of rows is `array` of `object`
 with a description naming the row keys, and the keys every result may carry and the server
 instructions explain (`truncated`, `warnings`, `trimmed`, `untrusted_text_fields`,
@@ -481,6 +482,20 @@ roaming_attach_check(path="/pcaps/roaming.pcap", imsi="001010123456789")
     "verdict": "1 attempt(s), 1 with a failure; latest: Create Session failed: ..."}
 ```
 
+Why the attach, TAU or service request failed on S1-MME (synthetic capture):
+
+```
+nas_procedures(path="/pcaps/ran/s1ap_nas.pcap", imsi="001010987654321")
+-> {"ues": [{"imsi": "001010987654321", "contexts": [{"mme_ue_s1ap_id": 103, "enb_ue_s1ap_id": 3, "release_cause": "nas:3", ...}],
+      "procedures": [{"kind": "attach", "outcome": "rejected", "start_frame": 21, "end_frame": 22, "timing_ms": 300.0,
+                      "cause": {"protocol": "nas_emm", "code": 15, "name": "No Suitable Cells In tracking area",
+                                "ref": "TS 24.301 9.9.3.9 and Annex A", ...},
+                      "steps": [{"frame": 21, "dir": "ul", "s1ap": "InitialUEMessage",
+                                 "nas": "Attach request + PDN connectivity request", "security": "plain"}, ...]}, ...],
+      "ciphered_count": 0, "verdict": "attach rejected: EMM 15 No Suitable Cells In tracking area (frame 22)"}],
+    "summary": {"ues": 4, "procedures": {"attach": {"accepted": 1, "rejected": 2, "in_progress": 1}, ...}, ...}}
+```
+
 Top talkers on the Diameter port only:
 
 ```
@@ -491,7 +506,7 @@ conversations(path="/pcaps/all.pcap", layer="sctp", filter="sctp.port == 3868")
 
 ## How the tools are tested
 
-The suite is 1000 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 1023 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). The tests build their own synthetic captures with
 scapy at run time (among them Diameter ULR/ULA and an unanswered AIR, GTPv2-C Create
 Session with cause 16 and 78, GTP-U, a SIP INVITE dialog, SIP calls with RTP, RTCP, RFC 4733 events and SIP INFO DTMF (loss,
