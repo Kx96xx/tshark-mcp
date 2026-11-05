@@ -42,6 +42,7 @@ EXPECTED_TOOLS = {
     "throughput_timeline",
     "call_legs",
     "tunnels_overview",
+    "export_subset",
 }
 
 
@@ -159,8 +160,9 @@ def test_list_tools_names_and_schemas(client_run):
         assert tool.title, name
         assert tool.description and len(tool.description) > 40, name
         ann = tool.annotations
-        assert _attr(ann, "read_only_hint", "readOnlyHint") is True, name
-        assert _attr(ann, "idempotent_hint", "idempotentHint") is True, name
+        # export_subset is the one tool that writes (a new file, only with --export-dir); never destructive.
+        assert _attr(ann, "read_only_hint", "readOnlyHint") is (name != "export_subset"), name
+        assert _attr(ann, "idempotent_hint", "idempotentHint") is (name != "export_subset"), name
         assert getattr(ann, "open_world_hint", getattr(ann, "openWorldHint", None)) is False, name
         assert getattr(ann, "destructive_hint", getattr(ann, "destructiveHint", None)) is False, name
         # Every tool takes the per-call redaction level, and only the three modes.

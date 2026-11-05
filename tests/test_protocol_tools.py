@@ -161,6 +161,7 @@ class TestRegistration:
             "diff_captures",
             "throughput_timeline",
             "tunnels_overview",
+            "export_subset",
             "call_legs",
         ])
         by_name = {t.name: t for t in tools}

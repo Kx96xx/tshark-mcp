@@ -1214,6 +1214,34 @@ class TunnelsOverviewResult(RowsResult, total=False):
     summary: dict[str, Any]
 
 
+class ExportWritten(TypedDict, total=False):
+    """The file export_subset wrote: ``path``, ``name``, ``packets``, ``bytes``, ``sha256``, ``first``/``last``
+    packet time, ``first_frame``/``last_frame`` in the source capture, ``snaplen`` when payloads were cut."""
+    __pydantic_config__ = _EXTRA_OK
+    path: str
+    name: str
+    packets: int
+    bytes: int
+    sha256: str
+    first: str
+    last: str
+    first_frame: int
+    last_frame: int
+    snaplen: int
+
+
+class ExportSubsetResult(ToolResult, total=False):
+    """``written``; ``capped`` (and ``capped_reason``) when max_packets, the size cap or the frame cap left
+    packets out; ``reminder`` says what identifiers the file still holds."""
+    written: ExportWritten
+    display_filter: str
+    capped: bool
+    capped_reason: str
+    export_dir: str
+    max_export_bytes: int
+    reminder: str
+
+
 class SipMessage(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     frame: int

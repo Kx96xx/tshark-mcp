@@ -75,6 +75,14 @@ the project uses [semantic versioning](https://semver.org/).
   handshakes, ESP SAs per direction; issues such as unanswered WireGuard initiations, a missing
   return SA or an MSS that does not fit once tunnelled.
 
+- `export_subset`: the first and only write tool, off unless the server is started with
+  `--export-dir DIR`. It writes the packets matching a display filter (and start/end) to a new
+  pcapng file in that directory for a vendor or another team: never overwrites, never follows a
+  planted symlink, sanitised names, `--export-max-mb` (50) and `max_packets` caps, `headers_only`
+  or `snaplen` to cut payloads with editcap, sha256 in the result and a `write` audit record. The
+  export directory may not overlap an `--allow-dir` unless `--export-inside-allow-dir`; `-w` and
+  `-F` stay refused on every other tshark run.
+
 ### Fixed
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared

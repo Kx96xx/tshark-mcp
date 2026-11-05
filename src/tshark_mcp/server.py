@@ -26,7 +26,7 @@ from typing import Annotated, Any, Callable, Literal
 from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
-    to_int, validate_fields,
+    to_float, to_int, validate_fields,
 )
 from .limits import (
     Allowlist, Limits, ToolError, clamp_limit, echo, lint_apn, lint_digits, lint_display_filter, lint_field_name,
@@ -40,6 +40,7 @@ from . import capdiff
 from . import incident
 from . import throughput
 from . import overlays
+from . import export as exporting
 from . import progress
 from . import prompts as guided
 from . import window
@@ -59,6 +60,8 @@ except ImportError:  # pragma: no cover - mcp 1.x
 # Every tool reads an existing file and nothing else: the same call on the same
 # file gives the same answer, and no tool reaches outside the allowed directories.
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# export_subset only: it creates a new file (never replaces one) when the operator enabled --export-dir.
+WRITES_NEW_FILE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
 
 INSTRUCTIONS = """\
 Read-only analysis of existing packet captures with tshark. Captures must live
@@ -177,6 +180,8 @@ class ServerState:
     """Redaction pre-scan outcomes by (capture path, mtime, size); in memory only."""
     prescan_locks: dict[tuple[str, int, int], threading.Lock] = field(default_factory=dict)
     prescan_guard: threading.Lock = field(default_factory=threading.Lock)
+    export: "exporting.ExportConfig | None" = None
+    """Where export_subset may write; None (the default) refuses every export."""
 
 
 _STATE: ServerState | None = None
@@ -186,17 +191,21 @@ _now = time.monotonic  # separable so tests can exhaust the multi-file time budg
 def configure(allow_dirs: list[str] | tuple[str, ...], limits: Limits | None = None, tshark: str | None = None,
               log_path: str | os.PathLike[str] | None = None, redact_mode: str = "off",
               redact_key: bytes | None = None, redact_keep_prefix: bool = False,
-              user_profile: bool = False) -> ServerState:
+              user_profile: bool = False, export_dir: str | None = None, export_max_mb: float | None = None,
+              export_inside_allow_dir: bool = False) -> ServerState:
     """Initialise the global server state (used by ``main`` and by the tests)."""
     global _STATE
     limits = limits or Limits.from_env()
+    allowlist = Allowlist.from_strings(list(allow_dirs))
+    export_cfg = exporting.configure(export_dir, export_max_mb, allowlist.roots, export_inside_allow_dir)
     _STATE = ServerState(
-        allowlist=Allowlist.from_strings(list(allow_dirs)),
+        allowlist=allowlist,
         limits=limits,
         runner=Runner(limits, tshark=tshark, user_profile=user_profile),
         log_path=Path(log_path) if log_path else None,
         redactor=redaction.Redactor(redact_key, keep_prefix=redact_keep_prefix),
         redact_mode=redaction.check_mode(redact_mode, "redact_mode"),
+        export=export_cfg,
     )
     return _STATE
 
@@ -3710,6 +3719,114 @@ def throughput_timeline(path: str, interval: float = 1.0, per: str = "total", to
                                             "filter": filter, "limit": limit, "offset": offset}, run)
 
 
+@_tool(title="Export a filtered subset to a new file (off unless --export-dir)", annotations=WRITES_NEW_FILE)
+def export_subset(path: str, display_filter: str, name: str, max_packets: int = 10_000, snaplen: int | None = None,
+                  headers_only: bool = False) -> models.ExportSubsetResult:
+    """Write the packets of an allowed capture that match `display_filter` (and start/end)
+    to a NEW pcapng file `name` in the operator's export directory, for a vendor or another
+    team. The only tool that writes, and only when the server was started with --export-dir;
+    otherwise it refuses. Never overwrites, never writes elsewhere. `max_packets` (default
+    10,000) and the server's --export-max-mb cap the file (`capped` says so); `headers_only`
+    cuts every packet to 96 bytes, `snaplen` to another size, so no payload leaves. Returns
+    `written` (path, packets, bytes, first/last, sha256) and a reminder that the file still
+    holds addresses and identifiers.
+    Details: A -T fields pass lists the matching frames under the frame cap; tshark then
+    writes them (-F pcapng -w) to a temporary file the server created in the export
+    directory, editcap cuts payloads when asked, and the file is linked to its final name
+    (refused if the name exists). `name` is reduced to letters, digits, dot, dash and
+    underscore and gets .pcapng. Redaction does not rewrite packets: the file holds every
+    identifier its packets carry. The audit log gets a write record with the sha256."""
+    def run() -> dict[str, Any]:
+        st = state()
+        cfg = st.export
+        if cfg is None:
+            raise ToolError("export_disabled", "export_subset is off: the server was not started with --export-dir",
+                            fix="ask the operator to restart the server with --export-dir <dir> (outside the allowed "
+                                "capture directories); until then use filter_packets to read the packets")
+        capture = _resolve(path)
+        if display_filter is None or not str(display_filter).strip():
+            raise ToolError("invalid_argument", "display_filter is required: export only the packets that matter")
+        flt = _filter(display_filter)
+        out_name = exporting.safe_name(name)
+        final = exporting.target(cfg, out_name)
+        cap = clamp_limit(max_packets, exporting.MAX_PACKETS, 10_000)
+        cut = exporting.HEADER_SNAPLEN if headers_only else None
+        if snaplen is not None:
+            cut = to_int(str(snaplen))
+            if cut is None or not 64 <= cut <= 262_144:
+                raise ToolError("invalid_argument", f"snaplen must be between 64 and 262144, got {echo(snaplen)}")
+        kept, scan = _fields_core(capture, flt, ["frame.cap_len", "frame.time_epoch"], cap, ",")
+        frames = [(f, line.split("\t")) for f, line in kept if f is not None]
+        if not frames:
+            raise ToolError("not_found", "no packet matched the filter and window; nothing was written",
+                            fix="check the filter with filter_packets(path, display_filter) first")
+        sizes = [min(to_int(cols[0], 0) or 0, cut or 1 << 30) for _, cols in frames]
+        fit = exporting.budget(sizes, cfg.max_bytes)
+        if fit == 0:
+            raise ToolError("invalid_argument", "the first matching packet alone exceeds --export-max-mb")
+        capped_by_size = fit < len(frames)
+        frames = frames[:fit]
+        last = frames[-1][0]
+        frame_set = ", ".join(str(f) for f, _ in frames) if len(frames) <= 2000 else None
+        write_filter = f"frame.number in {{{frame_set}}}" if frame_set else f"({flt}) && frame.number <= {last}"
+        import tempfile
+        fd, tmp_name = tempfile.mkstemp(prefix=exporting.TMP_PREFIX, suffix=".pcapng", dir=cfg.directory)
+        os.close(fd)
+        tmp = Path(tmp_name)
+        cut_tmp: Path | None = None
+        try:
+            check_result(st.runner.write_subset(capture, tmp, cfg.directory, write_filter, last))
+            if cut:
+                fd, cut_name = tempfile.mkstemp(prefix=exporting.TMP_PREFIX, suffix=".pcapng", dir=cfg.directory)
+                os.close(fd)
+                cut_tmp = Path(cut_name)
+                check_result(st.runner.cut_payloads(tmp, cut_tmp, cfg.directory, cut))
+                os.replace(cut_tmp, tmp)
+                cut_tmp = None
+            size = tmp.stat().st_size
+            if size > cfg.max_bytes:
+                raise ToolError("output_too_large", f"the export came to {size} bytes, above --export-max-mb; "
+                                "nothing was kept", fix="narrow the filter or lower max_packets")
+            digest = exporting.sha256(tmp)
+            os.chmod(tmp, 0o640)
+            exporting.publish(tmp, final)
+        finally:
+            for leftover in (tmp, cut_tmp):
+                if leftover is not None and leftover.exists():
+                    leftover.unlink()
+        times = [to_float(cols[1]) for _, cols in frames if len(cols) > 1]
+        written = {"path": str(final), "name": out_name, "packets": len(frames), "bytes": size, "sha256": digest,
+                   "first": iso(min(t for t in times if t is not None)) if times else None,
+                   "last": iso(max(t for t in times if t is not None)) if times else None,
+                   "first_frame": frames[0][0], "last_frame": last, "snaplen": cut}
+        capped = scan.hit_match_cap or capped_by_size
+        _audit("export_subset", {"source": str(capture), "written": str(final), "packets": len(frames), "bytes": size,
+                                 "sha256": digest, "display_filter": flt}, 0, "write", size)
+        out: dict[str, Any] = {
+            "written": compact(written), "display_filter": flt, "capped": capped,
+            "export_dir": str(cfg.directory), "max_export_bytes": cfg.max_bytes,
+            "reminder": ("payloads were cut to the first " + str(cut) + " bytes of each packet, but addresses, ports "
+                         "and any identifiers in the headers are still in the file" if cut else
+                         "the file holds every packet in full: addresses, identifiers and payloads; pass "
+                         "headers_only=true to cut payloads"),
+        }
+        if capped:
+            why = []
+            if scan.hit_match_cap:
+                why.append(f"more than max_packets={cap} packets matched")
+            if capped_by_size:
+                why.append(f"the next packet would pass --export-max-mb ({cfg.max_bytes} bytes)")
+            if scan.hit_read_cap:
+                why.append("the frame cap stopped the scan")
+            out["capped_reason"] = "; ".join(why)
+        elif scan.hit_read_cap:
+            out["capped"] = True
+            out["capped_reason"] = "the frame cap stopped the scan; later matching packets are not in the file"
+        return out
+    return _guarded("export_subset", {"path": path, "display_filter": display_filter, "name": name,
+                                      "max_packets": max_packets, "snaplen": snaplen, "headers_only": headers_only}, run)
+
+
 @_tool(title="SCTP associations", annotations=READ_ONLY)
 def sctp_associations(path: str, limit: int = 200, offset: int = 0) -> models.SctpAssociationsResult:
     """Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK
@@ -4687,6 +4804,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="compact (default): tools/list carries top-level output keys and short descriptions, "
                         "the full schema of each tool is the resource schema://tools/<name>; full: publish "
                         "every schema in full (or TSHARK_MCP_SCHEMA_PROFILE)")
+    p.add_argument("--export-dir", default=None, metavar="DIR",
+                   help="turn on export_subset: the one directory it may write new pcapng files to (default off; "
+                        "or TSHARK_MCP_EXPORT_DIR). Must not overlap an --allow-dir")
+    p.add_argument("--export-max-mb", type=float, default=None,
+                   help=f"largest file export_subset may write (default {exporting.DEFAULT_MAX_MB:g})")
+    p.add_argument("--export-inside-allow-dir", action="store_true",
+                   help="let --export-dir lie inside (or contain) an --allow-dir, so exports become readable captures")
     p.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
     p.add_argument("--version", action="version", version=f"tshark-mcp {__version__}")
     return p
@@ -4729,12 +4853,17 @@ def main(argv: list[str] | None = None) -> int:
         st = configure(allow_dirs, limits=limits, tshark=args.tshark, log_path=args.log_file,
                        redact_mode=redaction.check_mode(args.redact, "--redact"),
                        redact_key=key_text.encode() if key_text else None, redact_keep_prefix=args.redact_keep_prefix,
-                       user_profile=args.allow_user_profile)
+                       user_profile=args.allow_user_profile,
+                       export_dir=args.export_dir or os.environ.get("TSHARK_MCP_EXPORT_DIR") or None,
+                       export_max_mb=args.export_max_mb if args.export_max_mb is not None else (
+                           float(os.environ["TSHARK_MCP_EXPORT_MAX_MB"]) if os.environ.get("TSHARK_MCP_EXPORT_MAX_MB") else None),
+                       export_inside_allow_dir=args.export_inside_allow_dir)
     except (ValueError, ToolError) as exc:
         print(f"tshark-mcp: {exc}", file=sys.stderr)
         return 2
     print(f"tshark-mcp {__version__}: tshark={st.runner.tshark} allow={st.allowlist.describe()} limits={st.limits.describe()} "
-          f"redact={st.redact_mode} user_profile={st.runner.user_profile} schema_profile={_SCHEMA_PROFILE}",
+          f"redact={st.redact_mode} user_profile={st.runner.user_profile} schema_profile={_SCHEMA_PROFILE} "
+          f"export={st.export.describe() if st.export else 'off'}",
           file=sys.stderr)
     app.run(transport=args.transport)
     return 0
