@@ -249,7 +249,7 @@
     },
     {
       "name": "incident_summary",
-      "description": "First call on a capture nobody has looked at yet: \"what is wrong here?\"."
+      "description": "Start here on any capture nobody has looked at yet: \"what is wrong here?\"."
     },
     {
       "name": "diff_captures",

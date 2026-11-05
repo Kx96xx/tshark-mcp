@@ -408,10 +408,24 @@ def build_streams(rtp: list[dict[str, Any]], rtcp: list[dict[str, Any]], sdps: l
             s["reverse_ssrc"] = back["ssrc"]
         else:
             s["one_way"] = True
+            asked = one_way_by_sdp(by_call.get(s.get("call_id")) or [])
+            if asked:
+                s["expected_one_way"] = asked
     for s in streams:
         s["issues"] = issues(s)
     streams.sort(key=lambda s: (s.get("first_time") or "", s["src"]))
     return [compact(s) for s in streams]
+
+
+def one_way_by_sdp(call_sdps: list[dict[str, Any]]) -> str | None:
+    """``a=<direction> in the offer/answer`` when the last offer/answer of a call asks for
+    one-way (or no) audio: sendonly, recvonly or inactive. A reverse stream is then not due."""
+    latest = sorted((e for e in call_sdps if e.get("frame") is not None), key=lambda e: e["frame"])[-2:]
+    for e in latest:
+        for m in (e.get("sdp") or {}).get("media") or []:
+            if m.get("direction") in ("sendonly", "recvonly", "inactive"):
+                return f"a={m['direction']} in the SDP of frame {e['frame']}"
+    return None
 
 
 def issues(s: dict[str, Any]) -> list[str]:
@@ -427,7 +441,8 @@ def issues(s: dict[str, Any]) -> list[str]:
     if s.get("out_of_order"):
         out.append(f"out-of-order packets: {s['out_of_order']}")
     if s.get("one_way"):
-        out.append("no RTP seen in the reverse direction")
+        out.append("no RTP seen in the reverse direction" + (f", as the call asks ({s['expected_one_way']})"
+                                                              if s.get("expected_one_way") else ""))
     if s.get("call_id") is None:
         out.append("not linked to any SDP in the capture")
     return out

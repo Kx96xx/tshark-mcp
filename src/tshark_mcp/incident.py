@@ -24,23 +24,64 @@ THRESHOLDS = {
     "dns_slow_p90_ms": 500.0,
     "voip_ner_pct": 80.0,               # network effectiveness below this is high severity
     "rtp_low_mos": 3.6,
+    "tunnel_one_way_packets": 3,        # a one-way tunnel needs this many packets to be a finding
+    "sctp_unacked_heartbeats": 2,       # one unanswered heartbeat at the end of a capture is normal
 }
 
-# Which passes a focus runs, in order, and the protocol (from the protocol hierarchy) each needs.
-PASSES: dict[str, tuple[str, tuple[str, ...]]] = {
+# Which passes a focus runs, in order, and the protocols (from the protocol hierarchy) that
+# start each one: a pass runs when any of its protocols is present (None: always).
+PASSES: dict[str, tuple[str | tuple[str, ...] | None, tuple[str, ...]]] = {
     "tcp_connections": ("tcp", ("web", "tls")),
     "tcp_health": ("tcp", ("web",)),
     "dns_transactions": ("dns", ("web", "dns")),
     "tls_handshakes": ("tls", ("web", "tls")),
+    "quic_connections": ("quic", ("web", "tls")),
     "http_transactions": ("http", ("web",)),
     "icmp_errors": ("icmp", ("web", "dns")),
+    "tunnels_overview": (("gre", "erspan", "vxlan", "geneve", "esp", "ah", "isakmp", "wg", "openvpn", "l2tp", "gtp"),
+                         ("web", "mobile")),
     "call_kpis": ("sip", ("voip",)),
     "rtp_streams": ("rtp", ("voip",)),
+    "ims_registration": ("sip", ("voip", "mobile")),
     "diameter_transactions": ("diameter", ("mobile",)),
     "gtp_sessions": ("gtpv2", ("mobile",)),
+    "gtpv1_sessions": ("gtp", ("mobile",)),
+    "pfcp_sessions": ("pfcp", ("mobile",)),
+    "sctp_associations": ("sctp", ("mobile",)),
+    "sigtran_messages": ("tcap", ("mobile",)),
+    "expert_info": (None, ("web", "dns", "tls", "voip", "mobile")),
+}
+
+# Protocols some pass reads; anything else in the hierarchy that is not a carrier goes to
+# ``not_analysed`` with the call that shows it.
+COVERED = frozenset({
+    "tcp", "udp", "dns", "mdns", "tls", "quic", "http", "http2", "icmp", "icmpv6", "sip", "sdp", "rtp", "rtcp",
+    "rtpevent", "diameter", "gtpv2", "gtp", "gtpprime", "pfcp", "sctp", "m3ua", "sccp", "tcap", "gsm_map",
+    "gsm_old", "gsm_sms", "gsm_sms_ud", "camel", "gre", "erspan", "vxlan", "geneve", "esp", "ah", "isakmp", "wg",
+    "openvpn", "l2tp", "grpc", "json", "xml", "mime_multipart", "media", "data-text-lines", "urlencoded-form",
+    "x509sat", "x509af", "x509ce", "pkix1explicit", "pkix1implicit",
+})
+# Link layers, framing, LAN background and payload placeholders: never "not analysed".
+CARRIERS = frozenset({
+    "frame", "eth", "ethertype", "ip", "ipv6", "sll", "sll2", "vlan", "llc", "null", "loop", "raw", "data",
+    "_ws.malformed", "_ws.short", "_ws.expert", "_ws.unreassembled", "_ws.lua", "pkt_comment", "fake-field-wrapper",
+    "ipv6.hopopts", "ipv6.routing", "ipv6.fraghdr", "ipv6.dstopts", "pppoes", "ppp", "mpls", "erf", "radiotap",
+    "wlan_radio", "wlan", "nflog", "linux_cooked", "vntag", "etag", "stp", "lldp", "cdp", "arp", "tcp.segments",
+    "ipcp", "chdlc", "fr", "gtp.ext_hdr", "pdcp-lte", "pdcp-nr",
+})
+# A protocol with a specialist tool but no pass: that tool is the next call.
+SPECIALIST = {
+    "s1ap": ("nas_procedures", {}), "nas-eps": ("nas_procedures", {}),
+    "sgsap": ("sms_delivery", {"via": "sgs"}), "isup": ("sigtran_messages", {}),
 }
 
 _FRAME_IN_TEXT = re.compile(r"\bframes? (\d+)")
+
+
+def pass_protocols(name: str) -> tuple[str, ...]:
+    """The protocols that start a pass (empty: the pass always runs)."""
+    proto = PASSES[name][0]
+    return () if proto is None else (proto,) if isinstance(proto, str) else proto
 
 
 def passes_for(focus: str) -> list[str]:
@@ -244,12 +285,15 @@ def from_tls(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
     s = r.get("summary") or {}
     issues = r.get("issues") or []
     outcomes = s.get("outcomes") or {}
-    total = sum(outcomes.values())
     # One-sided connections (only one direction captured) cannot be judged, so they are neither
-    # failures nor part of the total.
-    total -= outcomes.get("one_sided") or 0
-    failed = total - (outcomes.get("established") or 0)
-    rows = [c for c in r.get("connections") or [] if c.get("outcome") not in ("established", "one_sided")]
+    # failures nor part of the total. QUIC handshakes are judged by the quic_connections pass (the
+    # pass runs with filter "!quic"); a QUIC row that still arrives here never counts.
+    quic = [c for c in r.get("connections") or [] if c.get("transport") == "quic"]
+    total = sum(outcomes.values()) - (outcomes.get("one_sided") or 0)
+    total -= sum(1 for c in quic if c.get("outcome") != "one_sided")
+    failed = total - (outcomes.get("established") or 0) + sum(1 for c in quic if c.get("outcome") == "established")
+    rows = [c for c in r.get("connections") or [] if c.get("outcome") not in ("established", "one_sided")
+            and c.get("transport") != "quic"]
     if failed > 0:
         out.append(finding("tls_failed", "high", f"{failed} of {total} TLS handshakes did not complete",
                            "tls_handshakes", args, frames=_frames(rows, "frame"),
@@ -294,9 +338,11 @@ def from_call_kpis(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, An
 def from_rtp(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
     s = r.get("summary") or {}
     out = []
-    if s.get("one_way"):
-        rows = [x for x in r.get("streams") or [] if x.get("one_way") or "one-way" in str(x.get("issues") or "")]
-        out.append(finding("one_way_audio", "high", f"{s['one_way']} of {s.get('streams')} RTP streams have no "
+    # Streams whose SDP asks for one-way media (a=sendonly / recvonly / inactive) are not a fault.
+    one_way = (s.get("one_way") or 0) - (s.get("expected_one_way") or 0)
+    if one_way > 0:
+        rows = [x for x in r.get("streams") or [] if x.get("one_way") and not x.get("expected_one_way")]
+        out.append(finding("one_way_audio", "high", f"{one_way} of {s.get('streams')} RTP streams have no "
                            "reverse stream (one-way audio)", "rtp_streams", args, frames=_frames(rows, "first_frame")))
     if s.get("with_loss"):
         out.append(finding("rtp_loss", "medium", f"{s['with_loss']} RTP stream(s) lost packets", "rtp_streams", args))
@@ -319,4 +365,217 @@ def from_signalling(r: dict[str, Any], args: dict[str, Any], tool: str, what: st
     if s.get("unanswered"):
         out.append(finding(f"{what.lower()}_unanswered", "medium", f"{s['unanswered']} {what} request(s) got no answer",
                            tool, args, frames=_frames([t for t in rows if t.get("unanswered")], "request_frame", "frame")))
+    return out
+
+
+# QUIC outcomes that mean the connection did not work (handshake_only: both handshakes seen,
+# no 1-RTT data yet, usually a capture that stopped early).
+QUIC_FAILED = ("no_response", "version_negotiation", "retry_unanswered", "handshake_incomplete", "closed_with_error")
+
+
+def from_quic(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    s = r.get("summary") or {}
+    outcomes = s.get("outcomes") or {}
+    total = sum(outcomes.values())
+    failed = sum(outcomes.get(o) or 0 for o in QUIC_FAILED)
+    if not failed:
+        return []
+    rows = [c for c in r.get("connections") or [] if c.get("outcome") in QUIC_FAILED]
+    how = ", ".join(f"{outcomes[o]} {o.replace('_', ' ')}" for o in QUIC_FAILED if outcomes.get(o))
+    if s.get("udp_443_blocked_likely"):
+        text = (f"QUIC never got an answer from {len(s.get('servers_never_answering') or [])} server(s) and the "
+                "clients fell back to TCP: UDP 443 looks blocked on the path")
+        kind = "quic_blocked"
+    else:
+        text = f"{failed} of {total} QUIC connections did not complete ({how})"
+        kind = "quic_failed"
+    return [finding(kind, "medium", text, "quic_connections", args, frames=_frames(rows, "first_frame"),
+                    details=r.get("issues"))]
+
+
+def from_tunnels(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = r.get("tunnels") or []
+    out = []
+
+    def where(t: dict[str, Any]) -> str:
+        return f"{t.get('kind')} {t.get('endpoint_a')} <-> {t.get('endpoint_b')}"
+
+    def call(t: dict[str, Any]) -> dict[str, Any]:
+        return {"tool": "tunnels_overview", "args": {**args, "endpoint": t.get("endpoint_a")}}
+
+    failed = [t for t in rows if (t.get("handshake") or {}).get("outcome") in ("failed", "no response")]
+    if failed:
+        t = failed[0]
+        out.append(finding("tunnel_handshake_failed", "high",
+                           f"{len(failed)} tunnel handshake(s) failed or got no response; first: {where(t)} "
+                           f"({t['handshake']['outcome']})", "tunnels_overview", args,
+                           frames=_frames(failed, "first_frame"), details=t.get("issues"), next_call=call(t)))
+    # A tunnel with one or two packets says nothing about the reverse path.
+    one_way = [t for t in rows if t.get("one_way") and t not in failed
+               and max(t.get("packets_a_to_b") or 0, t.get("packets_b_to_a") or 0) >= THRESHOLDS["tunnel_one_way_packets"]]
+    if one_way:
+        t = one_way[0]
+        out.append(finding("tunnel_one_way", "medium",
+                           f"{len(one_way)} tunnel(s) carry traffic one way only; first: {where(t)}",
+                           "tunnels_overview", args, frames=_frames(one_way, "first_frame"),
+                           details=t.get("issues"), next_call=call(t)))
+    mtu = [t for t in rows if any(k in i for i in t.get("issues") or [] for k in ("MTU", "MSS", "fragmented"))]
+    if mtu:
+        t = mtu[0]
+        out.append(finding("tunnel_mtu", "medium", f"{len(mtu)} tunnel(s) overrun the path MTU; first: {where(t)}",
+                           "tunnels_overview", args, frames=_frames(mtu, "first_frame"),
+                           details=[i for i in t.get("issues") or [] if "MTU" in i or "MSS" in i or "fragmented" in i],
+                           next_call=call(t)))
+    return out
+
+
+def from_ims(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = r.get("registrations") or []
+    out = []
+    for verdict, kind, severity, words in (("failed", "ims_registration_failed", "high", "failed to register"),
+                                           ("challenge-loop", "ims_challenge_loop", "medium",
+                                            "were challenged again and again (authentication loop)")):
+        hit = [x for x in rows if x.get("verdict") == verdict]
+        if not hit:
+            continue
+        first = hit[0]
+        reason = (first.get("reasons") or [None])[0]
+        text = f"{len(hit)} of {len(rows)} IMS user(s) {words}" + (f"; first: {reason}" if reason else "")
+        nxt = {"tool": "ims_registration", "args": {**args, "impu": first["impu"]}} if first.get("impu") else None
+        out.append(finding(kind, severity, text, "ims_registration", args, frames=_frames(hit, "first_frame"),
+                           details=(first.get("reasons") or [])[1:], next_call=nxt))
+    return out
+
+
+def _answered_failures(r: dict[str, Any], args: dict[str, Any], tool: str, what: str,
+                       failed_row: Any) -> list[dict[str, Any]]:
+    """Failed and unanswered requests from a paired-transaction summary; requests the capture
+    ended too soon after are not counted as unanswered."""
+    s = r.get("summary") or {}
+    rows = r.get("transactions") or []
+    out = []
+    if s.get("failed"):
+        out.append(finding(f"{what.lower()}_failed", "medium", f"{s['failed']} {what} request(s) were rejected",
+                           tool, args, frames=_frames([t for t in rows if failed_row(t)], "request_frame", "frame")))
+    lost = (s.get("unanswered") or 0) - (s.get("unanswered_near_capture_end") or 0)
+    if lost > 0:
+        out.append(finding(f"{what.lower()}_unanswered", "medium", f"{lost} {what} request(s) got no answer",
+                           tool, args, frames=_frames([t for t in rows if t.get("unanswered")
+                                                       and not t.get("near_capture_end")], "request_frame", "frame")))
+    return out
+
+
+def from_gtpv1(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    return _answered_failures(r, args, "gtpv1_sessions", "GTPv1-C",
+                              lambda t: t.get("accepted") is False)
+
+
+def from_pfcp(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    out = _answered_failures(r, args, "pfcp_sessions", "PFCP", lambda t: t.get("accepted") is False)
+    s = r.get("summary") or {}
+    if s.get("peer_restarts"):
+        out.append(finding("pfcp_peer_restart", "high", f"{s['peer_restarts']} PFCP peer restart(s): a new Recovery "
+                           "Time Stamp, so every session on that node was lost", "pfcp_sessions", args,
+                           next_call={"tool": "pfcp_sessions", "args": {**args, "view": "nodes"}}))
+    return out
+
+
+def from_sctp(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = r.get("associations") or []
+    out = []
+
+    def ep(a: dict[str, Any]) -> str:
+        return f"{a.get('endpoint_a')} <-> {a.get('endpoint_b')}"
+
+    rejected = [a for a in rows if (a.get("chunk_counts") or {}).get("INIT", 0) >= 2
+                and (a.get("chunk_counts") or {}).get("ABORT", 0) >= 1]
+    if rejected:
+        a = rejected[0]
+        cc = a["chunk_counts"]
+        up = a.get("handshake") == "complete"
+        out.append(finding("sctp_init_rejected", "medium" if up else "high",
+                           f"{ep(a)}: {cc['INIT']} INITs and {cc['ABORT']} ABORTs"
+                           + (" before the association came up" if up else "; the association never came up"),
+                           "sctp_associations", args, frames=_frames(rejected, "first_frame", "abort_frame")))
+    down = [a for a in rows if a.get("handshake") == "INIT without INIT_ACK" and a not in rejected]
+    if down:
+        out.append(finding("sctp_no_association", "high", f"{len(down)} SCTP association(s) sent INIT and got no "
+                           f"INIT_ACK; first: {ep(down[0])}", "sctp_associations", args,
+                           frames=_frames(down, "init_frame", "first_frame")))
+    aborted = [a for a in rows if a.get("abort_seen") and a not in rejected]
+    if aborted:
+        out.append(finding("sctp_abort", "medium", f"{len(aborted)} SCTP association(s) were aborted; first: "
+                           f"{ep(aborted[0])}", "sctp_associations", args, frames=_frames(aborted, "abort_frame")))
+    hb = [a for a in rows if (a.get("heartbeats_unacked") or 0) >= THRESHOLDS["sctp_unacked_heartbeats"]]
+    if hb:
+        a = hb[0]
+        out.append(finding("sctp_heartbeat_loss", "medium", f"{len(hb)} SCTP association(s) have unacknowledged "
+                           f"heartbeats; first: {ep(a)} ({a['heartbeats_unacked']} of {a.get('heartbeats_sent')})",
+                           "sctp_associations", args, frames=_frames(hb, "first_frame")))
+    rtx = [a for a in rows if a.get("retransmissions")]
+    if rtx:
+        out.append(finding("sctp_retransmissions", "low", f"{sum(a['retransmissions'] for a in rtx)} SCTP DATA "
+                           f"retransmission(s) on {len(rtx)} association(s)", "sctp_associations", args,
+                           frames=_frames(rtx, "first_frame")))
+    return out
+
+
+def from_sigtran(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = r.get("messages") or []
+    s = r.get("summary") or {}
+    out = []
+    if s.get("unanswered_begins"):
+        out.append(finding("tcap_unanswered", "medium", f"{s['unanswered_begins']} TCAP dialogue(s) were begun and "
+                           "never answered", "sigtran_messages", args,
+                           frames=_frames([m for m in rows if m.get("unanswered")], "frame")))
+    errors: dict[str, int] = {}
+    error_rows, reject_rows = [], []
+    for m in rows:
+        for c in m.get("components") or []:
+            if c.get("type") == "returnError":
+                errors[str(c.get("error") or c.get("error_code"))] = errors.get(str(c.get("error") or c.get("error_code")), 0) + 1
+                error_rows.append(m)
+            elif c.get("type") == "reject":
+                reject_rows.append(m)
+        if m.get("tcap") == "abort":
+            reject_rows.append(m)
+    if errors:
+        names = ", ".join(f"{k} x{v}" for k, v in sorted(errors.items(), key=lambda kv: (-kv[1], kv[0])))
+        out.append(finding("map_errors", "medium", f"{sum(errors.values())} MAP/TCAP error(s) returned: {names}",
+                           "sigtran_messages", args, frames=_frames(error_rows, "frame")))
+    if reject_rows:
+        out.append(finding("tcap_rejects", "medium", f"{len(reject_rows)} TCAP reject(s) or abort(s): the peer "
+                           "could not parse or refused the dialogue", "sigtran_messages", args,
+                           frames=_frames(reject_rows, "frame")))
+    return out
+
+
+def from_expert(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
+    s = r.get("summary") or {}
+    errors = (s.get("by_severity") or {}).get("error") or 0
+    if not errors:
+        return []
+    items = [i for i in r.get("items") or [] if i.get("severity") == "error"]
+    malformed = s.get("malformed_frames") or 0
+    protos = sorted({str(i.get("protocol")) for i in items if i.get("protocol")})
+    text = (f"tshark flagged {errors} error(s)" + (f", {malformed} malformed packet(s)," if malformed else "")
+            + f" in {', '.join(protos[:5]) or 'the capture'}")
+    details = [f"{i.get('protocol')}: {i.get('summary')} (x{i.get('count')})" for i in items[:3]]
+    return [finding("expert_errors", "low", text, "expert_info", args, confidence="medium",
+                    frames=(s.get("malformed_first_frames") or []) + _frames(items, "first_frame"), details=details)]
+
+
+def not_analysed(hierarchy: list[dict[str, Any]], args: dict[str, Any]) -> list[dict[str, Any]]:
+    """Protocols in the capture that no pass reads, most frames first, each with the call that
+    shows them (a specialist tool when one exists, else filter_packets)."""
+    frames: dict[str, int] = {}
+    for row in hierarchy or []:
+        name = str(row.get("protocol") or "").rsplit("/", 1)[-1]
+        if not name or name in COVERED or name in CARRIERS or name.startswith("_ws."):
+            continue
+        frames[name] = max(frames.get(name, 0), int(row.get("frames") or 0))
+    out = []
+    for name, n in sorted(frames.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+        tool, extra = SPECIALIST.get(name, ("filter_packets", {"display_filter": name, "limit": 20}))
+        out.append({"protocol": name, "frames": n, "next_call": {"tool": tool, "args": {**args, **extra}}})
     return out

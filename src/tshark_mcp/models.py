@@ -1625,6 +1625,7 @@ class RtpStreamRow(TypedDict, total=False):
     mos_estimate: MosEstimate
     reverse_ssrc: str
     one_way: bool
+    expected_one_way: str
     issues: list[str]
 
 
@@ -2043,6 +2044,7 @@ class IncidentSummaryResult(ToolResult, total=False):
     """``findings`` ranked by severity; ``capture``: span, packets, protocols, ``trust`` (capture_quality's
     verdict) and ``cannot_show``; ``top_talkers`` (IP conversations); ``timeline`` (first packet, first
     problem, first high finding, last problem, last packet); ``not_checked`` (pass and reason);
+    ``not_analysed`` (protocols present that no pass reads, with frames and ``next_call``);
     ``passes`` (pass, ms, status); ``thresholds`` the rules used."""
     path: str
     focus: str
@@ -2052,6 +2054,7 @@ class IncidentSummaryResult(ToolResult, total=False):
     top_talkers: list[dict[str, Any]]
     timeline: list[dict[str, Any]]
     not_checked: list[dict[str, Any]]
+    not_analysed: list[dict[str, Any]]
     passes: list[dict[str, Any]]
     budget_s: float
     thresholds: dict[str, float]

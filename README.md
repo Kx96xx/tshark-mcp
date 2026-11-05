@@ -123,6 +123,10 @@ anonymised one (`--redact ids+ips` masks identifiers in the output, not in the f
 
 ## What you can ask it
 
+Start with **"What is wrong in this capture?"**: the assistant calls `incident_summary`, which runs
+every check the capture's protocols allow and returns ranked findings with frame numbers and the
+next call to make, plus the protocols it has no check for. Then ask the specific question:
+
 - "Which capture in this directory mentions IMSI 001010123456789, and when?"
 - "Why did this subscriber's attach fail?" (Diameter result codes and the AVPs behind them)
 - "Was the GTP session created? What cause came back, and which PAA?"
@@ -201,7 +205,7 @@ what it cost in `tokens_estimate`.
 
 | Tool | One line |
 | --- | --- |
-| `incident_summary` | First call on an unknown capture: ranked findings with evidence frames, confidence and the next call to make |
+| `incident_summary` | Start here. First call on an unknown capture: ranked findings with evidence frames, confidence and the next call to make, plus the protocols no check covers |
 | `diff_captures` | Before and after a change: per destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, what appeared, vanished, got worse or better |
 | `throughput_timeline` | Bytes, goodput, retransmissions, window stalls, SYNs, DNS and ICMP per interval; per-stream verdict (loss, receiver, idle, sender) |
 | `tunnels_overview` | GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE/ESP), WireGuard, OpenVPN, L2TP and GTP-U tunnels: endpoints, traffic each way, inner protocols, overhead against the MTU, handshake outcome |

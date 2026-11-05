@@ -25,6 +25,9 @@ _ARG_MAX_CHARS = 512
 
 _COMMON = """
 How to work:
+- Not sure the capture holds this problem, or the steps below find nothing: start with
+  incident_summary(path) and follow each finding's next_call (and not_analysed for protocols
+  no check reads).
 - Call the tools in this order and stop as soon as the question is answered.
 - Cite frame numbers (frame, request_frame, answer_frame, first_frame) for every claim and
   check a surprising one with packet_detail(path, frame).

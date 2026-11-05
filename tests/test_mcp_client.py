@@ -228,7 +228,9 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert found["files_scanned"] == 3 and found["kind"] == "subscriber"
     summary = by_name[("incident_summary", ("focus", "path"))]
     assert summary["findings"] and {f["evidence"]["tool"] for f in summary["findings"]} <= {
-        "diameter_transactions", "gtp_sessions", "capture_quality"}
+        "diameter_transactions", "gtp_sessions", "capture_quality", "ims_registration", "sigtran_messages",
+        "sctp_associations", "gtpv1_sessions", "pfcp_sessions", "tunnels_overview", "expert_info"}
+    assert "not_analysed" in summary
     quic_out = by_name[("quic_connections", ("path",))]
     assert quic_out["connections"] == [] and quic_out["summary"]["connections"] == 0
     certs_out = by_name[("tls_certificates", ("path",))]
