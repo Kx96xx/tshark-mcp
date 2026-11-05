@@ -1,0 +1,58 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Kx96xx/tshark-mcp",
+  "title": "tshark-mcp",
+  "description": "Read-only packet capture analysis with tshark: Diameter, GTP, SIP, RTP, SIGTRAN, DNS, TCP and TLS.",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/Kx96xx/tshark-mcp",
+  "repository": {
+    "url": "https://github.com/Kx96xx/tshark-mcp",
+    "source": "github",
+    "id": "1442215356"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "tshark-mcp-server",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "TSHARK_MCP_ALLOW_DIRS",
+          "description": "Directories the server may read captures from, colon-separated. Required: the server refuses to start without one.",
+          "isRequired": true,
+          "format": "string",
+          "placeholder": "/path/to/pcaps"
+        },
+        {
+          "name": "TSHARK_MCP_TSHARK",
+          "description": "Path to the tshark binary (4.0 or newer) when it is not on PATH.",
+          "isRequired": false,
+          "format": "filepath"
+        },
+        {
+          "name": "TSHARK_MCP_REDACT",
+          "description": "Pseudonymise identifiers in every result: ids (IMSI, MSISDN, IMEI, SIP users, UE IPs) or ids+ips (every IP too).",
+          "isRequired": false,
+          "format": "string",
+          "default": "off",
+          "choices": [
+            "off",
+            "ids",
+            "ids+ips"
+          ]
+        },
+        {
+          "name": "TSHARK_MCP_EXPORT_DIR",
+          "description": "Turns on export_subset: the one directory it may write new pcapng files to. Must not overlap an allowed dir. Unset: the server writes nothing.",
+          "isRequired": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}

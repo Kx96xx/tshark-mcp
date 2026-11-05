@@ -1,5 +1,7 @@
 # tshark-mcp
 
+<!-- mcp-name: io.github.Kx96xx/tshark-mcp -->
+
 [![CI](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml)
 ![Python 3.10 to 3.13](https://img.shields.io/badge/python-3.10%20to%203.13-blue)
 ![Licence MIT](https://img.shields.io/badge/licence-MIT-green)
@@ -62,6 +64,11 @@ questions about the calls, sessions and subscribers in them.
      }
    }
    ```
+
+   MCP Registry clients (VS Code and the directories that index the registry) find it as
+   `io.github.Kx96xx/tshark-mcp`: they run the PyPI package with `uvx` and ask for
+   `TSHARK_MCP_ALLOW_DIRS`, the one required setting. Each GitHub release publishes the new
+   version there ([server.json](https://github.com/Kx96xx/tshark-mcp/blob/main/server.json)).
 
    To run it by hand: `tshark-mcp --allow-dir /path/to/pcaps [--allow-dir /more] [--log-file ~/tshark-mcp.jsonl]`.
    `TSHARK_MCP_ALLOW_DIRS` (colon-separated) works instead of the flag. Three small synthetic
