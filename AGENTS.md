@@ -267,6 +267,7 @@ src/tshark_mcp/
   export.py     export_subset: the --export-dir checks, safe names, no-overwrite publish, size budget
 tests/          pytest suite; tests/pcapgen.py builds every synthetic capture at run time
 evals/          task-success scenarios (question, calls, facts, budget) and the stdio harness; docs/EVALS.md
+evals/public/   opt-in re-run on public sample captures fetched by URL + SHA-256 (never committed); docs/VALIDATION.md
 Dockerfile      the container image; tests/test_docker.py and the CI docker job check it
 plugin/         the Claude Code plugin: .claude-plugin/plugin.json and skills/<name>/SKILL.md
 mcpb/           the MCPB desktop bundle: manifest.json, server/main.py (entry point), build.py
