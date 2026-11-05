@@ -36,6 +36,7 @@ from .pairing import Message, annotate_legs, mark_unanswered_near_end, session_i
 from . import redact as redaction
 from . import pfcp
 from . import output as shaping
+from . import capdiff
 from . import incident
 from . import progress
 from . import prompts as guided
@@ -79,7 +80,7 @@ roaming_attach_check (the first failure). Voice: sip_call_detail (one call), med
 (ASR, NER, PDD, ACD per peer, trunk, prefix or interval). IMS:
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
-one procedure: compare_captures. IP services: dns_transactions, tls_handshakes,
+one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
 http_transactions (HTTP and gRPC per endpoint), response_times (network, server
 or receiver time). Before reading missing packets or retransmissions as network
 faults, capture_quality says whether the capture can be trusted; tcp_health
@@ -3410,6 +3411,95 @@ def _cannot_show(quality: dict[str, Any], present: set[str]) -> list[str]:
     if ("quic" in present):
         out.append("QUIC is encrypted after the handshake: no application view")
     return out
+
+
+@_tool(title="Diff two captures (before and after a change)", annotations=READ_ONLY)
+def diff_captures(path_a: str, path_b: str, by: str = "all", filter: str | None = None, include_same: bool = False,
+                  limit: int = 100, offset: int = 0) -> models.DiffCapturesResult:
+    """What changed between a capture from before a change (`path_a`: deploy, firewall
+    rule, DNS switch, MTU change) and one from after (`path_b`), for TCP/IP services.
+    `by`: destinations, dns, tls, http, tcp or all (default). Returns `differences`: one
+    row per server, DNS name or resolver, SNI or HTTP endpoint with `a`, `b`, `delta`,
+    `change` (worse, vanished, appeared, better, same) and a `sentence`, ranked worst
+    first; `first_differences` (the top five sentences); `summary` (changes per section)
+    and both captures' span. Counts are also per minute, as the captures differ in length.
+    Details: Each section runs one tool on both files and joins by key: destinations
+    (tcp_connections view=destinations: attempts, success rate, connect time), dns
+    (dns_transactions: per name the answered share and usual rcode, per resolver the
+    answered share and answer time), tls (tls_handshakes per SNI: established share,
+    outcome, version, cipher suite, certificate expiry), http (http_transactions
+    view=endpoints: 5xx and 4xx share, p50/p99 response time), tcp (tcp_health per server:
+    retransmitted share, handshake RTT, zero windows, resets, MSS). A share must move by
+    10 points (5 for 5xx, 1 for retransmissions) and a time by half and 20 ms to count.
+    `filter` is a display filter passed to the dns, tls, http and tcp passes. Rows with
+    no change are left out unless `include_same`. Not the same as compare_captures, which
+    aligns the message ladder of one telecom procedure."""
+    def run() -> dict[str, Any]:
+        st = state()
+        if by != "all" and by not in capdiff.SECTIONS:
+            raise ToolError("invalid_argument", f"by must be all or one of {', '.join(capdiff.SECTIONS)}, not {echo(by)}")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        a, b = _resolve(path_a), _resolve(path_b)
+        if filter is not None and str(filter).strip():
+            _filter(filter)
+        sections = list(capdiff.SECTIONS) if by == "all" else [by]
+        deadline = _now() + st.limits.timeout_seconds
+        token = runner_deadline(time.monotonic() + st.limits.timeout_seconds)
+        try:
+            infos = {side: pcap_info(str(p)) for side, p in (("a", a), ("b", b))}
+            for side, info in infos.items():
+                if isinstance(info.get("error"), dict):
+                    raise ToolError(info["error"]["type"], f"path_{side}: {info['error'].get('message')}")
+            minutes = {side: (float(info["duration_s"]) / 60.0 if isinstance(info.get("duration_s"), (int, float))
+                              and info["duration_s"] > 0 else None) for side, info in infos.items()}
+            calls: dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any]]] = {
+                "destinations": (tcp_connections, {"view": "destinations", "limit": 500}),
+                "dns": (dns_transactions, {"limit": 500, "filter": filter}),
+                "tls": (tls_handshakes, {"limit": 500, "filter": filter}),
+                "http": (http_transactions, {"view": "endpoints", "limit": 500, "filter": filter}),
+                "tcp": (tcp_health, {"limit": 500, "filter": filter}),
+            }
+            rows: list[dict[str, Any]] = []
+            skipped: list[dict[str, Any]] = []
+            summary: dict[str, Any] = {}
+            for section in sections:
+                if _now() >= deadline:
+                    skipped.append({"section": section, "reason": "time budget used up"})
+                    continue
+                fn, kw = calls[section]
+                kw = {k: v for k, v in kw.items() if v is not None}
+                got = {side: fn(str(p), **kw) for side, p in (("a", a), ("b", b))}
+                bad = next((f"{side}: {r['error'].get('type')}: {r['error'].get('message')}" for side, r in got.items()
+                            if isinstance(r.get("error"), dict)), None)
+                if bad:
+                    skipped.append({"section": section, "reason": bad})
+                    continue
+                for side, r in got.items():
+                    if r.get("total_is_lower_bound") or r.get("next_offset"):
+                        skipped.append({"section": section, "reason": f"capture {side} has more rows than one call "
+                                        "reads (a packet, frame or output cap): this section may miss keys; narrow "
+                                        "with filter or start/end"})
+                section_rows = capdiff.join(section, capdiff.METRICS[section](got["a"]), capdiff.METRICS[section](got["b"]),
+                                            minutes["a"], minutes["b"])
+                summary[section] = dict(Counter(r["change"] for r in section_rows))
+                rows += section_rows
+        finally:
+            runner_deadline_reset(token)
+        ranked = capdiff.rank(rows)
+        shown = ranked if include_same else [r for r in ranked if r["change"] != "same"]
+        first = [r["sentence"] for r in shown if r.get("sentence") and r["change"] != "same"][:5]
+        for r in shown:
+            r.pop("score", None)
+
+        def side(info: dict[str, Any], p: Path) -> dict[str, Any]:
+            return compact({"path": str(p), "first": info.get("first_packet"), "last": info.get("last_packet"),
+                            "duration_s": info.get("duration_s"), "packets": info.get("packets"),
+                            "frames_in_window": info.get("frames_in_window")})
+        return _envelope("differences", shown, cap, None, offset=offset, by=by, **({"display_filter": filter} if filter else {}),
+                         a=side(infos["a"], a), b=side(infos["b"], b), first_differences=first, summary=summary,
+                         not_compared=skipped)
+    return _guarded("diff_captures", {"path_a": path_a, "path_b": path_b, "by": by, "filter": filter,
+                                      "include_same": include_same, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SCTP associations", annotations=READ_ONLY)

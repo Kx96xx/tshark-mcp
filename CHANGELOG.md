@@ -35,6 +35,11 @@ the project uses [semantic versioning](https://semver.org/).
   capture's trust and blind spots, top talkers, a timeline and the passes it skipped and why.
   Tools called by another tool run in the caller's time window; the runner takes a per-call
   deadline so every run of a multi-tool call shares one budget.
+- `diff_captures`: before versus after a change for TCP/IP services. Runs tcp_connections,
+  dns_transactions, tls_handshakes, http_transactions and tcp_health on both captures, joins per
+  destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, and labels each key
+  worse, vanished, appeared, better or same with a sentence and the delta; volumes are also per
+  minute because the captures differ in length.
 
 ### Fixed
 
