@@ -1698,6 +1698,35 @@ class IncidentSummaryResult(ToolResult, total=False):
     thresholds: dict[str, float]
 
 
+class CaptureDifference(TypedDict, total=False):
+    """One key of one section in both captures: ``a`` and ``b`` (that key's metrics in each),
+    ``delta`` (b minus a for the numbers that moved), ``change`` (worse, vanished, appeared,
+    better, same), ``sentence`` and ``rate_per_min`` (the key's volume per minute in each)."""
+    __pydantic_config__ = _EXTRA_OK
+    section: str
+    key: str
+    change: str
+    sentence: str
+    a: dict[str, Any]
+    b: dict[str, Any]
+    delta: dict[str, Any]
+    rate_per_min: dict[str, Any]
+
+
+class DiffCapturesResult(RowsResult, total=False):
+    """``differences`` ranked worst first; ``first_differences`` the top sentences; ``summary``
+    changes per section; ``a`` and ``b`` each capture's span; ``not_compared`` sections skipped
+    or read only in part, with the reason."""
+    differences: list[CaptureDifference]
+    by: str
+    display_filter: str
+    a: dict[str, Any]
+    b: dict[str, Any]
+    first_differences: list[str]
+    summary: dict[str, Any]
+    not_compared: list[dict[str, Any]]
+
+
 class CaptureIndexFile(TypedDict, total=False):
     """One capture file of a directory, in time order. ``gap_before_s`` is the hole between
     the previous file's last packet and this file's first; ``overlap_before_s`` the time both

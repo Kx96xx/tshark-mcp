@@ -1,6 +1,6 @@
 # tshark-mcp
 
-> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Forty-three tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, IMS registration, SMS over IMS, RTP/RTCP, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes and TCP response times, pair requests with answers, name result codes and flag what never got a reply, and say whether the capture itself can be trusted for loss conclusions. It cannot capture, write, export, resolve names or load code.
+> Read-only MCP server that lets an agent analyse existing packet captures with tshark. Forty-four tools return compact JSON for Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, IMS registration, SMS over IMS, RTP/RTCP, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes and TCP response times, pair requests with answers, name result codes and flag what never got a reply, and say whether the capture itself can be trusted for loss conclusions. It cannot capture, write, export, resolve names or load code.
 
 ## What it can and cannot do
 
@@ -22,6 +22,7 @@
 ## Tools
 
 - `incident_summary(path, focus="auto", budget_s=None)`: the first call on a capture nobody has looked at: runs the overview and the protocol tools the capture carries under one time budget and returns `findings` ranked by severity, each one sentence with `evidence` (tool, arguments, frames), `confidence` and `next_call`; plus `capture` (span, trust verdict, what it cannot show), `top_talkers`, `timeline` and `not_checked`. `focus`: auto, web, dns, tls, voip, mobile.
+- `diff_captures(path_a, path_b, by="all", filter=None, include_same=False, limit=100, offset=0)`: before versus after a change (deploy, firewall rule, DNS switch, MTU change) for TCP/IP: per destination, DNS name and resolver, TLS SNI, HTTP endpoint and TCP server the metrics in each capture, the delta and `change` (worse, vanished, appeared, better, same) with one sentence, worst first; `first_differences` lists the top five. For a telecom procedure's ladder use `compare_captures`.
 - `find_identifier(path, identifier, kind="auto", max_files=20, offset=0)`: which files in a directory mention an IMSI, MSISDN, IP address, SIP Call-ID or Diameter Session-Id; hit counts, first/last timestamps, protocol breakdown per file. Call this first when you do not know which capture to open.
 - `capture_index(path, start=None, end=None, max_files=50, min_gap_s=1.0, offset=0)`: the capture files of a directory (a ring buffer) in time order from capinfos: first/last packet, duration, packets, bytes, interfaces, the hole or overlap against the previous file; `summary` with holes, overlaps, whether name order is time order, and with a window the files that cover it and whether they cover it whole. Call it before opening files for an incident at a known time.
 - `pcap_info(path)`: packet count, duration, first/last timestamp, link type, protocol hierarchy, active limits. Call this first on a file.

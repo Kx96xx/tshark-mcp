@@ -158,6 +158,7 @@ class TestRegistration:
             "roaming_attach_check",
             "capture_index",
             "incident_summary",
+            "diff_captures",
         ])
         by_name = {t.name: t for t in tools}
 
