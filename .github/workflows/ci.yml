@@ -108,3 +108,44 @@ jobs:
           done
           docker rm -f hc
           [ "$s" = healthy ]
+
+  mcpb:
+    # Builds the MCPB desktop bundle (never published) and starts the built bundle over stdio.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tshark
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Manifest is current (version, tools list)
+        run: python mcpb/build.py --check
+
+      - name: Validate and pack the bundle
+        run: |
+          python mcpb/build.py
+          npx -y @anthropic-ai/mcpb@2.1.2 validate build/mcpb/manifest.json
+          npx -y @anthropic-ai/mcpb@2.1.2 pack build/mcpb build/tshark-mcp.mcpb
+          unzip -l build/tshark-mcp.mcpb | grep -E 'manifest.json|server/main.py|src/tshark_mcp/server.py'
+
+      - name: The built bundle answers over stdio
+        env:
+          TSHARK_MCP_TEST_BUNDLE: "1"
+        run: python -m pytest -v tests/test_mcpb.py

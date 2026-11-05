@@ -169,7 +169,9 @@ def find_tshark(explicit: str | None = None) -> str:
     """Locate the tshark binary from an explicit path, ``TSHARK_MCP_TSHARK`` or PATH."""
     candidate = explicit or os.environ.get("TSHARK_MCP_TSHARK") or shutil.which("tshark")
     if candidate is None:
-        for fallback in ("/opt/homebrew/bin/tshark", "/usr/local/bin/tshark", "/usr/bin/tshark"):
+        # A desktop host (Claude Desktop) starts the server without the shell's PATH.
+        for fallback in ("/opt/homebrew/bin/tshark", "/usr/local/bin/tshark", "/usr/bin/tshark",
+                         "/Applications/Wireshark.app/Contents/MacOS/tshark"):
             if os.access(fallback, os.X_OK):
                 candidate = fallback
                 break

@@ -25,6 +25,14 @@ the project uses [semantic versioning](https://semver.org/).
   server.json versions agree. `uvx tshark-mcp-server` now starts the server (second entry point
   named after the distribution). tests/test_server_json.py validates server.json against the
   registry schema (vendored) and keeps it in step with pyproject.
+- MCPB desktop bundle for Claude Desktop: `mcpb/manifest.json` (manifest 0.4, `uv` server type, so
+  the host installs Python and the dependencies and nothing compiled ships), settings for the
+  capture directories (several, required; each becomes one `--allow-dir`), redaction and the tshark
+  path, and `mcpb/build.py` to write the bundle directory and keep the manifest's version and
+  tools list in step with the package (`--check`, `--update`). A CI `mcpb` job validates and packs
+  the bundle (never published) and starts the built bundle over stdio. tshark is also looked for
+  at `/Applications/Wireshark.app/Contents/MacOS/tshark`, since desktop hosts start the server
+  without the shell's PATH.
 - Task-success evals (`python -m evals`, docs/EVALS.md): sixteen scenarios over the synthetic
   captures, each an operator question, the calls that answer it and the facts the results must
   hold, with call and token budgets. The harness runs them over the stdio server and scores them
@@ -32,7 +40,6 @@ the project uses [semantic versioning](https://semver.org/).
   calls and scores its final answer as well; it is optional, off by default and never run in CI.
   `--server-dir` and a command after `--` run the scenarios against another stdio server (a
   container). AGENTS.md now names `path_not_allowed` as the error for a path outside the allowlist.
-
 - Six MCP prompts as guided workflows: `one_way_audio`, `subscriber_cannot_attach`,
   `trust_this_capture`, `working_vs_failing`, `ims_registration_or_sms` and `slow_data_session`.
   Each returns the tool calls in order, what to cite, when to stop and the shape of the answer;
