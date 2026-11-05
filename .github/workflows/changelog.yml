@@ -1,0 +1,29 @@
+name: Changelog
+
+# A pull request that changes src/ adds a fragment in changelog.d/ (see changelog.d/README.md);
+# the label no-changelog skips that part. Its own workflow so that adding or removing the label
+# re-runs this check without re-running the test matrix.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  changelog:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fragments are well formed and CHANGELOG.md's Unreleased section is empty
+        run: python scripts/changelog.py --check
+
+      - name: A pull request that changes src/ adds a fragment
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
+        run: python scripts/changelog.py --check --base "origin/${{ github.base_ref }}"
