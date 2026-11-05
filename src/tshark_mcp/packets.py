@@ -18,6 +18,9 @@ AGGREGATOR = "|"
 LINK_LAYERS = ("eth", "ethertype", "sll", "vlan", "frame", "mpls", "erspan", "vxlan", "gre", "geneve", "llc", "null",
                "loop", "raw", "pkt-meta")
 TRANSPORTS = ("tcp", "udp", "sctp", "icmp", "icmpv6")
+# Fields inside a UDP payload that tell two packets of one flow apart (copies.copy_key); a caller
+# that wants them adds them to its field list.
+PAYLOAD_ID_FIELDS = ("quic.packet_number", "rtp.seq", "rtp.ssrc", "dns.id")
 
 
 def _truthy(value: str) -> bool:
@@ -135,6 +138,9 @@ def record(raw: dict[str, list[str]]) -> dict[str, Any]:
             "len": to_int(get(raw, "udp.length", n)), "checksum": get(raw, "udp.checksum.status", n),
             "checksum_value": get(raw, "udp.checksum", n),
         }
+        payload_id = tuple(get(raw, f) for f in PAYLOAD_ID_FIELDS)
+        if any(payload_id):
+            rec["udp"]["payload_id"] = payload_id
     elif transport in ("icmp", "icmpv6"):
         rec["icmp"] = _icmp(raw, transport)
     elif transport == "sctp":

@@ -34,7 +34,12 @@ class CopyTracker:
 
     def check(self, key: Hashable, nonzero_id: bool, time: float | None, info: Any = None,
               distinct: Any = None) -> tuple[bool, Any]:
-        """(is a copy, the ``info`` stored with the first sighting). The latest time is kept.
+        """(is a copy, the ``info`` stored with the first sighting).
+
+        The window is measured from the first sighting: a copy does not move it, so a run of
+        packets that each look like the one before (same headers, a few ms apart) cannot chain
+        into one long run of "copies". A packet outside the window starts a new sighting with
+        its own time and ``info``.
 
         ``distinct`` is a value a true copy must share when both packets carry it (a
         verified transport checksum, see :func:`copy_distinct`): two packets whose
@@ -43,16 +48,17 @@ class CopyTracker:
         previous = self._seen.get(key)
         if previous is not None and distinct is not None and previous[2] is not None and previous[2] != distinct:
             previous = None
-        self._seen[key] = (time, previous[1] if previous is not None else info, distinct)
         if previous is None:
+            self._seen[key] = (time, info, distinct)
             return False, None
         seen_at, first_info, _ = previous
         window = self.id_window if nonzero_id else self.zero_window
         if window is None:
             return True, first_info
-        if time is None or seen_at is None:
+        if time is None or seen_at is None or abs(time - seen_at) > window:
+            self._seen[key] = (time, info, distinct)
             return False, None
-        return abs(time - seen_at) <= window, first_info
+        return True, first_info
 
 
 def nonzero(*ids: str | None) -> bool:
@@ -108,7 +114,11 @@ def copy_key(rec: dict[str, Any], has_id: bool) -> tuple | None:
         transport: tuple = ("tcp", tcp["sport"], tcp["dport"], tcp["seq"], tcp["ack_no"], tcp["len"], tcp["syn"], tcp["fin"],
                             tcp["rst"], None if has_id else tcp.get("checksum_value"))
     elif udp:
-        transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"))
+        # ``payload_id`` (QUIC packet number, RTP sequence number and SSRC, DNS ID) differs between two
+        # packets of one flow and is the same in a copy, whatever the checksum looks like (a checksum
+        # offloaded to the NIC is the same partial sum on every packet of one size).
+        transport = ("udp", udp["sport"], udp["dport"], udp["len"], None if has_id else udp.get("checksum_value"),
+                     udp.get("payload_id"))
     elif rec.get("sctp"):
         # SCTP: two SACKs, DATA packets or heartbeats of one association are different packets,
         # and they differ in the TSNs, the acknowledged TSN or the heartbeat information, whether

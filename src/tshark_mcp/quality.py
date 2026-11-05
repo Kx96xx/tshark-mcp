@@ -37,6 +37,7 @@ FIELDS = [
     "icmpv6.echo.sequence_number",
     "sctp.verification_tag", "sctp.chunk_type", "sctp.data_tsn_raw", "sctp.sack_cumulative_tsn_ack_raw", "sctp.sack_a_rwnd",
     "sctp.parameter_heartbeat_information",
+    *packets.PAYLOAD_ID_FIELDS,
 ]
 
 # Validation of these checksums is off by default in tshark; the runner allows exactly these.
@@ -48,6 +49,7 @@ ENCAPSULATIONS = ("vlan", "mpls", "gre", "erspan", "vxlan", "geneve", "gtp", "sl
 EXAMPLES = 5
 GAP_REPORT_S = 1.0
 ONE_SIDED_MIN = 3  # packets before a one-direction TCP stream counts against the capture
+IDENTICAL = "identical headers (SPAN or mirror of both directions of a port, or a Linux any capture)"
 ZEROED_CAUSE = "rebuilt copy with a zeroed TCP header (a capture tool writing decapsulated packets)"
 
 
@@ -80,7 +82,14 @@ def _copy_cause(first: dict[str, Any], rec: dict[str, Any]) -> str:
         return "seen before and after a router hop (TTL differs)"
     if first["macs"] != (rec["mac_src"], rec["mac_dst"]):
         return "seen on both sides of a switch or router (MAC addresses differ)"
-    return "identical headers (SPAN or mirror of both directions of a port, or a Linux any capture)"
+    return IDENTICAL
+
+
+def _bare_tcp_without_id(rec: dict[str, Any]) -> bool:
+    """A TCP RST or pure ACK (no payload, no SYN or FIN) without an IP ID."""
+    tcp = rec.get("tcp")
+    return bool(tcp) and not has_ip_id(rec) and not tcp["len"] and not tcp["syn"] and not tcp["fin"] \
+        and (tcp["rst"] or tcp["ack"])
 
 
 def _copy_info(rec: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +103,7 @@ def analyse(recs: list[dict[str, Any]]) -> dict[str, Any]:
     flows = FlowTracker()
     ip_packets = copies = 0
     causes: Counter[str] = Counter()
+    repeated: Counter[str] = Counter()
     copy_examples: list[dict[str, Any]] = []
     truncated, trunc_caps, trunc_protos = 0, Counter(), Counter()
     oversized, max_ip = 0, 0
@@ -133,9 +143,15 @@ def analyse(recs: list[dict[str, Any]]) -> dict[str, Any]:
         if key is not None:
             is_copy, first = tracker.check(key, has_ip_id(rec), rec["time"], _copy_info(rec),
                                            distinct=copy_distinct(rec, has_ip_id(rec)))
+            cause = _copy_cause(first, rec) if is_copy else ""
+            if is_copy and cause == IDENTICAL and _bare_tcp_without_id(rec):
+                # A stack with IP ID 0 sends byte-identical RSTs (one per segment still arriving after a
+                # close) and identical duplicate ACKs. Without a link-layer difference nothing tells
+                # such a packet from a mirrored copy, so it is counted as a real repeat.
+                repeated["rst" if rec["tcp"]["rst"] else "ack"] += 1
+                is_copy = False
             if is_copy:
                 copies += 1
-                cause = _copy_cause(first, rec)
                 causes[cause] += 1
                 if len(copy_examples) < EXAMPLES:
                     copy_examples.append({"frame": rec["frame"], "copy_of": first["frame"], "cause": cause})
@@ -179,6 +195,7 @@ def analyse(recs: list[dict[str, Any]]) -> dict[str, Any]:
         "share": round(copies / ip_packets, 4) if ip_packets else 0.0,
         "causes": dict(causes.most_common()) or None,
         "examples": copy_examples or None,
+        "repeated_identical": {f"{k}s": v for k, v in sorted(repeated.items())} or None,
     }
     out["tcp_capture_gaps"] = _gaps(flows)
     out["truncated_frames"] = {
