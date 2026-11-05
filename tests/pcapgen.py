@@ -2743,6 +2743,70 @@ def write_gm_esp_null_pcap(path: Path, clear_challenge: bool = True) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+
+# --------------------------------------------------------------------------- IKEv2 and Teredo
+def _ikev2_notify(ispi: bytes, rspi: bytes, exchange: int, response: bool, msgid: int, notify: int | None = None) -> bytes:
+    """An IKEv2 message (RFC 7296 3.1): the header and, with ``notify``, one Notify payload (3.10)."""
+    payload = b""
+    first = 0
+    if notify is not None:
+        first = 41
+        payload = struct.pack("!BBHBBH", 0, 0, 8, 0, 0, notify)
+    flags = 0x20 if response else 0x08
+    head = ispi + rspi + struct.pack("!BBBBII", first, 0x20, exchange, flags, msgid, 28 + len(payload))
+    return head + payload
+
+
+def write_ike_outcomes_pcap(path: Path) -> Path:
+    """Three IKEv2 peers of one gateway (UDP 500, ESP as IP protocol 50):
+    192.0.2.201: IKE_SA_INIT answered INVALID_KE_PAYLOAD, a retry with another group answered, IKE_AUTH
+    answered, ESP both ways (established after a normal retry);
+    192.0.2.202: IKE_SA_INIT answered NO_PROPOSAL_CHOSEN (failed);
+    192.0.2.203: INVALID_KE_PAYLOAD and the initiator never came back (incomplete)."""
+    t0 = 1_700_003_000.0
+    gw = "198.51.100.200"
+    frames: list[tuple[float, bytes]] = []
+
+    def ike(t: float, src: str, dst: str, msg: bytes) -> None:
+        frames.append((t, _udp_frame(src, dst, 500, 500, msg)))
+
+    def esp(t: float, src: str, dst: str, spi: int, seq: int) -> None:
+        frames.append((t, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=src, dst=dst, proto=50)
+                                / Raw(struct.pack("!II", spi, seq) + bytes(48)))))
+
+    zero = bytes(8)
+    a, r = bytes.fromhex("1111111111111111"), bytes.fromhex("2222222222222222")
+    ike(t0, "192.0.2.201", gw, _ikev2_notify(a, zero, 34, False, 0))
+    ike(t0 + 0.01, gw, "192.0.2.201", _ikev2_notify(a, zero, 34, True, 0, notify=17))
+    ike(t0 + 0.02, "192.0.2.201", gw, _ikev2_notify(a, zero, 34, False, 0))
+    ike(t0 + 0.03, gw, "192.0.2.201", _ikev2_notify(a, r, 34, True, 0))
+    ike(t0 + 0.04, "192.0.2.201", gw, _ikev2_notify(a, r, 35, False, 1))
+    ike(t0 + 0.05, gw, "192.0.2.201", _ikev2_notify(a, r, 35, True, 1))
+    for i in range(3):
+        esp(t0 + 0.1 + i * 0.01, "192.0.2.201", gw, 0xC0000001, i + 1)
+        esp(t0 + 0.105 + i * 0.01, gw, "192.0.2.201", 0xC0000002, i + 1)
+    b = bytes.fromhex("3333333333333333")
+    ike(t0 + 1.0, "192.0.2.202", gw, _ikev2_notify(b, zero, 34, False, 0))
+    ike(t0 + 1.01, gw, "192.0.2.202", _ikev2_notify(b, zero, 34, True, 0, notify=14))
+    c = bytes.fromhex("4444444444444444")
+    ike(t0 + 2.0, "192.0.2.203", gw, _ikev2_notify(c, zero, 34, False, 0))
+    ike(t0 + 2.01, gw, "192.0.2.203", _ikev2_notify(c, zero, 34, True, 0, notify=17))
+    return _frames_to_pcap(path, frames)
+
+
+def write_teredo_pcap(path: Path) -> Path:
+    """IPv6 over Teredo (RFC 4380, UDP 3544): an ICMPv6 echo from a Teredo client through a relay and back."""
+    from scapy.all import ICMPv6EchoReply, ICMPv6EchoRequest, IPv6  # type: ignore
+
+    t0 = 1_700_003_100.0
+    client, relay = "192.0.2.210", "203.0.113.211"
+    v6c, v6p = "2001:0:cb00:71d3::1", "2001:db8::99"
+    out = bytes(IPv6(src=v6c, dst=v6p) / ICMPv6EchoRequest(id=7, seq=1))
+    back = bytes(IPv6(src=v6p, dst=v6c) / ICMPv6EchoReply(id=7, seq=1))
+    frames = [(t0, _udp_frame(client, relay, 50000, 3544, out)), (t0 + 0.05, _udp_frame(relay, client, 3544, 50000, back))]
+    return _frames_to_pcap(path, frames)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

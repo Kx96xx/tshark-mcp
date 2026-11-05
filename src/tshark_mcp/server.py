@@ -2553,7 +2553,7 @@ def tunnels_overview(path: str, kind: str | None = None, endpoint: str | None = 
     `handshake` for IKE (exchanges, error notifies, unanswered requests, DPD, outcome),
     WireGuard (initiations, responses, keepalives, data each way) and OpenVPN (resets, data);
     `esp_sas` per SPI and direction. `issues` in plain words. `kind` (gre, erspan, vxlan,
-    geneve, ipip, ipsec, wireguard, openvpn, l2tp, gtpu) and `endpoint` (an outer IP)
+    geneve, ipip, ipsec, wireguard, openvpn, l2tp, gtpu, teredo) and `endpoint` (an outer IP)
     narrow it.
     Details: One -T fields pass; the outer layer is the first IP layer, the inner one the
     first IP layer after the encapsulation. GRE, VXLAN, Geneve and L2TP rows are keyed by
