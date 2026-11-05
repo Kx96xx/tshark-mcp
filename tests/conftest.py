@@ -16,6 +16,13 @@ HAVE_TSHARK = os.access(TSHARK, os.X_OK)
 
 requires_tshark = pytest.mark.skipif(not HAVE_TSHARK, reason="tshark is not installed")
 
+# The suite exercises every tool: list them all, in this process and in every server it starts
+# with this environment. tests/test_toolsets.py checks the default (smaller) list on its own.
+os.environ["TSHARK_MCP_TOOLSETS"] = "all"
+from tshark_mcp import toolsets as _toolsets  # noqa: E402
+
+_toolsets.set_active(_toolsets.parse("all"))
+
 
 def tshark_version() -> tuple[int, ...]:
     """(major, minor) of the installed tshark, or (0, 0) when unavailable."""

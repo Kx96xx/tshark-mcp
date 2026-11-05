@@ -298,7 +298,8 @@ def server_params(allow_dir: str, command: list[str] | None = None):
     if command:
         return StdioServerParameters(command=command[0], args=command[1:], env=env)
     return StdioServerParameters(command=sys.executable,
-                                 args=["-m", "tshark_mcp.server", "--allow-dir", allow_dir], env=env)
+                                 args=["-m", "tshark_mcp.server", "--allow-dir", allow_dir,
+                                       "--toolsets", env.get("TSHARK_MCP_TOOLSETS") or "all"], env=env)
 
 
 async def run_all(scenarios: list[Scenario], *, captures: str, server_dir: str | None = None,

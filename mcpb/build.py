@@ -30,8 +30,9 @@ SRC = ROOT / "src" / "tshark_mcp"
 def tool_entries() -> list[dict[str, str]]:
     """Name and first sentence of every registered tool, in registration order."""
     sys.path.insert(0, str(ROOT / "src"))
-    from tshark_mcp import server  # noqa: PLC0415
+    from tshark_mcp import server, toolsets  # noqa: PLC0415
 
+    toolsets.set_active(toolsets.parse("all"))  # the manifest lists every tool the bundle can serve
     out = []
     for tool in asyncio.run(server.app.list_tools()):
         text = " ".join((tool.description or "").split())

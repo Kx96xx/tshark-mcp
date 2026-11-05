@@ -40,7 +40,8 @@
         "${user_config.allow_dirs}"
       ],
       "env": {
-        "TSHARK_MCP_TSHARK": "${user_config.tshark_path}"
+        "TSHARK_MCP_TSHARK": "${user_config.tshark_path}",
+        "TSHARK_MCP_TOOLSETS": "${user_config.toolsets}"
       }
     }
   },
@@ -57,6 +58,13 @@
       "title": "Redaction",
       "description": "off, ids (IMSI, MSISDN, IMEI and SIP identities become stable tokens) or ids+ips (addresses too).",
       "default": "off",
+      "required": false
+    },
+    "toolsets": {
+      "type": "string",
+      "title": "Toolsets",
+      "description": "Tool groups to list besides the default ones: mobile, voice, network or all, comma-separated (empty: default only).",
+      "default": "default",
       "required": false
     },
     "tshark_path": {

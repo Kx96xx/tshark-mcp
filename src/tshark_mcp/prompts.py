@@ -185,6 +185,14 @@ def tools_named(text: str) -> set[str]:
     return set(_TOOL_CALL.findall(text))
 
 
+def prompt_tools(name: str) -> set[str]:
+    """The tools prompt ``name`` names, read from its text rendered with placeholder arguments."""
+    import inspect
+    _title, fn = PROMPTS[name]
+    args = {p.name: "x" for p in inspect.signature(fn).parameters.values() if p.default is inspect.Parameter.empty}
+    return tools_named(fn(**args))
+
+
 def register(app: Any) -> None:
     for name, (title, fn) in PROMPTS.items():
         app.prompt(name=name, title=title, description=fn.__doc__)(fn)

@@ -93,7 +93,7 @@ def test_python_dash_m_serves_the_discovered_tools(tmp_path: Path):
 
     async def go() -> tuple[set[str], bool]:
         params = StdioServerParameters(command=sys.executable,
-                                       args=["-m", "tshark_mcp.server", "--allow-dir", str(tmp_path)])
+                                       args=["-m", "tshark_mcp.server", "--allow-dir", str(tmp_path), "--toolsets", "all"])
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
