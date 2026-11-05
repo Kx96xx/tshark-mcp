@@ -189,13 +189,15 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-Fifty-five tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Fifty-five<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
-compact by default (159 KB instead of 402 KB at 55 tools); each tool's full schema is the resource `schema://tools/<name>`, and
+compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
 what it cost in `tokens_estimate`.
+
+<!-- BEGIN GENERATED: readme-tools (python scripts/gen_docs.py; edit docs/tools/<name>.md, not here) -->
 
 | Tool | One line |
 | --- | --- |
@@ -255,6 +257,8 @@ what it cost in `tokens_estimate`.
 | `roaming_attach_check` | Why a roamer cannot attach or get a bearer: each attempt's steps, the ULA subscription held against the Create Session, checks and a verdict |
 | `compare_captures` | A working and a failing capture side by side, with the first divergence |
 
+<!-- END GENERATED: readme-tools -->
+
 ## Prompts
 
 Six MCP prompts turn the common investigations into guided workflows: the tool calls in
@@ -310,7 +314,7 @@ pytest
 python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 1076 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
