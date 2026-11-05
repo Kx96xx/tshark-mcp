@@ -189,9 +189,9 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-Fifty-four tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Fifty-five tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
-compact by default (156 KB instead of 395 KB at 54 tools); each tool's full schema is the resource `schema://tools/<name>`, and
+compact by default (159 KB instead of 402 KB at 55 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
@@ -218,6 +218,7 @@ what it cost in `tokens_estimate`.
 | `find_fields` | Search tshark's field names without reading a capture |
 | `check_filter` | Compile a display filter and name its fields without reading a capture |
 | `cause_lookup` | What a Diameter, GTP, PFCP, NAS, S1AP/NGAP, SIP, Q.850, MAP, SCCP, SGsAP or SMS cause means, with the 3GPP/ITU reference |
+| `diameter_peers` | Per Diameter peer: CER/CEA capabilities, watchdog cadence and misses, DPR and restarts, success ratio, routing errors with the realm, Failed-AVP names and RTT per application, with a verdict |
 | `diameter_transactions` | Requests paired with answers, result codes named, RTT, unanswered |
 | `diameter_sessions` | The same grouped by Session-Id, with per-session counts |
 | `diameter_avps` | The AVPs behind each transaction: flags with bit names, Subscription-Data digest, Gy/Rx/Cx/Sh/S13 digests with failed codes explained, full tree; authentication material never returned |
@@ -309,7 +310,7 @@ pytest
 python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 1068 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 1076 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

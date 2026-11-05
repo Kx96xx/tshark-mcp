@@ -169,6 +169,7 @@ class TestRegistration:
             "volte_call_chain",
             "sigtran_health",
             "sms_delivery",
+            "diameter_peers",
         ])
         by_name = {t.name: t for t in tools}
 

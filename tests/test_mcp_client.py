@@ -49,6 +49,7 @@ EXPECTED_TOOLS = {
     "volte_call_chain",
     "sigtran_health",
     "sms_delivery",
+    "diameter_peers",
 }
 
 
@@ -108,6 +109,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("volte_call_chain", {"path": f"{d}/volte/volte_chain.pcap", "call_id": pcapgen.VOLTE_CALL["bearer"]}),
         ("sigtran_health", {"path": f"{d}/ss7/sigtran_health.pcap", "point_code": 300}),
         ("sms_delivery", {"path": f"{d}/smsd/sms_delivery.pcap", "via": "sgs"}),
+        ("diameter_peers", {"path": f"{d}/dra/diameter_peers.pcap"}),
         ("diameter_avps", {"path": f"{d}/ims/diameter_apps.pcap", "command_code": 265, "detail": "key"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
@@ -311,6 +313,8 @@ def test_every_tool_call_returns_structured_content(client_run):
     assert link["verdict"] == "degraded" and link["m3ua"]["point_code_outages"][0]["outage_s"] == 8.0
     smsd = by_name[("sms_delivery", ("path", "via"))]
     assert [a["verdict"] for a in smsd["attempts"]] == ["delivered", "paging_failed", "rejected"]
+    dra = by_name[("diameter_peers", ("path",))]
+    assert [p["verdict"] for p in dra["peers"]] == ["restarted", "degraded", "down"]
     roam = by_name[("roaming_attach_check", ("imsi", "path"))]
     (attempt,) = roam["attempts"]
     assert attempt["first_failure"]["code"] == 78 and "Create Session failed" in attempt["verdict"]

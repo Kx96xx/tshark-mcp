@@ -146,6 +146,10 @@ the project uses [semantic versioning](https://semver.org/).
   paging, service request, PAGING-REJECT and the CP/RP exchange per IMSI, with MAP, SGs, CP and RP
   causes named and a verdict (delivered, rejected, absent subscriber, paging failed, no response).
   Content-free: no text, no TP-OA or TP-DA.
+- `diameter_peers`: the per-peer view of a DRA: CER/CEA capabilities, watchdog cadence and missed
+  DWAs, DPR with Disconnect-Cause, restarts from Origin-State-Id, per-application success ratio,
+  result classes, routing errors with the Destination-Realm they named, Failed-AVP names, Error-Message
+  text and RTT percentiles, with a verdict (healthy, degraded, restarted, down) per peer.
 
 ### Changed
 

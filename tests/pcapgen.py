@@ -2191,6 +2191,101 @@ def write_sms_pcaps(directory: Path) -> dict[str, Path]:
     return {"sms_delivery": write_sms_delivery_pcap(directory / "sms_delivery.pcap")}
 
 
+# --------------------------------------------------------------------------- Diameter peers (DRA view)
+DRA_IP = "192.0.2.21"
+PEER_PCRF_IP = "192.0.2.55"
+PEER_BAD_IP = "192.0.2.57"
+DRA_HOST = "dra.test.example"
+PEER_HOST = {"mme": "mme.test.example", "pcrf": "pcrf.test.example", "bad": "ocs.test.example"}
+UNROUTABLE_REALM = "unknown-realm.example"
+
+
+def _peer_msg(cmd: int, app: int, hbh: int, request: bool, origin: str, avps: list[bytes]) -> bytes:
+    base = [_avp(264, origin.encode()), _avp(296, b"test.example")]
+    return _diameter(cmd, app, hbh, hbh, request, base + avps)
+
+
+def _diameter_peer_frames() -> list[tuple[float, bytes]]:
+    frames: list[tuple[float, bytes]] = []
+    tsn = [0]
+    t0 = 1_700_500_000.0
+
+    def send(t: float, src: str, dst: str, payload: bytes) -> None:
+        tsn[0] += 1
+        frames.append((t, _sctp_data(src, dst, 3868, 3868, 0x7701, tsn[0], 46, payload)))
+
+    def u32(code: int, v: int) -> bytes:
+        return _avp(code, struct.pack("!I", v))
+
+    def cer(t: float, peer_ip: str, host: str, hbh: int, apps: list[int], state: int, result: int = 2001) -> None:
+        send(t, peer_ip, DRA_IP, _peer_msg(257, 0, hbh, True, host, [
+            _avp(257, b"\x00\x01" + _ipv4(peer_ip)), u32(266, 0), _avp(269, b"test-peer"), u32(278, state),
+            *[u32(258, a) for a in apps],
+            _avp(260, _avp(266, struct.pack("!I", VENDOR_3GPP)) + _avp(258, struct.pack("!I", apps[0]))),
+            u32(299, 0), u32(267, 101)]))
+        send(t + 0.01, DRA_IP, peer_ip, _peer_msg(257, 0, hbh, False, DRA_HOST, [
+            u32(268, result), _avp(257, b"\x00\x01" + _ipv4(DRA_IP)), u32(266, 0), _avp(269, b"test-dra"),
+            u32(278, 1), *[u32(258, a) for a in apps]]))
+
+    def dwr(t: float, peer_ip: str, host: str, hbh: int, answered: bool = True, state: int = 5) -> None:
+        send(t, peer_ip, DRA_IP, _peer_msg(280, 0, hbh, True, host, [u32(278, state)]))
+        if answered:
+            send(t + 0.005, DRA_IP, peer_ip, _peer_msg(280, 0, hbh, False, DRA_HOST, [u32(268, 2001)]))
+
+    mme, pcrf, bad = PEER_HOST["mme"], PEER_HOST["pcrf"], PEER_HOST["bad"]
+    # MME: CER, S6a traffic with two routing errors for an unknown realm, watchdogs (one missed), then DPR
+    # (REBOOTING) and a CER with a new Origin-State-Id.
+    cer(t0, MME_IP, mme, 1, [S6A], 5)
+    hbh = 100
+    for i in range(4):
+        hbh += 1
+        req = [_avp(263, f"{mme};s6a;{i}".encode()), _avp(283, b"test.example"), u32(258, S6A)]
+        send(t0 + 1 + i, MME_IP, DRA_IP, _peer_msg(316, S6A, hbh, True, mme, req))
+        send(t0 + 1 + i + 0.02 + 0.01 * i, DRA_IP, MME_IP, _peer_msg(316, S6A, hbh, False, "hss.test.example",
+                                                                       [_avp(263, f"{mme};s6a;{i}".encode()), u32(268, 2001)]))
+    for i in range(2):
+        hbh += 1
+        req = [_avp(263, f"{mme};air;{i}".encode()), _avp(283, UNROUTABLE_REALM.encode()), u32(258, S6A),
+               _avp(282, b"dra.test.example")]
+        send(t0 + 6 + i, MME_IP, DRA_IP, _peer_msg(318, S6A, hbh, True, mme, req))
+        send(t0 + 6 + i + 0.003, DRA_IP, MME_IP, _peer_msg(318, S6A, hbh, False, DRA_HOST,
+                                                            [_avp(263, f"{mme};air;{i}".encode()), u32(268, 3002),
+                                                             _avp(281, b"no route to realm")]))
+    dwr(t0 + 10, MME_IP, mme, 201)
+    dwr(t0 + 40, MME_IP, mme, 202, answered=False)
+    dwr(t0 + 70, MME_IP, mme, 203)
+    send(t0 + 80, MME_IP, DRA_IP, _peer_msg(282, 0, 204, True, mme, [u32(273, 0)]))
+    send(t0 + 80.01, DRA_IP, MME_IP, _peer_msg(282, 0, 204, False, DRA_HOST, [u32(268, 2001)]))
+    cer(t0 + 95, MME_IP, mme, 205, [S6A], 6)
+    dwr(t0 + 110, MME_IP, mme, 206, state=6)
+    # PCRF: healthy watchdogs, one Gx answer 5005 MISSING_AVP naming Framed-IP-Address.
+    cer(t0 + 0.5, PEER_PCRF_IP, pcrf, 301, [16777238], 9)
+    for i in range(4):
+        dwr(t0 + 20 + 30 * i, PEER_PCRF_IP, pcrf, 310 + i, state=9)
+    send(t0 + 30, DRA_IP, PEER_PCRF_IP, _peer_msg(272, 16777238, 320, True, "pgw.test.example",
+                                                  [_avp(263, b"pgw;gx;9"), _avp(283, b"test.example"), u32(258, 16777238)]))
+    send(t0 + 30.05, PEER_PCRF_IP, DRA_IP, _peer_msg(272, 16777238, 320, False, pcrf, [
+        _avp(263, b"pgw;gx;9"), u32(268, 5005), _avp(279, _avp(8, _ipv4("0.0.0.0")))]))
+    # OCS: the capability exchange is refused (5010 NO_COMMON_APPLICATION).
+    cer(t0 + 2, PEER_BAD_IP, bad, 401, [4], 3, result=5010)
+    frames.sort(key=lambda f: f[0])
+    return frames
+
+
+def write_diameter_peers_pcap(path: Path) -> Path:
+    """A DRA's view of three Diameter peers: an MME with S6a traffic, two 3002 answers for an
+    unknown realm, a missed watchdog, a DPR (REBOOTING) and a reconnect with a new
+    Origin-State-Id; a PCRF with steady watchdogs and one 5005 answer naming the missing AVP;
+    an OCS whose CER is refused with 5010."""
+    return _frames_to_pcap(path, _diameter_peer_frames())
+
+
+def write_dra_pcaps(directory: Path) -> dict[str, Path]:
+    """The Diameter peer capture, in its own directory like the voice ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {"diameter_peers": write_diameter_peers_pcap(directory / "diameter_peers.pcap")}
+
+
 # --------------------------------------------------------------------------- examples/
 # The captures committed under examples/ in the repository. Each tells one story in a
 # few dozen packets; ``tests/test_examples.py`` regenerates them and checks that the
