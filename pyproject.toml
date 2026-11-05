@@ -31,10 +31,13 @@ classifiers = [
 dependencies = ["mcp>=2.1", "pydantic>=2.12,<3", "typing-extensions>=4.6"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "scapy>=2.5"]
+dev = ["pytest>=8", "scapy>=2.5", "jsonschema>=4.18"]
 
 [project.scripts]
 tshark-mcp = "tshark_mcp.server:main"
+# Same entry point under the distribution name, so `uvx tshark-mcp-server` (what MCP registry
+# clients run for a PyPI package) starts the server without --from.
+tshark-mcp-server = "tshark_mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/Kx96xx/tshark-mcp"

@@ -13,6 +13,13 @@ the project uses [semantic versioning](https://semver.org/).
   job builds it (never pushes it), checks the user, the tshark version and the refusal without
   `--allow-dir`, and runs every task-success scenario over stdio inside `docker run -i --read-only
   --cap-drop ALL --network none`.
+- MCP Registry metadata: `server.json` (`io.github.Kx96xx/tshark-mcp`, PyPI package, stdio,
+  `TSHARK_MCP_ALLOW_DIRS` required), the `mcp-name` marker in README, `glama.json`, and a
+  `registry` job in publish.yml that publishes server.json with `mcp-publisher` (pinned, digest
+  checked, GitHub OIDC) after the PyPI upload. A release fails early unless the tag, pyproject and
+  server.json versions agree. `uvx tshark-mcp-server` now starts the server (second entry point
+  named after the distribution). tests/test_server_json.py validates server.json against the
+  registry schema (vendored) and keeps it in step with pyproject.
 - Task-success evals (`python -m evals`, docs/EVALS.md): sixteen scenarios over the synthetic
   captures, each an operator question, the calls that answer it and the facts the results must
   hold, with call and token budgets. The harness runs them over the stdio server and scores them

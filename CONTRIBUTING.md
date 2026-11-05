@@ -43,3 +43,10 @@ Open an issue with the tshark and Python versions, the tool and arguments, what 
 what you expected. Include a way to reproduce that does not involve real traffic: a few lines
 added to `tests/pcapgen.py`, or a capture built with scapy or `text2pcap` from hand-written
 packets.
+
+## Releases
+
+Bump the version in `pyproject.toml`, `server.json` (`version` and `packages[0].version`) and
+`src/tshark_mcp/__init__.py`, then publish a GitHub release tagged `v<version>`.
+publish.yml uploads to PyPI and then publishes server.json to the MCP Registry; it refuses a tag
+that does not match all of them.
