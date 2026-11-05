@@ -142,35 +142,10 @@ class TestRegistration:
         from tshark_mcp.server import app
         tools = asyncio.run(app.list_tools())
         names = sorted(t.name for t in tools)
-        assert names == sorted([
-            "pfcp_sessions",
-            "tcp_connections",
-            "icmp_errors",
-            "capture_metadata",
-            "http_transactions",
-            "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions",
-            "gtp_sessions", "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages",
-            "trace_subscriber", "find_identifier", "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates", "gtpv1_sessions",
-            "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "ims_registration", "sms_over_ims", "find_fields", "check_filter",
-            "cause_lookup",
-            "call_kpis",
-            "gtp_ies",
-            "roaming_attach_check",
-            "capture_index",
-            "incident_summary",
-            "diff_captures",
-            "throughput_timeline",
-            "tunnels_overview",
-            "export_subset",
-            "tls_certificates",
-            "quic_connections",
-            "call_legs",
-            "nas_procedures",
-            "volte_call_chain",
-            "sigtran_health",
-            "sms_delivery",
-            "diameter_peers",
-        ])
+        # The tool set comes from the registry (server.TOOLS): the stdio test checks a client sees
+        # the same set, and the generated docs check catches a tool that disappears.
+        from tshark_mcp.server import TOOLS
+        assert names == sorted(TOOLS) and len(names) == len(TOOLS)
         by_name = {t.name: t for t in tools}
 
         def params(name: str) -> set[str]:

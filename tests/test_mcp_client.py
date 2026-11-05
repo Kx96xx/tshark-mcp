@@ -15,6 +15,8 @@ import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from tshark_mcp import server
+
 from . import pcapgen
 from .conftest import TSHARK, requires_tshark
 
@@ -22,35 +24,11 @@ pytestmark = requires_tshark
 
 CAPTURE_FREE_TOOLS = {"find_fields", "check_filter", "cause_lookup"}  # they read tshark's glossary, never a capture
 
-EXPECTED_TOOLS = {
-    "pfcp_sessions",
-    "tcp_connections",
-    "icmp_errors",
-    "capture_metadata",
-    "http_transactions",
-    "pcap_info", "conversations", "filter_packets", "diameter_transactions", "diameter_sessions", "gtp_sessions",
-    "gtp_user_plane", "sip_dialogs", "sctp_associations", "sigtran_messages", "trace_subscriber", "find_identifier",
-    "diameter_avps", "compare_captures", "gtp_tunnel_health", "message_rates",
-    "gtpv1_sessions", "dns_transactions", "tls_handshakes", "capture_quality", "rtp_streams", "tcp_health", "sip_call_detail", "packet_detail", "response_times", "expert_info", "media_path_check", "dtmf_events", "ims_registration", "sms_over_ims", "find_fields", "check_filter",
-    "cause_lookup",
-    "call_kpis",
-    "gtp_ies",
-    "roaming_attach_check",
-    "capture_index",
-    "incident_summary",
-    "diff_captures",
-    "throughput_timeline",
-    "call_legs",
-    "tunnels_overview",
-    "export_subset",
-    "tls_certificates",
-    "quic_connections",
-    "nas_procedures",
-    "volte_call_chain",
-    "sigtran_health",
-    "sms_delivery",
-    "diameter_peers",
-}
+# Every tool the server registers (server.TOOLS: the tools in server.py, then the modules of
+# tshark_mcp/tools/ found by discovery). test_list_tools_names_and_schemas checks that a client
+# started over stdio sees exactly this set, so a discovered module that fails to load under
+# ``python -m tshark_mcp.server`` fails here.
+EXPECTED_TOOLS = frozenset(server.tool_names())
 
 
 def _attr(obj: Any, *names: str) -> Any:
