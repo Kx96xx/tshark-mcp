@@ -40,6 +40,7 @@ def pcap_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     pcapgen.write_ims_pcaps(directory / "ims")
     pcapgen.write_ran_pcaps(directory / "ran")
     pcapgen.write_volte_pcaps(directory / "volte")
+    pcapgen.write_ss7_pcaps(directory / "ss7")
     return directory
 
 

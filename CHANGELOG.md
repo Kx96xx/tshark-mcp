@@ -136,6 +136,11 @@ the project uses [semantic versioning](https://semver.org/).
   PFCP and the first RTP per direction, then the teardown; each link has a status (ok, failed,
   missing, not_captured, late), how it was found and its delay, and each call a first broken link
   and a verdict.
+- `sigtran_health`: SS7-over-IP link health per SCTP association: episodes from INIT to ABORT
+  (cause named) or SHUTDOWN and the gap before the next INIT, heartbeat failures, the M3UA ASP state
+  machine with acknowledgement times, ERR named, DUNA/DAVA outages per point code (ITU 3-8-3 and
+  ANSI 8-8-8), SCCP returns per unreachable GT and SSN and TCAP P-Abort causes, with a verdict
+  (healthy, degraded, flapping, down) and issues in plain words.
 
 ### Changed
 

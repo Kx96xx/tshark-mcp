@@ -809,6 +809,23 @@ class VolteCall(TypedDict, total=False):
 
 class VolteCallChainResult(RowsResult, total=False):
     calls: list[VolteCall]
+class SigtranAssociation(TypedDict, total=False):
+    """One SCTP association with its episodes, heartbeats, M3UA ASP state, SCCP returns and TCAP aborts."""
+    __pydantic_config__ = _EXTRA_OK
+    endpoints: list[str]
+    first_frame: int
+    last_frame: int
+    verdict: str
+    episodes: list[dict[str, Any]]
+    heartbeat: dict[str, Any]
+    m3ua: dict[str, Any]
+    sccp_returns: list[dict[str, Any]]
+    tcap_aborts: list[dict[str, Any]]
+    issues: list[str]
+
+
+class SigtranHealthResult(RowsResult, total=False):
+    associations: list[SigtranAssociation]
     summary: dict[str, Any]
     method: dict[str, str]
 

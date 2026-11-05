@@ -17,6 +17,7 @@ from pathlib import Path
 from scapy.all import IP, UDP, Ether, Raw, wrpcap  # type: ignore
 from scapy.layers.sctp import (  # type: ignore
     SCTP,
+    SCTPChunkAbort,
     SCTPChunkCookieAck,
     SCTPChunkCookieEcho,
     SCTPChunkData,
@@ -1963,6 +1964,108 @@ def write_volte_pcaps(directory: Path) -> dict[str, Path]:
     """The VoLTE chain capture, in its own directory like the voice ones."""
     directory.mkdir(parents=True, exist_ok=True)
     return {"volte_chain": write_volte_chain_pcap(directory / "volte_chain.pcap")}
+
+
+# --------------------------------------------------------------------------- SIGTRAN health
+STP_C = "192.0.2.62"
+SIGTRAN_UNKNOWN_GT = "15550109099"
+
+
+def _m3ua(cls: int, mtype: int, params: list[tuple[int, bytes]]) -> bytes:
+    body = b""
+    for tag, value in params:
+        body += struct.pack("!HH", tag, 4 + len(value)) + value + b"\x00" * ((-len(value)) % 4)
+    return struct.pack("!BBBBI", 1, 0, cls, mtype, 8 + len(body)) + body
+
+
+def _m3ua_rc(rc: int) -> tuple[int, bytes]:
+    return 0x0006, struct.pack("!I", rc)
+
+
+def _m3ua_apc(pc: int) -> tuple[int, bytes]:
+    return 0x0012, struct.pack("!I", pc & 0xFFFFFF)
+
+
+def _sigtran_health_frames() -> list[tuple[float, bytes]]:
+    frames: list[tuple[float, bytes]] = []
+    tsn = {"x": 0}
+
+    def sctp(t: float, src: str, dst: str, sport: int, dport: int, tag: int, chunk) -> None:
+        frames.append((t, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=src, dst=dst)
+                                / SCTP(sport=sport, dport=dport, tag=tag) / chunk)))
+
+    def data(t: float, src: str, dst: str, sport: int, dport: int, tag: int, payload: bytes) -> None:
+        tsn["x"] += 1
+        frames.append((t, _sctp_data(src, dst, sport, dport, tag, tsn["x"], 3, payload)))
+
+    def handshake(t: float, a: str, b: str, pa: int, pb: int, ta: int, tb: int) -> None:
+        sctp(t, a, b, pa, pb, 0, SCTPChunkInit(init_tag=ta, a_rwnd=65535, n_out_streams=2, n_in_streams=2, init_tsn=1))
+        sctp(t + 0.01, b, a, pb, pa, ta, SCTPChunkInitAck(init_tag=tb, a_rwnd=65535, n_out_streams=2, n_in_streams=2,
+                                                          init_tsn=1, params=[SCTPChunkParamStateCookie(cookie=b"\x02" * 8)]))
+        sctp(t + 0.02, a, b, pa, pb, tb, SCTPChunkCookieEcho(cookie=b"\x02" * 8))
+        sctp(t + 0.03, b, a, pb, pa, ta, SCTPChunkCookieAck())
+
+    def asp_up(t: float, a: str, b: str, pa: int, pb: int, ta: int, tb: int, rc: int) -> None:
+        data(t, a, b, pa, pb, tb, _m3ua(3, 1, []))                     # ASPUP
+        data(t + 0.01, b, a, pb, pa, ta, _m3ua(3, 4, []))              # ASPUP_ACK
+        data(t + 0.02, a, b, pa, pb, tb, _m3ua(4, 1, [_m3ua_rc(rc)]))  # ASPAC
+        data(t + 0.03, b, a, pb, pa, ta, _m3ua(4, 3, [_m3ua_rc(rc)]))  # ASPAC_ACK
+        data(t + 0.04, b, a, pb, pa, ta, _m3ua(0, 1, [_m3ua_rc(rc), (0x000D, struct.pack("!HH", 1, 3))]))  # NTFY AS-Active
+
+    t0 = 1_700_300_000.0
+    a, b, pa, pb = STP_A, STP_B, 2905, 2905
+    ta, tb = 0xA0000001, 0xB0000001
+    handshake(t0, a, b, pa, pb, ta, tb)
+    asp_up(t0 + 0.1, a, b, pa, pb, ta, tb, 1)
+    # A MAP Begin to a GT the STP cannot translate: UDTS with return cause 1.
+    vlr_gt, hlr_gt = "15550109001", "15550109002"
+    begin = _tcap_begin(b"\x00\x00\x00\x11", _invoke(1, 2, _ber(0x30, _ber(0x04, _tbcd(IMSI)))))
+    udt = _sccp_udt(_sccp_gt(SIGTRAN_UNKNOWN_GT, 6), _sccp_gt(vlr_gt, 7), begin)
+    data(t0 + 1.0, a, b, pa, pb, tb, _m3ua_data(100, 200, udt))
+    udts = bytes([0x0A, 0x01]) + _sccp_udt(_sccp_gt(vlr_gt, 7), _sccp_gt(SIGTRAN_UNKNOWN_GT, 6), begin)[2:]
+    data(t0 + 1.01, b, a, pb, pa, ta, _m3ua_data(200, 100, udts))
+    # A TCAP P-Abort (unrecognised transaction id) for a dialogue the HLR does not know.
+    data(t0 + 2.0, b, a, pb, pa, ta, _m3ua_data(200, 100, _sccp_udt(_sccp_gt(vlr_gt, 7), _sccp_gt(hlr_gt, 6),
+                                                                      _ber(0x67, _ber(0x49, b"\x00\x00\x00\x22")
+                                                                           + _ber(0x4A, b"\x01")))))
+    # Heartbeats: two answered, two unanswered, then the peer aborts the association.
+    for i, answered in enumerate((True, True, False, False)):
+        t = t0 + 10 + 10 * i
+        sctp(t, a, b, pa, pb, tb, SCTPChunkHeartbeatReq(params=[SCTPChunkParamHeartbeatInfo(data=b"hb%02d" % i)]))
+        if answered:
+            sctp(t + 0.005, b, a, pb, pa, ta, SCTPChunkHeartbeatAck(params=[SCTPChunkParamHeartbeatInfo(data=b"hb%02d" % i)]))
+    sctp(t0 + 45.0, b, a, pb, pa, ta, SCTPChunkAbort(error_causes=struct.pack("!HH", 12, 4)))
+    # Re-established 5 s later; then point code 300 becomes unavailable for 8 s; an ERR on a bad routing context.
+    ta2, tb2 = 0xA0000002, 0xB0000002
+    handshake(t0 + 50.0, a, b, pa, pb, ta2, tb2)
+    asp_up(t0 + 50.1, a, b, pa, pb, ta2, tb2, 1)
+    data(t0 + 52.0, b, a, pb, pa, ta2, _m3ua(2, 1, [_m3ua_rc(1), _m3ua_apc(300)]))   # DUNA
+    data(t0 + 60.0, b, a, pb, pa, ta2, _m3ua(2, 2, [_m3ua_rc(1), _m3ua_apc(300)]))   # DAVA
+    data(t0 + 61.0, b, a, pb, pa, ta2, _m3ua(0, 0, [(0x000C, struct.pack("!I", 0x19))]))  # ERR invalid RC
+    # A second, healthy association from another signalling point.
+    c, pc_, tc, td = STP_C, 2906, 0xC0000001, 0xD0000001
+    handshake(t0 + 0.5, c, b, pc_, pb, tc, td)
+    asp_up(t0 + 0.6, c, b, pc_, pb, tc, td, 2)
+    for i in range(3):
+        t = t0 + 15 + 15 * i
+        sctp(t, c, b, pc_, pb, td, SCTPChunkHeartbeatReq(params=[SCTPChunkParamHeartbeatInfo(data=b"cb%02d" % i)]))
+        sctp(t + 0.004, b, c, pb, pc_, tc, SCTPChunkHeartbeatAck(params=[SCTPChunkParamHeartbeatInfo(data=b"cb%02d" % i)]))
+    frames.sort(key=lambda f: f[0])
+    return frames
+
+
+def write_sigtran_health_pcap(path: Path) -> Path:
+    """Two M3UA associations. The first comes up (INIT, ASPUP, ASPAC, NTFY), carries a MAP
+    Begin answered by a UDTS (return cause 1) and a TCAP P-Abort, loses two heartbeats, is
+    aborted by the peer, comes back 5 s later, then sees DUNA/DAVA for point code 300 and an
+    ERR (invalid routing context). The second stays healthy."""
+    return _frames_to_pcap(path, _sigtran_health_frames())
+
+
+def write_ss7_pcaps(directory: Path) -> dict[str, Path]:
+    """The SIGTRAN health captures, in their own directory like the voice ones."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return {"sigtran_health": write_sigtran_health_pcap(directory / "sigtran_health.pcap")}
 
 
 # --------------------------------------------------------------------------- examples/
