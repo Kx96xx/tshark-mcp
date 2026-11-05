@@ -143,7 +143,8 @@ async def _over_stdio(pcap_dir: Path, profile: str | None) -> dict[str, Any]:
 def test_tool_list_and_schema_resources_over_stdio(pcap_dir: Path, profile: str | None):
     got = asyncio.run(_over_stdio(pcap_dir, profile))
     tools = got["tools"]
-    assert set(got["resources"]) == {f"schema://tools/{name}" for name in tools}
+    # Schema resources, plus the MCP Apps view of call_ladder.
+    assert set(got["resources"]) == {f"schema://tools/{name}" for name in tools} | {"ui://tshark-mcp/ladder.html"}
     gtp_out = tools["gtp_sessions"].output_schema
     if profile == "full":
         assert "$defs" in gtp_out and "Proxy chains" in tools["gtp_sessions"].description

@@ -284,6 +284,10 @@
       "description": "Compare a working and a failing capture of the same procedure."
     },
     {
+      "name": "call_ladder",
+      "description": "A ladder diagram to paste into a ticket: the messages of one call (`call_id`, every SIP leg from call_legs) or one subscriber (`imsi` or `msisdn`, Diameter, GTP, PFCP, SIP, ."
+    },
+    {
       "name": "diameter_peers",
       "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
     }
