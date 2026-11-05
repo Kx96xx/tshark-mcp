@@ -291,3 +291,14 @@ def test_incident_summary_over_stdio(caps: Path):
     assert not got["unread"].is_error and [u["protocol"] for u in unread["not_analysed"]] == ["coap", "dhcp", "mqtt"]
     sctp = got["sctp"].structured_content
     assert {"sctp_init_rejected", "map_errors"} <= {f["kind"] for f in sctp["findings"]}
+
+
+def test_every_next_call_runs(inc, caps: Path):
+    """Each finding's and each not_analysed entry's next_call is a valid call of an existing tool."""
+    for name in ("sctp_map", "n4_gn", "web_tunnels", "recvonly_call", "unanalysed"):
+        out = inc.incident_summary(str(caps / "cov" / f"{name}.pcap"))
+        for step in [f["next_call"] for f in out["findings"]] + [u["next_call"] for u in out["not_analysed"]]:
+            result = inc.TOOLS[step["tool"]](**step["args"])
+            assert "error" not in result, (name, step, result.get("error"))
+    restart = incident.from_pfcp({"summary": {"peer_restarts": 1}}, {"path": "/x", "view": "transactions"})
+    assert restart[0]["next_call"]["args"]["view"] == "sessions"

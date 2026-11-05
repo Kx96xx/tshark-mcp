@@ -476,7 +476,7 @@ def from_pfcp(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
     if s.get("peer_restarts"):
         out.append(finding("pfcp_peer_restart", "high", f"{s['peer_restarts']} PFCP peer restart(s): a new Recovery "
                            "Time Stamp, so every session on that node was lost", "pfcp_sessions", args,
-                           next_call={"tool": "pfcp_sessions", "args": {**args, "view": "nodes"}}))
+                           next_call={"tool": "pfcp_sessions", "args": {**args, "view": "sessions"}}))
     return out
 
 
