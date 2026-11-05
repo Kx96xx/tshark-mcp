@@ -2620,7 +2620,9 @@ def quic_connections(path: str, server_name: str | None = None, server: str | No
         names = [f for f in quicconn.FIELDS if f in known]
         flt = _filter(filter, base=quicconn.FILTER)
         stdout, scan = _fields_run(capture, flt, names, st.limits.max_scan_packets, aggregator=quicconn.AGGREGATOR)
-        conns, hellos = quicconn.build(quicconn.parse(stdout, names))
+        recs = quicconn.parse(stdout, names)
+        conns, hellos = quicconn.build(recs)
+        gquic = quicconn.gquic_packets(recs)
         rows = quicconn.rows(conns, hellos)
         if wanted:
             rows = [r for r in rows if r.get("sni") and tls.matches_name(r["sni"], wanted)]
@@ -2628,6 +2630,10 @@ def quic_connections(path: str, server_name: str | None = None, server: str | No
             rows = [r for r in rows if r["server"].rsplit(":", 1)[0] == addr]
         out_summary = quicconn.summary(rows)
         issues = [i for r in rows for i in r.get("issues", [])][:20]
+        if gquic:
+            out_summary["gquic_packets"] = gquic
+            issues.append(f"{gquic} Google QUIC (gQUIC) packet{'s' if gquic != 1 else ''} not analysed: this tool reads "
+                          "IETF QUIC (v1, v2, drafts) only; use filter_packets with display_filter='gquic'")
         if out_summary.get("udp_443_blocked_likely"):
             issues.insert(0, "no QUIC server in this capture answered an Initial and the clients fell back to TCP: "
                              "UDP 443 is most likely blocked on the path")
