@@ -40,6 +40,8 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({
     "description", "capture_filter", "comment",
     # HTTP (host and reason are listed above)
     "uri", "query", "content_type",
+    # 5G SBI (sbi_transactions; dnn and serving_network also from PFCP and GTP rows)
+    "title", "location", "dnn", "serving_network",
 })
 """Keys whose string values are copied from packets (anywhere in a result)."""
 
@@ -54,6 +56,7 @@ PACKET_CONTAINERS: frozenset[str] = frozenset({
     "writer",                          # capture_metadata: application, OS, hardware of the file's writer
     "hosts",                           # diameter_peers: Origin-Host values per address
     "auth_applications", "acct_applications", "peer_auth_applications",  # diameter_peers: CER/CEA
+    "discovery", "nrf_discovery",      # sbi_transactions: NRF discovery query parameters
 })
 """Keys under which every string is packet content."""
 

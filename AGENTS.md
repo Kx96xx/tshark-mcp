@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. <!-- tool-count -->Fifty-six<!-- /tool-count -->
+when the operator enables `--export-dir`. <!-- tool-count -->Fifty-seven<!-- /tool-count -->
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -92,6 +92,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | Why did charging, the VoLTE bearer, IMS registration, an Sh read or the IMEI check fail? | `diameter_avps(path, command_code=272 / 265 / 300-303 / 306 / 324)`: the `gy`, `rx`, `cx`, `sh` or `s13` digest, failed codes `explained` |
 | GTPv2-C: was the session created, with which cause, which PAA? | `gtp_sessions(path, imsi=... / apn=... / teid=...)`; GTPv1-C (Gn/Gp): `gtpv1_sessions` |
 | Why did the PGW reject, what did the MME ask for, which cell was the UE in? | `gtp_ies(path, imsi=... or frame=...)`: the IEs of request and response, the offending IE and `likely_causes` |
+| 5G core: which NF call failed (AUSF, UDM, SMF, PCF, NRF) and with which ProblemDetails cause? | `sbi_transactions(path, status="error")`, then `service=` or `supi=` to narrow; TLS SBI is only counted (toolset `mobile`) |
 | Session is up but no data, or slow data | `gtp_user_plane`, then `gtp_tunnel_health` (inner TCP loss, MSS/MTU, ICMP); `pfcp_sessions` for the N4/Sx side |
 | One-way audio, no audio, 488 | `sip_dialogs` to find the Call-ID, then `media_path_check(path, call_id)`, then `rtp_streams(path, call_id=...)` |
 | Call quality (loss, jitter, MOS estimate) | `rtp_streams`; `sip_call_detail(path, call_id)` for timing, Reason, who hung up |
@@ -246,7 +247,7 @@ src/tshark_mcp/
   callkpi.py    call_kpis: call KPIs per group, built on sip.py's message parser
   calllegs.py   call_legs: B2BUA/SBC/CSCF legs stitched by icid, Session-ID, X- headers, media or number
   diameter.py gtp.py gtpv1.py pfcp.py sip.py sdp.py rtp.py media.py dtmf.py ims.py sms.py
-  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py ipsec.py
+  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py ipsec.py sbi.py
   rates.py compare.py avps.py packets.py expert.py models.py (TypedDict output schemas)
   causes.py     cause_lookup; names from tshark -G values, text in causedata.py
   gtpies.py     gtp_ies: GTPv2-C IE key view, full tree and likely causes
