@@ -22,6 +22,7 @@ THRESHOLDS = {
     "http_5xx_share": 0.05,             # of answered requests
     "dns_unanswered_share": 0.10,       # of queries, not counting those near the capture end
     "dns_slow_p90_ms": 500.0,
+    "dns_min_answers": 10,              # fewer answers say nothing about a 90th percentile
     "voip_ner_pct": 80.0,               # network effectiveness below this is high severity
     "rtp_low_mos": 3.6,
     "tunnel_one_way_packets": 3,        # a one-way tunnel needs this many packets to be a finding
@@ -178,6 +179,11 @@ def from_tcp_connections(r: dict[str, Any], args: dict[str, Any]) -> list[dict[s
         server_host, _, server_port = str(server).rpartition(":")
         severity = "high" if connected == 0 else "medium"
         text = f"{server}: {connected} of {attempts} connection attempts connected ({how})"
+        fell_back = d.get("failed_then_connected_elsewhere") or 0
+        if fell_back and fell_back >= attempts - connected:
+            # Every failure was followed by a connection to another address of the service (happy eyeballs).
+            severity = "low"
+            text += "; the client connected to another address of the same service within 1 s each time"
         call_args = {**args, "view": "connections", "server": server_host.strip("[]")}
         if server_port.isdigit():
             call_args["port"] = int(server_port)
@@ -270,7 +276,8 @@ def from_dns(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
                            "dns_transactions", args, details=[i for i in issues if "SERVFAIL" in i],
                            frames=_frames([t for t in rows if t.get("rcode_name") == "SERVFAIL"], "response_frame", "frame")))
     p90 = (s.get("rtt_ms") or {}).get("p90")
-    if isinstance(p90, (int, float)) and p90 > THRESHOLDS["dns_slow_p90_ms"]:
+    if (isinstance(p90, (int, float)) and p90 > THRESHOLDS["dns_slow_p90_ms"]
+            and (s.get("answered") or 0) >= THRESHOLDS["dns_min_answers"]):
         out.append(finding("dns_slow", "medium", f"DNS answers are slow: 90% within {p90} ms", "dns_transactions", args,
                            details=[i for i in issues if "slow" in i]))
     if rcodes.get("NXDOMAIN"):

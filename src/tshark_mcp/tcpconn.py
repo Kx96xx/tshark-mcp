@@ -65,6 +65,7 @@ NEAR_END_S = 3.0  # a SYN this close to the end of the capture may still have be
 CHURN_MIN = 50  # connections from one client to one destination before churn is worth a sentence
 CHURN_SHORT_S = 5.0
 SLOW_CONNECT_MS = 1000.0
+FALLBACK_S = 1.0  # a client that connects to another address of the service this soon after a failure fell back
 MAX_ICMP_PER_CONN = 5
 
 
@@ -340,6 +341,17 @@ def destinations(rows: list[dict[str, Any]], times: dict[int, tuple[float | None
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         groups[r["server"]].append(r)
+    # Connected attempts per (client address, server port), to recognise a fallback to another address
+    # (happy eyeballs, RFC 8305: the IPv6 attempt fails, IPv4 connects a fraction of a second later).
+    # A dual-stack client has one address per family, so the fallback comes from the same client address or
+    # from an address of the other family.
+    connected_at: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
+    for r in rows:
+        if r["outcome"] == "connected":
+            start = times.get(r.get("first_frame") or 0, (None, None))[0]
+            if start is not None:
+                connected_at[r["server"].rsplit(":", 1)[1]].append(
+                    (start, r["server"].rsplit(":", 1)[0], r["client"].rsplit(":", 1)[0]))
     out = []
     for server, rs in groups.items():
         outcomes = Counter(r["outcome"] for r in rs)
@@ -359,9 +371,39 @@ def destinations(rows: list[dict[str, Any]], times: dict[int, tuple[float | None
             "max_concurrent": _max_concurrent([times.get(r.get("first_frame") or 0, (None, None)) for r in rs]),
             "first_frame": min(r.get("first_frame") or 0 for r in rs),
         }
+        fell_back = _fell_back(rs, times, connected_at)
+        if fell_back:
+            dest["failed_then_connected_elsewhere"] = len(fell_back)
         dest["issues"] = _dest_issues(server, rs, dest, times)
+        if fell_back:
+            other = fell_back[0][1]
+            dest["issues"].append(
+                f"{len(fell_back)} failed attempt{'s' if len(fell_back) != 1 else ''} to {server} "
+                f"{'were' if len(fell_back) != 1 else 'was'} followed within {FALLBACK_S:g} s by a connection from "
+                f"the same client to {other} on the same port: the client fell back to another address of the "
+                "service (happy eyeballs), so users saw no failure")
         out.append(compact(dest))
     out.sort(key=lambda d: (-(d["attempts"] - d["connected"]), -d["connections"], d["first_frame"]))
+    return out
+
+
+def _fell_back(rs: list[dict[str, Any]], times: dict[int, tuple[float | None, float | None]],
+               connected_at: dict[str, list[tuple[float, str, str]]]) -> list[tuple[dict[str, Any], str]]:
+    """Failed attempts followed within FALLBACK_S by the same client connecting to another address on the same port."""
+    out = []
+    for r in rs:
+        if r["outcome"] not in ("refused", "filtered", "prohibited", "unreachable"):
+            continue
+        start = times.get(r.get("first_frame") or 0, (None, None))[0]
+        if start is None:
+            continue
+        server_ip, port = r["server"].rsplit(":", 1)
+        client_ip = r["client"].rsplit(":", 1)[0]
+        hit = next((addr for t, addr, cli in connected_at.get(port, [])
+                    if addr != server_ip and 0 <= t - start <= FALLBACK_S
+                    and (cli == client_ip or (":" in cli) != (":" in client_ip))), None)
+        if hit is not None:
+            out.append((r, hit))
     return out
 
 

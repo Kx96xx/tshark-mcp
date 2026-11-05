@@ -389,6 +389,8 @@ def _issues(row: dict[str, Any], st: _Stream, c: _Dir, s: _Dir, fc: Any, fs: Any
         # The SYN sender went on with ACKs or data: it got the SYN-ACK, the capture did not.
         issues.append("only the client's direction is in the capture: it sent ACKs and data after its SYN, so the "
                       "server answered on a path the capture point does not see (one-way tap or asymmetric routing)")
+    elif st.syns and not st.synacks and any(r["side"] != st.syn_from for r in st.resets):
+        pass  # refused with a reset: tcp_connections reports it as "refused", not as an unanswered SYN
     elif st.syns and not st.synacks:
         issues.append(f"{st.syns} SYN{'s' if st.syns != 1 else ''} and no SYN-ACK: the server did not answer "
                       "(down, filtered, or the answer took another path)")
