@@ -2743,6 +2743,54 @@ def write_gm_esp_null_pcap(path: Path, clear_challenge: bool = True) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+
+
+# --------------------------------------------------------------------------- Gy credit control
+def write_gy_mscc_pcap(path: Path) -> Path:
+    """Gy/Ro (application 4) credit control between a PGW and an OCS. CCR-I for IMSI answered by a CCA with
+    command-level Result-Code 2001 and two Multiple-Services-Credit-Control: one 2001, one 4012
+    (DIAMETER_CREDIT_LIMIT_REACHED, a Result-Code nested in the MSCC, RFC 4006 8.16). Then a CCR-U answered
+    with Experimental-Result 5030 (no Result-Code) and a Proxy-Info holding a Proxy-State."""
+    pgw, ocs, realm = "pgw.example.net", "ocs.example.net", "example.net"
+    t0 = 1_700_003_800.0
+    frames: list[tuple[float, bytes]] = []
+    tsn = 700
+
+    def send(ts: float, msg: bytes, from_pgw: bool) -> None:
+        nonlocal tsn
+        src, dst = (PGW_IP, HSS_IP) if from_pgw else (HSS_IP, PGW_IP)
+        frames.append((ts, _sctp_data(src, dst, 3868, 3868, 0x6666 if from_pgw else 0x7777, tsn, 46, msg)))
+        tsn += 1
+
+    def u32(code: int, value: int) -> bytes:
+        return _avp(code, struct.pack("!I", value))
+
+    def mscc(rg: int, rc: int) -> bytes:
+        return _avp(456, u32(432, rg) + u32(268, rc))  # Multiple-Services-Credit-Control: Rating-Group, Result-Code
+
+    sid = f"{pgw};1700003800;1"
+    sub = _avp(443, u32(450, 1) + _avp(444, IMSI.encode()))  # Subscription-Id END_USER_IMSI
+    ccr = _diameter(272, 4, 0x3001, 0xB001, True, _diam_common(sid, pgw, realm, realm) + [
+        u32(258, 4), u32(416, 1), u32(415, 0), sub])
+    # The MSCCs come before the command-level Result-Code: a reader taking the first Result-Code it meets
+    # would report 4012.
+    cca = _diameter(272, 4, 0x3001, 0xB001, False, [_avp(263, sid.encode()), mscc(20, 4012), mscc(10, 2001),
+                                                   u32(268, 2001), _avp(264, ocs.encode()), _avp(296, realm.encode()),
+                                                   u32(258, 4), u32(416, 1), u32(415, 0)])
+    send(t0, ccr, True)
+    send(t0 + 0.02, cca, False)
+    ccr_u = _diameter(272, 4, 0x3002, 0xB002, True, _diam_common(sid, pgw, realm, realm) + [
+        u32(258, 4), u32(416, 2), u32(415, 1), sub])
+    exp = _avp(297, _avp(266, struct.pack("!I", VENDOR_3GPP)) + u32(298, 5030))  # Experimental-Result
+    proxy = _avp(284, _avp(280, b"relay.example.net") + _avp(33, b"state"))  # Proxy-Info: Proxy-Host, Proxy-State
+    cca_u = _diameter(272, 4, 0x3002, 0xB002, False, [_avp(263, sid.encode()), exp, _avp(264, ocs.encode()),
+                                                     _avp(296, realm.encode()), u32(258, 4), u32(416, 2), u32(415, 1),
+                                                     proxy])
+    send(t0 + 1.0, ccr_u, True)
+    send(t0 + 1.02, cca_u, False)
+    return _frames_to_pcap(path, frames)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

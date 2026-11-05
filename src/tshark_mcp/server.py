@@ -4694,11 +4694,16 @@ def _roaming_diameter_step(tx: Any, mine: set[str], imsi_d: str) -> dict[str, An
         ids = [str(v) for v in avps.find(trees.get("request", {}), "Subscription-Id-Data")]
         if imsi_d not in ids and row.get("session_id") not in mine:
             return None
-        phase, kind, name = "pdn", "gx_initial", "Gx CCR-I/CCA-I"
+        # One credit-control command, two interfaces: application 16777238 is Gx (PCRF), 4 is Gy/Ro (OCS);
+        # the same names as diameter_transactions.
+        gy = anchor.fields.get("application_id") == 4
+        phase, kind, name = "pdn", "gx_initial", ("Gy/Ro CCR-I/CCA-I" if gy else "Gx CCR-I/CCA-I")
     else:
         return None
     erc, rc = row.get("experimental_result_code"), row.get("result_code")
-    app = "gx" if kind == "gx_initial" else "s6a"
+    if rc is not None:
+        erc = None  # the command-level Result-Code is the result; an Experimental-Result beside it is not
+    app = ("gy" if anchor.fields.get("application_id") == 4 else "gx") if kind == "gx_initial" else "s6a"
     ref_key = app if erc is not None else "diameter"
     extra: dict[str, Any] = {}
     if kind == "ulr":

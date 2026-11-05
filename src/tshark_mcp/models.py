@@ -994,6 +994,8 @@ class DiameterTransactionRow(PairedRow, total=False):
     result_code: int
     experimental_result_code: int
     result: str
+    mscc_result_codes: list[int]
+    mscc_results: list[str]
     success: bool
     error_bit: bool
 
