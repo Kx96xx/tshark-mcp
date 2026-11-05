@@ -1,0 +1,72 @@
+name: Wrong or misleading answer
+description: A tool returned a result that plain tshark contradicts, or a verdict that misleads
+title: "Wrong answer: <tool>: "
+labels: ["wrong-answer"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for checking the answer. **Do not attach captures with real subscriber data**
+        (IMSI, MSISDN, IMEI, IP addresses) to this public issue: share the tool call and its
+        output, and a minimal synthetic or anonymised capture only if you can.
+  - type: input
+    id: tool
+    attributes:
+      label: Tool
+      placeholder: diameter_transactions
+    validations:
+      required: true
+  - type: textarea
+    id: arguments
+    attributes:
+      label: Arguments
+      description: The arguments as the client sent them (paths can be shortened).
+      render: json
+      placeholder: '{"path": "/captures/x.pcap", "filter": "diameter.cmd.code == 316"}'
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output excerpt
+      description: The part of the result that is wrong, trimmed to the relevant rows. Redact identifiers.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: check
+    attributes:
+      label: How you checked it with plain tshark
+      description: The tshark command (display filter, -z statistic or -V of a frame) and what it shows.
+      render: shell
+      placeholder: tshark -n -r x.pcap -Y "diameter.cmd.code == 316" -T fields -e frame.number -e diameter.Result-Code
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      value: |
+        - tshark-mcp: (tshark-mcp --version)
+        - tshark: (tshark --version | head -1)
+        - Python:
+        - OS:
+        - MCP client (Claude Code, Claude Desktop, other):
+    validations:
+      required: true
+  - type: dropdown
+    id: capture
+    attributes:
+      label: Can you share a capture that reproduces it?
+      options:
+        - "No"
+        - Yes, a synthetic capture (attached or a few lines for tests/pcapgen.py)
+        - Yes, an anonymised capture with no real subscriber data
+    validations:
+      required: true

@@ -3,12 +3,29 @@
 <!-- mcp-name: io.github.Kx96xx/tshark-mcp -->
 
 [![CI](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tshark-mcp-server)](https://pypi.org/project/tshark-mcp-server/)
+[![Downloads](https://img.shields.io/pypi/dm/tshark-mcp-server)](https://pypistats.org/packages/tshark-mcp-server)
 ![Python 3.10 to 3.13](https://img.shields.io/badge/python-3.10%20to%203.13-blue)
 ![Licence MIT](https://img.shields.io/badge/licence-MIT-green)
 
-**A read-only MCP server that lets an AI assistant analyse packet captures with tshark.**
-Point it at a directory of pcap files, connect Claude or any other MCP client, and ask
-questions about the calls, sessions and subscribers in them.
+**Ask your AI assistant why a call, an attach or a session failed, and get the answer from
+your own pcap, with frame numbers.** tshark-mcp is a read-only MCP server: it runs
+`tshark -r` on captures in directories you allow, pairs requests with answers across Diameter,
+GTP, SIP/RTP, SIGTRAN, DNS, TCP and TLS, and names the cause codes.
+
+```sh
+claude mcp add tshark-mcp -- uvx --from tshark-mcp-server tshark-mcp --allow-dir /path/to/pcaps
+```
+
+(needs [uv](https://docs.astral.sh/uv/) and tshark; other clients below)
+
+![A real MCP client session: sip_dialogs and media_path_check on the one-way audio example](https://raw.githubusercontent.com/Kx96xx/tshark-mcp/main/docs/media/demo.gif)
+
+<sub>A live session, not a mock-up: an MCP client starts the PyPI package over stdio and calls two
+tools on
+[examples/sip_one_way_audio.pcap](https://github.com/Kx96xx/tshark-mcp/blob/main/examples/sip_one_way_audio.pcap).
+Recorded with vhs from
+[docs/media/demo.tape](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/media/demo.tape).</sub>
 
 ## Why
 
@@ -28,12 +45,14 @@ questions about the calls, sessions and subscribers in them.
 
 1. Install tshark (it comes with Wireshark): `brew install --cask wireshark`,
    `apt-get install tshark` or `dnf install wireshark-cli`.
-2. Install the server (Python 3.10 or newer):
+2. Run the server from PyPI with uv (nothing to install; Python 3.10 or newer):
 
    ```sh
-   uv tool install git+https://github.com/Kx96xx/tshark-mcp
-   # or: pipx install git+https://github.com/Kx96xx/tshark-mcp
+   uvx --from tshark-mcp-server tshark-mcp --allow-dir /path/to/pcaps
    ```
+
+   Or install it once and use the `tshark-mcp` command:
+   `uv tool install tshark-mcp-server` or `pipx install tshark-mcp-server`.
 
    Requirements: Python 3.10+, tshark 4.0 or newer (tested with 4.2 and 4.6); the `mcp` (2.1+) and
    `pydantic` (2.12+) packages are installed automatically. The package is published as
@@ -49,7 +68,7 @@ questions about the calls, sessions and subscribers in them.
    Claude Code:
 
    ```sh
-   claude mcp add tshark-mcp -- tshark-mcp --allow-dir /path/to/pcaps
+   claude mcp add tshark-mcp -- uvx --from tshark-mcp-server tshark-mcp --allow-dir /path/to/pcaps
    ```
 
    Claude Desktop (`claude_desktop_config.json`), Cursor, or any client that starts stdio servers:
@@ -58,12 +77,14 @@ questions about the calls, sessions and subscribers in them.
    {
      "mcpServers": {
        "tshark-mcp": {
-         "command": "tshark-mcp",
-         "args": ["--allow-dir", "/path/to/pcaps"]
+         "command": "uvx",
+         "args": ["--from", "tshark-mcp-server", "tshark-mcp", "--allow-dir", "/path/to/pcaps"]
        }
      }
    }
    ```
+
+   With `uv tool install` or `pipx`, use `"command": "tshark-mcp"` and drop the first three args.
 
    MCP Registry clients (VS Code and the directories that index the registry) find it as
    `io.github.Kx96xx/tshark-mcp`: they run the PyPI package with `uvx` and ask for
@@ -73,6 +94,22 @@ questions about the calls, sessions and subscribers in them.
    To run it by hand: `tshark-mcp --allow-dir /path/to/pcaps [--allow-dir /more] [--log-file ~/tshark-mcp.jsonl]`.
    `TSHARK_MCP_ALLOW_DIRS` (colon-separated) works instead of the flag. Three small synthetic
    captures to start with are in [examples/](https://github.com/Kx96xx/tshark-mcp/tree/main/examples/).
+
+## Found a bug or a wrong answer?
+
+- **A wrong or misleading answer:** open a
+  [Wrong answer issue](https://github.com/Kx96xx/tshark-mcp/issues/new/choose) with the tool
+  call, the output excerpt, what you expected and the plain tshark command that shows it.
+- **A crash or error:** open a [Bug issue](https://github.com/Kx96xx/tshark-mcp/issues/new/choose)
+  with the tool call, the error, and your tshark, Python and OS versions.
+- **A security problem:** report it privately through
+  [GitHub private vulnerability reporting](https://github.com/Kx96xx/tshark-mcp/security/advisories/new)
+  ([SECURITY.md](https://github.com/Kx96xx/tshark-mcp/blob/main/SECURITY.md)), not in an issue.
+- **Questions:** [Discussions](https://github.com/Kx96xx/tshark-mcp/discussions).
+
+Never attach a capture with real subscriber data (IMSI, MSISDN, IMEI, IP addresses) to a public
+issue. Share the tool call and its output, and if a capture is needed, a minimal synthetic or
+anonymised one (`--redact ids+ips` masks identifiers in the output, not in the file).
 
 ## What you can ask it
 
