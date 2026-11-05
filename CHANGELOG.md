@@ -68,6 +68,13 @@ the project uses [semantic versioning](https://semver.org/).
   element names. Enumerations, flags and text values are also read when a tshark dictionary spells
   the AVP with a `3GPP-` prefix.
 
+- `tunnels_overview`: every GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE, ESP, AH, NAT-T),
+  WireGuard, OpenVPN, L2TP and GTP-U tunnel in a capture with its outer endpoints, key or VNI,
+  packets and bytes each way, inner protocols, tunnel overhead, DF packets above the path MTU and
+  inner SYN MSS against the overhead; IKE exchanges and error notifies, WireGuard and OpenVPN
+  handshakes, ESP SAs per direction; issues such as unanswered WireGuard initiations, a missing
+  return SA or an MSS that does not fit once tunnelled.
+
 ### Fixed
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared

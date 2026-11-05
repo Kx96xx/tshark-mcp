@@ -39,6 +39,7 @@ from . import output as shaping
 from . import capdiff
 from . import incident
 from . import throughput
+from . import overlays
 from . import progress
 from . import prompts as guided
 from . import window
@@ -83,7 +84,7 @@ ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
 http_transactions (HTTP and gRPC per endpoint), response_times (network, server
-or receiver time), throughput_timeline (when a transfer slowed and why). Before reading missing packets or retransmissions as network
+or receiver time), throughput_timeline (when a transfer slowed and why), tunnels_overview (VPNs, overlays). Before reading missing packets or retransmissions as network
 faults, capture_quality says whether the capture can be trusted; tcp_health
 tells real TCP loss, resets and MTU black holes from capture artifacts;
 tcp_connections gives each connection attempt's outcome and who closed it;
@@ -2306,6 +2307,59 @@ def gtp_tunnel_health(path: str, teid: str | int | None = None, mtu: int = 1500,
         }
         return _envelope("tunnels", rows, cap, scan, offset=offset, path_mtu=path_mtu, summary=summary, outer_icmp=outer_errors)
     return _guarded("gtp_tunnel_health", {"path": path, "teid": teid, "mtu": mtu, "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="Tunnels overview (GRE, VXLAN, IPsec, WireGuard, ...)", annotations=READ_ONLY)
+def tunnels_overview(path: str, kind: str | None = None, endpoint: str | None = None, mtu: int = 1500,
+                     filter: str | None = None, limit: int = 200, offset: int = 0) -> models.TunnelsOverviewResult:
+    """Every tunnel and overlay in the capture: GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec
+    (IKE, ESP, AH, NAT-T), WireGuard, OpenVPN, L2TP and GTP-U. Per tunnel: outer endpoints,
+    GRE key / VNI / L2TP tunnel id, packets and bytes each way, `one_way`, the inner
+    protocols and conversations (clear kinds), `overhead_bytes`, largest outer packet,
+    DF packets above `mtu`, outer fragmentation and inner SYN MSS against the overhead;
+    `handshake` for IKE (exchanges, error notifies, unanswered requests, DPD, outcome),
+    WireGuard (initiations, responses, keepalives, data each way) and OpenVPN (resets, data);
+    `esp_sas` per SPI and direction. `issues` in plain words. `kind` (gre, erspan, vxlan,
+    geneve, ipip, ipsec, wireguard, openvpn, l2tp, gtpu) and `endpoint` (an outer IP)
+    narrow it.
+    Details: One -T fields pass; the outer layer is the first IP layer, the inner one the
+    first IP layer after the encapsulation. GRE, VXLAN, Geneve and L2TP rows are keyed by
+    the endpoint pair and key/VNI/tunnel id; IPsec, GTP-U by the pair; WireGuard and
+    OpenVPN by the pair and UDP ports. The overhead is the outer minus the inner IP length
+    (most common value); an inner SYN MSS plus 40 (60 for IPv6) plus the overhead above
+    `mtu` is an issue. IKEv2 requests pair with responses by initiator SPI and message id.
+    Encrypted payloads (ESP, WireGuard, OpenVPN) show no inner traffic. For GTP-U inner
+    TCP health call gtp_tunnel_health."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        want = None
+        if kind is not None and str(kind).strip():
+            want = overlays.kind_arg(kind)
+            if want is None:
+                raise ToolError("invalid_argument", f"kind must be one of {', '.join(overlays.KINDS)}, not {echo(kind)}")
+        addr = _lint_ip(endpoint, "endpoint") if endpoint is not None and str(endpoint).strip() else None
+        path_mtu = to_int(str(mtu))
+        if path_mtu is None or not 576 <= path_mtu <= 65535:
+            raise ToolError("invalid_argument", f"mtu must be between 576 and 65535, got {echo(mtu)}")
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        known = field_catalogue(st.runner)
+        names = overlays.fields(known)
+        base = overlays.display_filter(known)
+        if addr:
+            base = f"({base}) && {_ip_clause(addr)}"
+        flt = _filter(filter, base=base)
+        stdout, scan = _fields_run(capture, flt, names, st.limits.max_scan_packets, aggregator=overlays.AGGREGATOR)
+        recs = overlays.parse(stdout, names)
+        if want:
+            recs = [r for r in recs if r["kind"] == want]
+        if addr:
+            recs = [r for r in recs if addr in (r["src"], r["dst"])]
+        rows = overlays.summarise(recs, path_mtu)
+        return _envelope("tunnels", rows, cap, scan, offset=offset, path_mtu=path_mtu,
+                         summary=overlays.summary(rows, recs), **({"display_filter": filter} if filter else {}))
+    return _guarded("tunnels_overview", {"path": path, "kind": kind, "endpoint": endpoint, "mtu": mtu,
+                                         "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="Message rates and storms", annotations=READ_ONLY)
