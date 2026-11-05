@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. <!-- tool-count -->Fifty-five<!-- /tool-count -->
+when the operator enables `--export-dir`. <!-- tool-count -->Fifty-six<!-- /tool-count -->
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -102,6 +102,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | Does QUIC / HTTP/3 work? Fallback to TCP? UDP 443 blocked? Version negotiation? | `quic_connections(path, server_name=... or server=...)` |
 | Is the chain complete, expired or expiring, self-signed, SHA-1, the wrong name for the SNI? | `tls_certificates(path, server_name=... or expiring_within_days=30)` (TLS 1.2 and older; TLS 1.3 certificates are encrypted) |
 | Can this host reach that port? Refused, filtered or prohibited? | `tcp_connections(path, server=..., port=...)`; `view="destinations"` for success rate per server |
+| IoT devices: MQTT refused or reconnecting, keepalive too long for NAT, CoAP retries, LwM2M registration expired | `iot_sessions(path, client=...)`; MQTT over TLS: `tls_handshakes` and `tcp_health` |
 | Who sends unreachables, fragmentation needed, TTL exceeded (loop or traceroute)? | `icmp_errors(path, sender=... or about=...)` |
 | Which HTTP endpoints fail or are slow? Status mix, gRPC status? | `http_transactions(path, view="endpoints")`, then `view="requests"` with `status="5xx"` or `min_ms` |
 | Slow application: network, server or receiver? | `response_times`; `tcp_health` for loss, resets, zero windows, MTU |
@@ -214,7 +215,7 @@ src/tshark_mcp/
   callkpi.py    call_kpis: call KPIs per group, built on sip.py's message parser
   calllegs.py   call_legs: B2BUA/SBC/CSCF legs stitched by icid, Session-ID, X- headers, media or number
   diameter.py gtp.py gtpv1.py pfcp.py sip.py sdp.py rtp.py media.py dtmf.py ims.py sms.py
-  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py
+  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py iot.py
   rates.py compare.py avps.py packets.py expert.py models.py (TypedDict output schemas)
   causes.py     cause_lookup; names from tshark -G values, text in causedata.py
   gtpies.py     gtp_ies: GTPv2-C IE key view, full tree and likely causes
