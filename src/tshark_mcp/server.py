@@ -8,6 +8,15 @@ JSON-lines audit record.
 
 from __future__ import annotations
 
+if __name__ == "__main__":  # pragma: no cover
+    # ``python -m tshark_mcp.server`` would run this file as a second module (__main__) next to
+    # tshark_mcp.server, which the tool modules in tshark_mcp/tools/ register on; run the
+    # package's module instead, so every discovered tool is served.
+    import sys
+
+    from tshark_mcp.server import main as _main
+    sys.exit(_main())
+
 import argparse
 import contextvars
 import functools
@@ -24,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, diampeers, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, smsdelivery, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, smsdelivery, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_float, to_int, validate_fields,
@@ -248,11 +257,24 @@ def _takes_window(name: str, sig: inspect.Signature) -> bool:
     return name not in WINDOWLESS_TOOLS and ("path" in sig.parameters or "path_a" in sig.parameters)
 
 
+TOOLS: dict[str, Callable[..., Any]] = {}
+"""Every registered tool by name, in registration order: the ones defined in this module, then
+the modules of tshark_mcp/tools/ (see :func:`tools.load`). The tests, mcpb/build.py and the
+docs generator read the tool set from here; nothing else lists the tools."""
+
+
+def tool_names() -> list[str]:
+    """Names of every registered tool, in registration order."""
+    return list(TOOLS)
+
+
 def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """``app.tool`` plus redaction: every tool takes a ``redact`` argument, and
     redaction tokens in its string arguments are swapped for the real values
     before it runs (a call that passes a token is redacted at least at ``ids``)."""
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if fn.__name__ in TOOLS:  # before anything reaches the app: a duplicate would replace the first
+            raise RuntimeError(f"tool {fn.__name__} registered twice")
         sig = inspect.signature(fn, eval_str=True)
         extra = [inspect.Parameter("redact", inspect.Parameter.KEYWORD_ONLY, default="off", annotation=Redact)]
         shaped = "limit" in sig.parameters  # row tools: columns, output and max_output_kb
@@ -330,7 +352,10 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         entry.__annotations__ = {**getattr(wrapper, "__annotations__", {}), "ctx": Context | None}
         app.tool(**kwargs)(entry)
         _register_schema_resource(fn.__name__, kwargs.get("title"))
-        # The module-level name stays the plain function returning the dict, for in-process callers.
+        TOOLS[fn.__name__] = wrapper
+        # The module-level name stays the plain function returning the dict, for in-process callers;
+        # a tool defined in tshark_mcp/tools/ is reachable as server.<name> too.
+        globals().setdefault(fn.__name__, wrapper)
         return wrapper
     return decorate
 
@@ -3044,58 +3069,6 @@ def sms_delivery(path: str, imsi: str | None = None, msisdn: str | None = None, 
                                      "limit": limit, "offset": offset}, run)
 
 
-@_tool(title="Diameter peers: capabilities, watchdog, KPIs", annotations=READ_ONLY)
-def diameter_peers(path: str, host: str | None = None, realm: str | None = None, application: int | None = None,
-                   filter: str | None = None, limit: int = 100, offset: int = 0) -> models.DiameterPeersResult:
-    """Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter
-    peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted,
-    down) and `issues`. Per peer: `hosts` (Origin-Host per address), `capabilities`
-    (CER/CEA result, advertised Auth and Acct applications by name, Firmware-Revision,
-    Inband-Security-Id, Origin-State-Id), `watchdog` (DWR/DWA counts, missed answers,
-    cadence, longest gap), `disconnects` (DPR with Disconnect-Cause named, who sent it),
-    `restarts` (Origin-State-Id changes), `applications` (requests, answers,
-    `success_pct`, result classes, `routing_errors` 3002/3003/3004/3005/3006 with the
-    Destination-Realm they named, errors explained, RTT p50/p95/max, unanswered),
-    `failed_avps` (AVP names inside Failed-AVP), `error_messages` (untrusted text) and
-    `routing`. Narrow with `host`, `realm` or `application` (an application id).
-
-    Details: Answers pair with requests by command code and hop-by-hop id in the opposite
-    direction. A restart is an Origin-State-Id that differs from the last one the same
-    Origin-Host sent. down: the CER was refused, or a DPR with no later successful CER.
-    `summary` counts peers per verdict, routing errors, missed watchdogs, restarts and
-    disconnects. Per-transaction detail is diameter_transactions. Content-free: hosts,
-    realms, codes, timings and frames."""
-    def run() -> dict[str, Any]:
-        capture = _resolve(path)
-        st = state()
-        host_q = lint_hostname(host, "host") if host else None
-        realm_q = lint_hostname(realm, "realm") if realm else None
-        app = None
-        if application is not None:
-            try:
-                app = int(application)
-            except (TypeError, ValueError):
-                raise ToolError("invalid_argument", f"application must be a Diameter application id, got {echo(application)}") from None
-            if not 0 <= app <= 0xFFFFFFFF:
-                raise ToolError("invalid_argument", "application must be 0 to 4294967295")
-        cap = clamp_limit(limit, st.limits.max_packets, 100)
-        stdout, scan = _fields_run(capture, _filter(filter, base=diampeers.DISPLAY_FILTER), diampeers.FIELDS,
-                                   st.limits.max_scan_packets)
-        end, _ = _last_packet_time(capture, stdout)
-        explained: dict[tuple[str, int], Any] = {}
-
-        def explain(protocol: str, code: int) -> Any:
-            if (protocol, code) not in explained:
-                explained[(protocol, code)] = causes.brief(st.runner, protocol, code)
-            return explained[(protocol, code)]
-        peers = diampeers.build(diampeers.parse(stdout), end, explain)
-        summary = diampeers.summary(peers)
-        peers = diampeers.select(peers, host_q, realm_q, app)
-        return _envelope("peers", peers, cap, scan, offset=offset, summary=summary, method=diampeers.METHOD)
-    return _guarded("diameter_peers", {"path": path, "host": host, "realm": realm, "application": application,
-                                       "filter": filter, "limit": limit, "offset": offset}, run)
-
-
 @_tool(title="SIP call detail", annotations=READ_ONLY)
 def sip_call_detail(path: str, call_id: str) -> models.SipCallDetailResult:
     """Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder
@@ -5161,6 +5134,15 @@ def _parse_conversations(stdout: str) -> list[dict[str, Any]]:
             "start_rel_s": numbers[6], "duration_s": numbers[7],
         })
     return rows
+
+
+# ------------------------------------------------------------------ tools in their own modules
+# Each module of tshark_mcp/tools/ defines its tool with @_tool from this module; importing the
+# package registers them all (sorted by module name). A new tool is a new module there: nothing
+# in this file changes.
+from . import tools as _tool_modules  # noqa: E402
+
+_tool_modules.load()
 
 
 # ------------------------------------------------------------------ entry point

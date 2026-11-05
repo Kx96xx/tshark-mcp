@@ -216,10 +216,6 @@
       "description": "Where an SMS went on the CS or SGs path and why it was not delivered: one row per attempt with `path` (map or sgs), `direction` (mt, mo), `imsi`, `msisdn`, `steps` in order and a `verdict` (delivered, rejected, absent_subscriber, paging_failed, no_response, in_progress) with `reasons` and `ref`."
     },
     {
-      "name": "diameter_peers",
-      "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
-    },
-    {
       "name": "sip_call_detail",
       "description": "Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder (messages carrying SDP are marked), From/To/Request-URI/P-Asserted-Identity, the `outcome` (answered, failed <status>, cancelled, no final response), `final_response` with its reason phrase, `timing`: post-dial delay ..."
     },
@@ -286,6 +282,10 @@
     {
       "name": "compare_captures",
       "description": "Compare a working and a failing capture of the same procedure."
+    },
+    {
+      "name": "diameter_peers",
+      "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
     }
   ],
   "compatibility": {

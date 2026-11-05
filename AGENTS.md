@@ -109,7 +109,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | Give a vendor just the packets that matter | `export_subset(path, display_filter, name)` (only if the operator started the server with `--export-dir`; `headers_only=true` cuts payloads) |
 | Anything else | `filter_packets(path, display_filter, fields)`; `find_fields(query)` and `check_filter(filter)` build the filter without reading a capture; `packet_detail(path, frame)` shows one packet in full |
 
-Tool names and argument names are exactly those in `src/tshark_mcp/server.py`; the
+Tool names and argument names are exactly those in `src/tshark_mcp/server.py` and `src/tshark_mcp/tools/`; the
 server publishes an `outputSchema` for each. The listed one is compact (top-level keys, row
 keys named in a description); read the resource `schema://tools/<name>` for the full
 description and schema of a tool, or start the server with `--schema-profile full`.
@@ -195,7 +195,10 @@ names exists.
 
 ```
 src/tshark_mcp/
-  server.py     the MCP tools (one function per tool, registered with @_tool) and the CLI
+  server.py     the first 54 MCP tools (one function per tool, registered with @_tool), the shared
+                helpers, the registry (TOOLS, tool_names()) and the CLI
+  tools/        one module per newer tool, found by discovery (tools/__init__.py: load()); e.g.
+                tools/diameter_peers.py. A new tool is a new module here
   runner.py     the only place that starts tshark: read-only argv checks, caps, timeouts
   limits.py     Limits, Allowlist and the argument linters
   progress.py   request cancellation (polled by the runner) and progress notifications
@@ -216,7 +219,7 @@ src/tshark_mcp/
   volte.py      volte_call_chain: SIP, Rx, Gx, GTPv2-C bearer, PFCP and RTP of one VoLTE call joined by icid and UE address
   sigtranhealth.py sigtran_health: SCTP episodes, heartbeats, M3UA ASP state, DUNA/DAVA, SCCP returns, TCAP aborts
   smsdelivery.py sms_delivery: MAP SRI-for-SM/forwardSM/report dialogues and SGsAP paging and CP/RP per message
-  diampeers.py  diameter_peers: CER/CEA, DWR/DWA, DPR, restarts and per-application KPIs per peer
+  diampeers.py  diameter_peers logic: CER/CEA, DWR/DWA, DPR, restarts and per-application KPIs per peer
   roaming.py    roaming_attach_check: attempts, subscription against request, checks and verdict
   prompts.py    the six MCP prompts (guided workflows) and path completion for their arguments
   window.py     start/end on every capture tool: parsing, per-capture resolution, the filter clause
@@ -274,7 +277,15 @@ Anything that needs a newer tshark must be gated on `tests/conftest.py: tshark_v
   the `schema://tools/<name>` resource in the compact tool list (`tests/test_tool_list.py`).
 - A new tool or a changed verdict gets a scenario in `evals/scenarios.py` when it answers an
   operator question no scenario covers yet.
-- A new tool also runs `python mcpb/build.py --update` (the bundle's tools list). A new prompt
+- A new tool is a new module `src/tshark_mcp/tools/<name>.py` that imports what it needs
+  from `..server` (`_tool`, `READ_ONLY`, `_guarded`, `_resolve`, `_fields_run`, `_envelope`,
+  `state`, ...) and defines the tool with `@_tool`; copy `tools/diameter_peers.py`. Discovery
+  registers it (`server.TOOLS`, also `server.<name>` for in-process tests); do not add it to
+  server.py's import line or to any list of tools. The tests take the tool set from
+  `server.tool_names()` (`EXPECTED_TOOLS` in `tests/test_mcp_client.py`), and an stdio client
+  test checks that `python -m tshark_mcp.server` serves it. Its parsing logic can stay in its
+  own module (like `diampeers.py`), its result TypedDicts in `models.py` or in the tool module.
+  It also runs `python mcpb/build.py --update` (the bundle's tools list). A new prompt
   gets a skill under `plugin/skills/` that points at it.
 - When a tool or its arguments change, update the README table and `docs/TOOLS.md`, `llms.txt`
   and this file.
