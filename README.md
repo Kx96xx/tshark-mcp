@@ -71,6 +71,9 @@ Recorded with vhs from
    claude mcp add tshark-mcp -- uvx --from tshark-mcp-server tshark-mcp --allow-dir /path/to/pcaps
    ```
 
+   Claude Desktop as an extension: `python mcpb/build.py && npx -y @anthropic-ai/mcpb@2.1.2 pack
+   build/mcpb build/tshark-mcp.mcpb`, then open `build/tshark-mcp.mcpb` and pick the capture directories.
+
    Claude Desktop (`claude_desktop_config.json`), Cursor, or any client that starts stdio servers:
 
    ```json
@@ -297,7 +300,7 @@ pytest
 python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 1033 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 1040 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

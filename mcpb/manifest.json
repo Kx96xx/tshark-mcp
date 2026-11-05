@@ -1,0 +1,289 @@
+{
+  "manifest_version": "0.4",
+  "name": "tshark-mcp",
+  "display_name": "tshark-mcp",
+  "version": "0.1.0",
+  "description": "Read-only packet capture analysis with tshark: Diameter, GTP, PFCP, SIP, RTP, IMS, SIGTRAN, DNS, TLS and TCP.",
+  "long_description": "Runs tshark -r on capture files inside the directories you choose and returns compact JSON: request/answer pairs with cause names, call and media checks, subscriber traces and capture quality. It cannot capture, write files, resolve names or load code. tshark 4.0 or newer must be installed (Wireshark includes it).",
+  "author": {
+    "name": "Karl Hulse",
+    "url": "https://github.com/Kx96xx"
+  },
+  "homepage": "https://github.com/Kx96xx/tshark-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kx96xx/tshark-mcp"
+  },
+  "license": "MIT",
+  "keywords": [
+    "pcap",
+    "tshark",
+    "wireshark",
+    "diameter",
+    "gtp",
+    "sip",
+    "telecom"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "server/main.py",
+        "--redact",
+        "${user_config.redact}",
+        "--",
+        "${user_config.allow_dirs}"
+      ],
+      "env": {
+        "TSHARK_MCP_TSHARK": "${user_config.tshark_path}"
+      }
+    }
+  },
+  "user_config": {
+    "allow_dirs": {
+      "type": "directory",
+      "title": "Capture directories",
+      "description": "Directories whose capture files the server may read (read-only). Nothing outside them is opened.",
+      "multiple": true,
+      "required": true
+    },
+    "redact": {
+      "type": "string",
+      "title": "Redaction",
+      "description": "off, ids (IMSI, MSISDN, IMEI and SIP identities become stable tokens) or ids+ips (addresses too).",
+      "default": "off",
+      "required": false
+    },
+    "tshark_path": {
+      "type": "file",
+      "title": "tshark binary",
+      "description": "Only if tshark is not found on its own (for example /Applications/Wireshark.app/Contents/MacOS/tshark).",
+      "required": false
+    }
+  },
+  "tools": [
+    {
+      "name": "pcap_info",
+      "description": "Summarise a capture file: packet count, duration, first/last timestamp, size, link type and the top protocol-hierarchy entries."
+    },
+    {
+      "name": "capture_metadata",
+      "description": "What the capture file says about itself, read from the pcapng blocks without decoding a packet: did the capture box drop packets, which snaplen and capture filter were used, which tool and OS wrote the file, which interfaces are in it."
+    },
+    {
+      "name": "capture_quality",
+      "description": "Can loss and timing conclusions be drawn from this capture? Call it before reading retransmissions or missing packets as network faults."
+    },
+    {
+      "name": "tcp_health",
+      "description": "Health of every TCP stream, with copies of the same packet (mirror, SPAN, several interfaces) removed first, so they are not counted as retransmissions the way tshark's own analysis counts them."
+    },
+    {
+      "name": "tcp_connections",
+      "description": "Can this host reach that port, and if not, is it refused, filtered or prohibited? One row per TCP connection attempt (a SYN with a new initial sequence number is a new attempt, the same one a retry; mirrored copies are dropped first) with `outcome`: connected, refused (the server side answered ..."
+    },
+    {
+      "name": "icmp_errors",
+      "description": "Every ICMP and ICMPv6 error in the capture: who sends unreachables, about which flows, is a firewall rejecting, is fragmentation needed somewhere, is TTL exceeded a traceroute or a routing loop? Rows group the errors per sender, `kind` and quoted flow (source, destination, protocol; the ..."
+    },
+    {
+      "name": "http_transactions",
+      "description": "Which HTTP endpoints are slow or failing, what status codes came back, how big were the responses, what did gRPC return? HTTP/1.x requests paired with their responses by tshark (pipelining included) and HTTP/2 / gRPC followed per stream."
+    },
+    {
+      "name": "conversations",
+      "description": "List conversations (top talkers) at one layer: `layer` is one of ip, ipv6, tcp, udp, sctp or eth."
+    },
+    {
+      "name": "filter_packets",
+      "description": "Return packets matching a Wireshark display filter as rows of fields."
+    },
+    {
+      "name": "packet_detail",
+      "description": "The full dissection of one frame as tshark decodes it: every protocol layer with its fields, nested as in Wireshark's packet details pane, with tshark's names for enumerated values."
+    },
+    {
+      "name": "expert_info",
+      "description": "tshark's own expert information (`-z expert`): the warnings, errors and malformed-packet flags its dissectors raised while decoding, grouped by severity, group (Malformed, Undecoded, Sequence, Protocol, Checksum, ...), protocol and summary, with the count, the first frame and up to five sample ..."
+    },
+    {
+      "name": "find_fields",
+      "description": "Search the fields and protocols this tshark knows (`tshark -G fields`) to build a display filter or a `fields` list for filter_packets."
+    },
+    {
+      "name": "check_filter",
+      "description": "Check a Wireshark display filter without reading any capture: tshark compiles it against an empty capture and its own error comes back in `errors`, with `error_at` giving the offset and length of the part it points at (e.g."
+    },
+    {
+      "name": "cause_lookup",
+      "description": "What a telecom cause or result code means, with the spec reference to quote in a ticket."
+    },
+    {
+      "name": "diameter_transactions",
+      "description": "Pair Diameter requests with their answers (Hop-by-Hop + End-to-End id, checked against Session-Id)."
+    },
+    {
+      "name": "diameter_sessions",
+      "description": "Group Diameter traffic by Session-Id."
+    },
+    {
+      "name": "diameter_avps",
+      "description": "The AVPs of Diameter requests and answers, paired as in diameter_transactions."
+    },
+    {
+      "name": "gtp_sessions",
+      "description": "Pair GTPv2-C requests with responses by sequence number and peer pair."
+    },
+    {
+      "name": "gtp_ies",
+      "description": "The information elements of paired GTPv2-C requests and responses: the GTP counterpart of diameter_avps."
+    },
+    {
+      "name": "gtpv1_sessions",
+      "description": "Pair GTPv1-C (Gn/Gp, TS 29.060) requests with responses by sequence number and peer pair, across a proxy or NAT too (`response_path`): Create, Update and Delete PDP Context, Echo, SGSN Context, Forward Relocation, PDU Notification, ."
+    },
+    {
+      "name": "pfcp_sessions",
+      "description": "PFCP (TS 29.244) between SMF/PGW-C and UPF/PGW-U (N4, Sxa, Sxb)."
+    },
+    {
+      "name": "gtp_user_plane",
+      "description": "Summarise GTP-U (G-PDU) traffic per tunnel endpoint id: packets, bytes, first and last time, outer endpoints and the inner IP sources/destinations."
+    },
+    {
+      "name": "gtp_tunnel_health",
+      "description": "User-plane health per GTP-U tunnel (TEID), read from the packets inside it: inner TCP segments, flows, SYN/SYN-ACK and the MSS values they carry, retransmissions (with the share of data segments) split like tcp_health by where the segment was lost (`lost_before_capture`: it filled a gap in the ..."
+    },
+    {
+      "name": "tunnels_overview",
+      "description": "Every tunnel and overlay in the capture: GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE, ESP, AH, NAT-T), WireGuard, OpenVPN, L2TP and GTP-U."
+    },
+    {
+      "name": "message_rates",
+      "description": "Message rates over time and storm detection for Diameter, GTPv2-C, GTPv1-C, SIP and MAP (`protocol` auto, diameter, gtpv2, gtpv1, sip or map)."
+    },
+    {
+      "name": "dns_transactions",
+      "description": "DNS queries paired with their responses (by transport, client and server address and port, DNS id and question name), including the queries that never got one, which tshark's own dns.time cannot show."
+    },
+    {
+      "name": "tls_handshakes",
+      "description": "TLS handshakes per connection, read from the clear part of the handshake."
+    },
+    {
+      "name": "tls_certificates",
+      "description": "The certificate chains servers sent in TLS handshakes, per server, SNI and leaf: leaf subject, issuer, SANs, validity, `days_left` (at the handshake) and `days_left_now`, key algorithm and size, signature algorithm, self-signed, wildcard, SHA-256 fingerprint; the intermediates; `order_ok`, ..."
+    },
+    {
+      "name": "quic_connections",
+      "description": "Did QUIC / HTTP/3 work, did the client fall back to TCP, did the server ask for another version, is UDP 443 blocked? Per connection (by connection ID and 4-tuple): client, server, SNI (when tshark can decrypt the Initial), `version`, `initial_sent`, `server_initial`, ..."
+    },
+    {
+      "name": "response_times",
+      "description": "Where the time goes in TCP request/response flows: network, server or receiver."
+    },
+    {
+      "name": "sip_dialogs",
+      "description": "Group SIP messages by Call-ID."
+    },
+    {
+      "name": "call_kpis",
+      "description": "Call success and timing KPIs for the SIP INVITE calls in a capture, per group: `group_by` is peer (the address the first INVITE went to), trunk (source > destination of the first INVITE), destination_prefix or source_prefix (the first `prefix_len` digits of the called or calling number, + and ..."
+    },
+    {
+      "name": "call_legs",
+      "description": "Stitch the legs of a call that a B2BUA, SBC or the P-/S-CSCF/TAS chain gave different Call-IDs, and say which hop failed it."
+    },
+    {
+      "name": "nas_procedures",
+      "description": "EMM and ESM procedures per UE from S1AP and NAS EPS (S1-MME): attach, tracking area update, service request, detach, PDN connectivity, dedicated bearer activation, bearer modification and deactivation, S1 and X2 handover, UE context release."
+    },
+    {
+      "name": "volte_call_chain",
+      "description": "Follow one VoLTE call through every element and say where the setup broke."
+    },
+    {
+      "name": "sip_call_detail",
+      "description": "Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder (messages carrying SDP are marked), From/To/Request-URI/P-Asserted-Identity, the `outcome` (answered, failed <status>, cancelled, no final response), `final_response` with its reason phrase, `timing`: post-dial delay ..."
+    },
+    {
+      "name": "media_path_check",
+      "description": "Check one call's media path: the SDP offer and answer (the last completed exchange, so a re-INVITE wins) against the RTP actually captured in each direction."
+    },
+    {
+      "name": "dtmf_events",
+      "description": "DTMF digits in time order from both signalling methods: RFC 4733/2833 telephone-events in RTP (one row per digit however many update and end packets were sent: duration, volume, end packets, payload type, SSRC) and SIP INFO bodies (application/dtmf-relay Signal/Duration, application/dtmf, KPML) ..."
+    },
+    {
+      "name": "ims_registration",
+      "description": "IMS registration per UE (public identity in the To header), built from every SIP REGISTER transaction in the capture; the legs of one REGISTER through the CSCFs (same Call-ID and CSeq) count once, copies of a packet are told apart from retransmissions."
+    },
+    {
+      "name": "sms_over_ims",
+      "description": "SMS over IMS (TS 24.341): SIP MESSAGE carrying application/vnd.3gpp.sms, one row per RP-DATA or RP-SMMA."
+    },
+    {
+      "name": "rtp_streams",
+      "description": "RTP streams with quality figures, linked to their SIP call."
+    },
+    {
+      "name": "find_identifier",
+      "description": "Find which capture files mention an identifier."
+    },
+    {
+      "name": "capture_index",
+      "description": "Index a directory of capture files (a ring buffer, a day of rotated files) in time order without decoding a packet: per file the first and last packet time, duration, packets, bytes, interfaces and link type, the hole or overlap against the previous file, and with `start`/`end` (same forms as ..."
+    },
+    {
+      "name": "incident_summary",
+      "description": "First call on a capture nobody has looked at yet: \"what is wrong here?\"."
+    },
+    {
+      "name": "diff_captures",
+      "description": "What changed between a capture from before a change (`path_a`: deploy, firewall rule, DNS switch, MTU change) and one from after (`path_b`), for TCP/IP services."
+    },
+    {
+      "name": "throughput_timeline",
+      "description": "When did the transfer slow down, and was it loss, the receiver window, the sender or an idle application? `intervals` (every `interval` seconds, default 1): packets, bytes, `bps`, TCP `goodput_bps` (new bytes acknowledged, copies and retransmissions not counted), retransmitted bytes, zero ..."
+    },
+    {
+      "name": "export_subset",
+      "description": "Write the packets of an allowed capture that match `display_filter` (and start/end) to a NEW pcapng file `name` in the operator's export directory, for a vendor or another team."
+    },
+    {
+      "name": "sctp_associations",
+      "description": "Summarise SCTP associations by endpoint pair: handshake state (INIT/INIT-ACK frames and initiate tags), DATA chunk count, heartbeats sent versus acknowledged, retransmissions, and whether ABORT or SHUTDOWN was seen."
+    },
+    {
+      "name": "sigtran_messages",
+      "description": "List M3UA/SCCP/TCAP/MAP messages: SCCP type (UDT, XUDT with segmentation info), calling and called global titles and SSNs, point codes, TCAP primitive and transaction ids, components (invoke, returnResultLast, returnError) with MAP opcode and operation name (updateLocation, ..."
+    },
+    {
+      "name": "trace_subscriber",
+      "description": "Build one time-ordered timeline for a subscriber across Diameter (User-Name), GTPv2-C and GTPv1-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), PFCP (sessions naming the IMSI or a UE address the GTP rows allocated, followed by SEID), MAP (IMSI/MSISDN) and SIP ..."
+    },
+    {
+      "name": "roaming_attach_check",
+      "description": "Why can this roamer not attach or get a bearer."
+    },
+    {
+      "name": "compare_captures",
+      "description": "Compare a working and a failing capture of the same procedure."
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}
