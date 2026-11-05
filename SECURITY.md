@@ -59,8 +59,11 @@ front of captures you would not hand to anyone who can reach that port.
   above bound the damage a crashing or looping dissector can do (time, memory, output), but
   cannot prevent a dissector bug from being reached.
 - Stronger isolation. For captures from unknown sources, run the server inside a sandbox
-  that also bounds memory on every OS: a container (`docker run --read-only --cap-drop ALL
-  --memory 2g -v /pcaps:/captures:ro ...`) or `bwrap --ro-bind / / --unshare-all` on Linux.
+  that also bounds memory on every OS: the repository's `Dockerfile` (non-root user, tshark
+  pinned to one release series; run it with `docker run --rm -i --read-only --tmpfs /tmp
+  --cap-drop ALL --network none --security-opt no-new-privileges --memory 2g
+  -v /pcaps:/captures:ro tshark-mcp`) or `bwrap --ro-bind / / --unshare-all` on Linux.
+  Rebuild the image when a Wireshark advisory lands.
   macOS `sandbox-exec` is deprecated and macOS ignores RLIMIT_AS, so use a container or VM
   there.
 - The host the server runs on. The server reads the files it is pointed at with the

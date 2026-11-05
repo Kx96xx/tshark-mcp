@@ -38,6 +38,10 @@ questions about the calls, sessions and subscribers in them.
    `tshark-mcp-server` (the PyPI name `tshark-mcp` belongs to an unrelated project); the command
    stays `tshark-mcp`. From a clone: `uv tool install .` or `pipx install .`.
 
+   Or build the container (tshark included, non-root, captures mounted read-only):
+   `docker build -t tshark-mcp .`, then use `docker run --rm -i --read-only --tmpfs /tmp
+   --cap-drop ALL --network none -v /path/to/pcaps:/captures:ro tshark-mcp` as the server command.
+
 3. Connect a client, naming the directory that holds your captures.
 
    Claude Code:
@@ -247,7 +251,7 @@ pytest
 python -m evals            # task-success scenarios over the stdio server (docs/EVALS.md)
 ```
 
-The suite is 995 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 1000 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
