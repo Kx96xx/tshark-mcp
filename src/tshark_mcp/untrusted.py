@@ -57,6 +57,9 @@ PACKET_CONTAINERS: frozenset[str] = frozenset({
 })
 """Keys under which every string is packet content."""
 
+MULTILINE_KEYS: frozenset[str] = frozenset({"diagram"})
+"""Top-level keys whose value is a multi-line rendering (call_ladder's Mermaid or text diagram):
+each line is cleaned on its own and the line breaks are kept; the key is labelled as packet text."""
 TEXT_CAP = 256
 CONTAINER_CAP = 512
 
@@ -97,7 +100,10 @@ def apply(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(node, dict):
             out = {}
             for key, value in node.items():
-                if label is None and key in PACKET_CONTAINERS and isinstance(value, (dict, list)):
+                if depth == 0 and key in MULTILINE_KEYS and isinstance(value, str):
+                    out[key] = "\n".join(clean(line, None)[0] for line in value.split("\n"))
+                    labels.add(key)
+                elif label is None and key in PACKET_CONTAINERS and isinstance(value, (dict, list)):
                     out[key] = walk(value, key, CONTAINER_CAP, depth + 1)
                 elif label is None and depth > 0 and key in FREE_TEXT_KEYS and _text(value):
                     # Top-level keys are the tool's own echo of its arguments, never packet text.

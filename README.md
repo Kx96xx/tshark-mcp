@@ -189,7 +189,7 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-<!-- tool-count -->Fifty-five<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Fifty-six<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
@@ -242,6 +242,7 @@ what it cost in `tokens_estimate`.
 | `sip_call_detail` | One call: timings, SDP, Reason headers, who hung up |
 | `call_kpis` | ASR, NER, SER, PDD and ACD per peer, trunk, number prefix, user agent or interval |
 | `call_legs` | Stitch the legs of one call across B2BUAs, SBCs and CSCFs (icid, Session-ID, X- headers, media, number), with a confidence per link, which hop failed and who rewrote the status |
+| `call_ladder` | A ladder diagram for a ticket: one call (Call-ID, every SIP leg) or one subscriber (IMSI/MSISDN) as a Mermaid sequenceDiagram or text, every arrow labelled with its frame, failing steps marked, roles guessed with evidence |
 | `volte_call_chain` | One VoLTE call through SIP, Rx, Gx, GTPv2-C bearer creation, PFCP and RTP: each link's status, the first broken link and a verdict |
 | `sigtran_health` | Why an SS7-over-IP link flapped or a GT is unreachable: SCTP episodes, aborts and heartbeats, M3UA ASP state, DUNA/DAVA outages, SCCP returns and TCAP aborts per association, with a verdict |
 | `sms_delivery` | SMS over MAP and SGs: SRI-for-SM, forwardSM, report, paging and the CP/RP exchange per message, with a verdict (delivered, rejected, absent subscriber, paging failed, no response), content-free |
