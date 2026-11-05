@@ -2807,6 +2807,156 @@ def write_teredo_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# ----------------------------------------------------------------- 5G SBI over h2c (sbi_transactions)
+SBI_AMF_IP = "192.0.2.110"
+SBI_SMF_IP = "192.0.2.111"
+SBI_NRF_IP = "192.0.2.112"
+SBI_AUSF_IP = "192.0.2.113"
+SBI_UDM_IP = "192.0.2.114"
+SBI_PCF_IP = "192.0.2.115"
+SBI_PORT = 80                      # tshark reads HTTP/2 on port 80 by itself on 4.2 and later
+SBI_SUPI = IMSI                    # imsi-001010123456789
+SBI_GPSI = MSISDN                  # msisdn-15550100123
+SBI_SUCI = "suci-0-001-01-0000-0-0-0123456789"   # null scheme: the scheme output is the MSIN
+SBI_SECRET_RAND = "a1b2c3d4e5f60718293a4b5c6d7e8f90"  # 5gAuthData, must never be returned
+SBI_SECRET_KAUSF = "0badf00d0badf00d0badf00d0badf00d"
+
+H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+H2_DATA, H2_HEADERS, H2_RST_STREAM, H2_SETTINGS = 0, 1, 3, 4
+H2_END_STREAM, H2_END_HEADERS = 0x1, 0x4
+
+
+def h2_frame(ftype: int, flags: int, stream: int, body: bytes = b"") -> bytes:
+    """One HTTP/2 frame (RFC 9113 4.1)."""
+    return struct.pack("!I", len(body))[1:] + bytes([ftype, flags]) + struct.pack("!I", stream) + body
+
+
+def hpack_literal(*pairs: tuple[str, str]) -> bytes:
+    """An HPACK header block of literals without indexing and without Huffman (RFC 7541 6.2.2),
+    readable by tshark with no earlier dynamic-table state. Lengths up to 126 bytes; longer
+    values use the 7-bit prefix integer continuation."""
+    def length(n: int) -> bytes:
+        if n < 127:
+            return bytes([n])
+        out, n = bytearray([127]), n - 127
+        while n >= 128:
+            out.append((n % 128) + 128)
+            n //= 128
+        out.append(n)
+        return bytes(out)
+    out = b""
+    for name, value in pairs:
+        n, v = name.encode(), value.encode()
+        out += b"\x00" + length(len(n)) + n + length(len(v)) + v
+    return out
+
+
+class TcpFlow:
+    """One TCP connection between two documentation addresses, both directions, for h2c tests."""
+
+    def __init__(self, frames: list[tuple[float, bytes]], client: str, server: str, cport: int, sport: int, t: float):
+        self.frames, self.client, self.server, self.cport, self.sport, self.t = frames, client, server, cport, sport, t
+        self.seq = {"c": 1000, "s": 50000}
+
+    def send(self, side: str, payload: bytes = b"", flags: str = "PA", dt: float = 0.001) -> None:
+        from scapy.all import TCP  # type: ignore
+        other = "s" if side == "c" else "c"
+        src, dst, sp, dp = ((self.client, self.server, self.cport, self.sport) if side == "c"
+                            else (self.server, self.client, self.sport, self.cport))
+        self.t += dt
+        pkt = Ether(src=MAC_A, dst=MAC_B) / IP(src=src, dst=dst) / TCP(sport=sp, dport=dp, flags=flags,
+                                                                        seq=self.seq[side], ack=self.seq[other],
+                                                                        window=65000) / (Raw(payload) if payload else b"")
+        self.frames.append((self.t, bytes(pkt)))
+        self.seq[side] += len(payload) + (1 if "S" in flags or "F" in flags else 0)
+
+    def open_h2(self) -> "TcpFlow":
+        self.send("c", flags="S")
+        self.send("s", flags="SA")
+        self.send("c", flags="A")
+        self.send("c", H2_PREFACE + h2_frame(H2_SETTINGS, 0, 0))
+        self.send("s", h2_frame(H2_SETTINGS, 0, 0) + h2_frame(H2_SETTINGS, 1, 0))
+        self.send("c", h2_frame(H2_SETTINGS, 1, 0))
+        return self
+
+    def request(self, stream: int, method: str, path: str, body: str | None = None, ua: str | None = None,
+                authority: str = "nf.5gc.mnc001.mcc001.3gppnetwork.org", dt: float = 0.001) -> None:
+        hdrs = [(":method", method), (":scheme", "http"), (":path", path), (":authority", authority)]
+        if ua:
+            hdrs.append(("user-agent", ua))
+        if body is not None:
+            hdrs.append(("content-type", "application/json"))
+        payload = h2_frame(H2_HEADERS, H2_END_HEADERS | (0 if body is not None else H2_END_STREAM), stream,
+                           hpack_literal(*hdrs))
+        if body is not None:
+            payload += h2_frame(H2_DATA, H2_END_STREAM, stream, body.encode())
+        self.send("c", payload, dt=dt)
+
+    def response(self, stream: int, status: int, body: str | None = None, problem: bool = False,
+                 location: str | None = None, dt: float = 0.010) -> None:
+        hdrs = [(":status", str(status))]
+        if location:
+            hdrs.append(("location", location))
+        if body is not None:
+            hdrs.append(("content-type", "application/problem+json" if problem else "application/json"))
+        payload = h2_frame(H2_HEADERS, H2_END_HEADERS | (0 if body is not None else H2_END_STREAM), stream,
+                           hpack_literal(*hdrs))
+        if body is not None:
+            payload += h2_frame(H2_DATA, H2_END_STREAM, stream, body.encode())
+        self.send("s", payload, dt=dt)
+
+
+def write_sbi_pcap(path: Path) -> Path:
+    """5G core SBI over cleartext HTTP/2 (port 80), every header block an HPACK literal:
+    an NRF discovery of AUSF answered 200 with two NF profiles; an AUSF authentication refused
+    403 SERVING_NETWORK_NOT_AUTHORIZED and one accepted 201 whose body carries 5gAuthData (must be
+    withheld); a UDM SDM am-data lookup 404 USER_NOT_FOUND; two SMF sm-context creates, 201 with a
+    Location and then 500 SYSTEM_FAILURE; a PCF SM policy create the AMF cancels with RST_STREAM
+    CANCEL; and a connection picked up mid-way whose header block names dynamic-table entries
+    the capture never saw (HPACK state missing)."""
+    t0 = 1_700_060_000.0
+    frames: list[tuple[float, bytes]] = []
+    disc = TcpFlow(frames, SBI_AMF_IP, SBI_NRF_IP, 40001, SBI_PORT, t0).open_h2()
+    disc.request(1, "GET", "/nnrf-disc/v1/nf-instances?target-nf-type=AUSF&requester-nf-type=AMF"
+                           "&snssais=%5B%7B%22sst%22%3A1%7D%5D", ua="AMF")
+    disc.response(1, 200, '{"validityPeriod":3600,"nfInstances":[{"nfInstanceId":"aaaaaaaa-0000-4000-8000-000000000001",'
+                          '"nfType":"AUSF","nfStatus":"REGISTERED"},{"nfInstanceId":"aaaaaaaa-0000-4000-8000-000000000002",'
+                          '"nfType":"AUSF","nfStatus":"REGISTERED"}]}', dt=0.004)
+    ausf = TcpFlow(frames, SBI_AMF_IP, SBI_AUSF_IP, 40002, SBI_PORT, t0 + 0.1).open_h2()
+    ausf.request(1, "POST", "/nausf-auth/v1/ue-authentications", ua="AMF",
+                 body='{"supiOrSuci":"%s","servingNetworkName":"5G:mnc002.mcc001.3gppnetwork.org"}' % SBI_SUCI)
+    ausf.response(1, 403, '{"status":403,"cause":"SERVING_NETWORK_NOT_AUTHORIZED","title":"Forbidden"}',
+                  problem=True, dt=0.030)
+    ausf.request(3, "POST", "/nausf-auth/v1/ue-authentications", ua="AMF",
+                 body='{"supiOrSuci":"%s","servingNetworkName":"5G:mnc001.mcc001.3gppnetwork.org"}' % SBI_SUCI)
+    ausf.response(3, 201, '{"authType":"5G_AKA","5gAuthData":{"rand":"%s","autn":"%s","hxresStar":"%s"},'
+                          '"kausf":"%s","_links":{"5g-aka":{"href":"http://ausf/nausf-auth/v1/ue-authentications/1/5g-aka-confirmation"}}}'
+                  % (SBI_SECRET_RAND, SBI_SECRET_RAND, SBI_SECRET_RAND, SBI_SECRET_KAUSF),
+                  location="http://ausf/nausf-auth/v1/ue-authentications/1", dt=0.045)
+    udm = TcpFlow(frames, SBI_AMF_IP, SBI_UDM_IP, 40003, SBI_PORT, t0 + 0.3).open_h2()
+    udm.request(1, "GET", f"/nudm-sdm/v2/imsi-{SBI_SUPI}/am-data?plmn-id=%7B%22mcc%22%3A%22001%22%2C%22mnc%22%3A%2201%22%7D",
+                ua="AMF")
+    udm.response(1, 404, '{"status":404,"cause":"USER_NOT_FOUND"}', problem=True, dt=0.012)
+    smf = TcpFlow(frames, SBI_AMF_IP, SBI_SMF_IP, 40004, SBI_PORT, t0 + 0.5).open_h2()
+    smf.request(1, "POST", "/nsmf-pdusession/v1/sm-contexts", ua="AMF",
+                body='{"supi":"imsi-%s","gpsi":"msisdn-%s","pduSessionId":5,"dnn":"internet","sNssai":{"sst":1}}'
+                     % (SBI_SUPI, SBI_GPSI))
+    smf.response(1, 201, '{"pduSessionId":5}', location="http://smf/nsmf-pdusession/v1/sm-contexts/7", dt=0.080)
+    smf.request(3, "POST", "/nsmf-pdusession/v1/sm-contexts", ua="AMF",
+                body='{"supi":"imsi-%s","pduSessionId":6,"dnn":"ims","sNssai":{"sst":1}}' % SBI_SUPI)
+    smf.response(3, 500, '{"status":500,"cause":"SYSTEM_FAILURE","detail":"no UPF"}', problem=True, dt=0.900)
+    pcf = TcpFlow(frames, SBI_SMF_IP, SBI_PCF_IP, 40005, SBI_PORT, t0 + 1.8).open_h2()
+    pcf.request(1, "POST", "/npcf-smpolicycontrol/v1/sm-policies", ua="SMF",
+                body='{"supi":"imsi-%s","pduSessionId":5,"dnn":"internet"}' % SBI_SUPI)
+    pcf.send("c", h2_frame(H2_RST_STREAM, 0, 1, struct.pack("!I", 8)), dt=0.200)
+    mid = TcpFlow(frames, SBI_AMF_IP, SBI_UDM_IP, 40006, SBI_PORT, t0 + 2.2)
+    # No handshake, no preface: the capture starts inside a connection. 0xbe/0xbf index the dynamic table.
+    mid.send("c", h2_frame(H2_HEADERS, H2_END_HEADERS | H2_END_STREAM, 41, bytes([0x82, 0xbe, 0xbf])))
+    mid.send("s", h2_frame(H2_HEADERS, H2_END_HEADERS | H2_END_STREAM, 41, bytes([0x88, 0xc0])), dt=0.010)
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

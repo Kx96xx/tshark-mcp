@@ -128,6 +128,13 @@ def kind_for_key(key: str) -> str | None:
     """What a value under ``key`` identifies, or None. ``number`` covers MSISDNs,
     global titles and other E.164 numbers; ``subscriber`` is an IMSI or an MSISDN."""
     k = _norm(key)
+    # 5G SBI identities (sbi_transactions): SUPI is an IMSI, GPSI an MSISDN, PEI an IMEI.
+    if k == "supi" or k.endswith("_supi"):
+        return "imsi"
+    if k == "gpsi" or k.endswith("_gpsi"):
+        return "number"
+    if k == "pei" or k.endswith("_pei"):
+        return "imei"
     if "imei" in k or k == "mei" or k.endswith("_mei"):
         return "imei"
     if "imsi" in k:
