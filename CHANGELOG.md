@@ -141,6 +141,11 @@ the project uses [semantic versioning](https://semver.org/).
   machine with acknowledgement times, ERR named, DUNA/DAVA outages per point code (ITU 3-8-3 and
   ANSI 8-8-8), SCCP returns per unreachable GT and SSN and TCAP P-Abort causes, with a verdict
   (healthy, degraded, flapping, down) and issues in plain words.
+- `sms_delivery`: SMS over MAP and SGs as one attempt per message: sendRoutingInfoForSM,
+  mt/mo-forwardSM and reportSM-DeliveryStatus joined by MSISDN and the IMSI routing returned, SGsAP
+  paging, service request, PAGING-REJECT and the CP/RP exchange per IMSI, with MAP, SGs, CP and RP
+  causes named and a verdict (delivered, rejected, absent subscriber, paging failed, no response).
+  Content-free: no text, no TP-OA or TP-DA.
 
 ### Changed
 

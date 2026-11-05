@@ -212,6 +212,10 @@
       "description": "Why an SS7-over-IP link flapped or a GT is unreachable: one row per SCTP association (the two address:port endpoints) with a `verdict` (healthy, degraded, flapping, down) and `issues` in plain words."
     },
     {
+      "name": "sms_delivery",
+      "description": "Where an SMS went on the CS or SGs path and why it was not delivered: one row per attempt with `path` (map or sgs), `direction` (mt, mo), `imsi`, `msisdn`, `steps` in order and a `verdict` (delivered, rejected, absent_subscriber, paging_failed, no_response, in_progress) with `reasons` and `ref`."
+    },
+    {
       "name": "sip_call_detail",
       "description": "Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder (messages carrying SDP are marked), From/To/Request-URI/P-Asserted-Identity, the `outcome` (answered, failed <status>, cancelled, no final response), `final_response` with its reason phrase, `timing`: post-dial delay ..."
     },

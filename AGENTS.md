@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. Fifty-three
+when the operator enables `--export-dir`. Fifty-four
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -86,6 +86,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | The customer got 503 but the carrier sent 480: which hop of the B2BUA, SBC or CSCF chain failed or rewrote it? | `call_legs(path, call_id=... or number=...)`: legs with `linked_by` and confidence, `status_mapping`, `where_it_failed`; then `sip_call_detail` on one leg |
 | VoLTE call rang but no audio, or 503 after the 183: Rx, Gx or the dedicated bearer? | `volte_call_chain(path, call_id=... or ue_ip=...)`: links in order with status, `first_broken_link`, `verdict` |
 | An SS7/SIGTRAN link flapped, an ASP went down, a GT returns UDTS? | `sigtran_health(path, peer=... or point_code=... or gt=...)`: verdict and issues per association |
+| SMS over MAP or SGs not delivered: absent subscriber, paging failed, RP-ERROR? | `sms_delivery(path, imsi=... or msisdn=..., via="map" / "sgs")`: steps and verdict per message |
 | DTMF not working | `dtmf_events(path, call_id=...)` |
 | UE cannot register on IMS | `ims_registration(path, imsi=... or impu=...)` |
 | SMS over IMS lost or rejected | `sms_over_ims(path, number=... or imsi=...)` |
@@ -213,6 +214,7 @@ src/tshark_mcp/
   nasproc.py    nas_procedures: S1 UE contexts, UEs and EMM/ESM procedures from S1AP and NAS EPS
   volte.py      volte_call_chain: SIP, Rx, Gx, GTPv2-C bearer, PFCP and RTP of one VoLTE call joined by icid and UE address
   sigtranhealth.py sigtran_health: SCTP episodes, heartbeats, M3UA ASP state, DUNA/DAVA, SCCP returns, TCAP aborts
+  smsdelivery.py sms_delivery: MAP SRI-for-SM/forwardSM/report dialogues and SGsAP paging and CP/RP per message
   roaming.py    roaming_attach_check: attempts, subscription against request, checks and verdict
   prompts.py    the six MCP prompts (guided workflows) and path completion for their arguments
   window.py     start/end on every capture tool: parsing, per-capture resolution, the filter clause

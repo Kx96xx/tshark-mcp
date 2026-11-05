@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, smsdelivery, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_float, to_int, validate_fields,
@@ -69,7 +69,7 @@ WRITES_NEW_FILE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, ide
 INSTRUCTIONS = """\
 Read-only analysis of existing packet captures with tshark. Captures must live
 inside the allowed directories.
-Every call is bounded: file size, packets dissected, output bytes and run time.
+Every call is bounded in size and time.
 A capture nobody has looked at yet: incident_summary gives ranked findings, each
 with its evidence and the next call to make.
 Which file holds a subscriber: find_identifier on the directory. Start on a file
@@ -86,7 +86,8 @@ pfcp_sessions, sigtran_messages or sip_dialogs with imsi, session_id, call_id,
 roaming_attach_check (the first failure). S1-MME attach, TAU or service
 rejects: nas_procedures. Voice: sip_call_detail (one call), media_path_check
 (one-way audio, 488), rtp_streams (loss, jitter, MOS), dtmf_events, call_kpis
-(ASR, NER, PDD, ACD), volte_call_chain (where a VoLTE setup broke). SS7 links: sigtran_health. IMS:
+(ASR, NER, PDD, ACD), volte_call_chain (where a VoLTE setup broke). SS7 links: sigtran_health; SMS over MAP/SGs:
+sms_delivery. IMS:
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
@@ -2994,6 +2995,53 @@ def sigtran_health(path: str, peer: str | None = None, point_code: int | None = 
                          method=sigtranhealth.METHOD)
     return _guarded("sigtran_health", {"path": path, "peer": peer, "point_code": point_code, "gt": gt,
                                        "filter": filter, "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="SMS delivery over MAP and SGs", annotations=READ_ONLY)
+def sms_delivery(path: str, imsi: str | None = None, msisdn: str | None = None, via: str | None = None,
+                 filter: str | None = None, limit: int = 100, offset: int = 0) -> models.SmsDeliveryResult:
+    """Where an SMS went on the CS or SGs path and why it was not delivered: one row per
+    attempt with `path` (map or sgs), `direction` (mt, mo), `imsi`, `msisdn`, `steps` in
+    order and a `verdict` (delivered, rejected, absent_subscriber, paging_failed,
+    no_response, in_progress) with `reasons` and `ref`. MAP steps: sendRoutingInfoForSM,
+    mt-forwardSM, mo-forwardSM, reportSM-DeliveryStatus, alertServiceCentre, readyForSM,
+    each with result, MAP error named, sm-DeliveryFailure cause, TCAP abort, round trip.
+    SGs steps: PAGING-REQUEST (service indicator), SERVICE-REQUEST, PAGING-REJECT (SGs
+    cause named), DOWNLINK/UPLINK-UNITDATA with CP and RP message, RP-MR, CP and RP
+    causes, TPDU type and TP-MR. Narrow with `imsi`, `msisdn` or `via` ("map", "sgs").
+
+    Details: TCAP dialogues pair by transaction id; sendRoutingInfoForSM, the
+    mt-forwardSM to the IMSI it returned and reportSM-DeliveryStatus for the same MSISDN
+    within 60 s are one attempt. On SGs a PAGING-REQUEST for SMS or the first CP-DATA
+    starts an attempt per IMSI. An unanswered step is in_progress when the capture ended
+    within 10 s, else no_response. SMS over IMS is sms_over_ims. `summary` counts attempts
+    per verdict and path. Content-free: never the message text, TP-OA or TP-DA; IMSI and
+    MSISDN follow the redaction rules."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        imsi_d = lint_digits(imsi, "imsi") if imsi else None
+        msisdn_d = lint_digits(msisdn, "msisdn") if msisdn else None
+        if via is not None and via not in ("map", "sgs"):
+            raise ToolError("invalid_argument", f"via must be 'map' or 'sgs', got {echo(via)}")
+        cap = clamp_limit(limit, st.limits.max_packets, 100)
+        stdout, scan = _fields_run(capture, _filter(filter, base=smsdelivery.DISPLAY_FILTER), smsdelivery.FIELDS,
+                                   st.limits.max_scan_packets)
+        end, _ = _last_packet_time(capture, stdout)
+        explained: dict[tuple[str, int], Any] = {}
+
+        def explain(protocol: str, code: int) -> Any:
+            if (protocol, code) not in explained:
+                explained[(protocol, code)] = causes.brief(st.runner, protocol, code)
+            return explained[(protocol, code)]
+        rows = smsdelivery.parse(stdout)
+        attempts = smsdelivery.map_attempts(rows, explain, end) + smsdelivery.sgs_attempts(rows, explain, end)
+        attempts.sort(key=lambda a: a["first_frame"])
+        summary = smsdelivery.summary(attempts)
+        attempts = smsdelivery.select(attempts, imsi_d, msisdn_d, via)
+        return _envelope("attempts", attempts, cap, scan, offset=offset, summary=summary, method=smsdelivery.METHOD)
+    return _guarded("sms_delivery", {"path": path, "imsi": imsi, "msisdn": msisdn, "via": via, "filter": filter,
+                                     "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)

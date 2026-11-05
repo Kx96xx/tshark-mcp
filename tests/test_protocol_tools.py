@@ -168,6 +168,7 @@ class TestRegistration:
             "nas_procedures",
             "volte_call_chain",
             "sigtran_health",
+            "sms_delivery",
         ])
         by_name = {t.name: t for t in tools}
 
