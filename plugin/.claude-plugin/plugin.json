@@ -1,7 +1,7 @@
 {
   "name": "tshark-mcp",
   "displayName": "tshark-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read-only packet capture analysis with tshark (Diameter, GTP, PFCP, SIP, RTP, IMS, SIGTRAN, DNS, TLS, TCP), with investigation skills.",
   "author": {
     "name": "Karl Hulse",
