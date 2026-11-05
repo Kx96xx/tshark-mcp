@@ -16,7 +16,8 @@ questions about the calls, sessions and subscribers in them.
   reply.
 - **An agent with a shell and tshark is a liability.** This server can only run
   `tshark -r <file>` on files inside directories you allow, under hard caps on size,
-  packets, output and time. It cannot capture, write, export, resolve names or load code.
+  packets, output and time. It cannot capture, resolve names or load code, and it writes nothing
+  unless the operator turns on `export_subset` with `--export-dir`.
 - **It tells you when the capture itself cannot be trusted:** duplicate packets from a SPAN
   session, bytes the capture missed, cut-short frames, checksum offload, clocks that run
   backwards.
@@ -112,6 +113,10 @@ investigation of a failed attach is in [docs/EXAMPLE.md](docs/EXAMPLE.md).
   `-n` and `-r`, never a shell. Capture, write, export and extension flags are refused before
   a process exists. tshark gets an empty profile, so no personal Lua script, plugin or extcap
   loads, and at most two tshark processes run at once.
+- **One write tool, off by default.** `export_subset` writes a filtered subset of a capture to a
+  NEW pcapng file, only when the server was started with `--export-dir DIR` (a directory outside
+  every `--allow-dir`), never overwrites, never writes elsewhere and is capped by `--export-max-mb`
+  (50). Without the flag it refuses every call.
 - **Allowlist and caps.** Every path must resolve inside an `--allow-dir`. File size (500 MB),
   packets dissected per call (500), frames read per run (200 000), JSON per call (30 KB) and
   run time (60 s) are capped; the numbers are configurable, none can be switched off.
@@ -126,7 +131,7 @@ How to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Tools
 
-Forty-seven tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+Forty-eight tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (131 KB instead of 330 KB at 46 tools); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](docs/TOOLS.md).
@@ -140,6 +145,7 @@ what it cost in `tokens_estimate`.
 | `diff_captures` | Before and after a change: per destination, DNS name and resolver, SNI, HTTP endpoint and TCP server, what appeared, vanished, got worse or better |
 | `throughput_timeline` | Bytes, goodput, retransmissions, window stalls, SYNs, DNS and ICMP per interval; per-stream verdict (loss, receiver, idle, sender) |
 | `tunnels_overview` | GRE, ERSPAN, VXLAN, Geneve, IP-in-IP, IPsec (IKE/ESP), WireGuard, OpenVPN, L2TP and GTP-U tunnels: endpoints, traffic each way, inner protocols, overhead against the MTU, handshake outcome |
+| `export_subset` | Off unless `--export-dir`: write the packets matching a filter and window to a new pcapng file for a vendor (never overwrites, size-capped, `headers_only` cuts payloads) |
 | `find_identifier` | Which captures in a directory mention an IMSI, MSISDN, IP, Call-ID or Session-Id |
 | `capture_index` | A directory of ring-buffer files in time order: span, packets, holes and overlaps between files, which files cover an incident window |
 | `pcap_info` | Packet count, duration, link type, protocol hierarchy, active limits |
@@ -238,7 +244,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The suite is 951 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
+The suite is 964 tests and runs in about a minute; CI runs it on Python 3.10 to 3.13 with
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains

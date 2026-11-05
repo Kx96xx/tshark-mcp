@@ -7,9 +7,9 @@ so that a malicious capture or a malicious agent cannot turn the server into any
 than a bounded `tshark -r`.
 
 - **Read-only by construction.** The only program the server starts is tshark (and `dftest`
-  beside it, for `check_filter`). It is started from an argv list, never a shell, always with
+  beside it, for `check_filter`; `editcap` for `export_subset` when the operator enabled it). It is started from an argv list, never a shell, always with
   `-n` and `-r`. Capture, write, export, preference and extension flags (`-i`, `-w`, `-D`,
-  `-f`, `-a`, `-b`, `-X`, `-o`, `--export-*`, ...) are refused before a process is created;
+  `-f`, `-a`, `-b`, `-X`, `-o`, `--export-*`, ...) are refused before a process is created (the one exception is the server-built `-F pcapng -w` of `export_subset`, which is off unless the operator passes `--export-dir`);
   the one `-o` the server sets itself is checksum validation in `capture_quality`. `-z` is
   limited to a fixed list of read-only statistics.
 - **No code from the user's Wireshark profile.** tshark runs with an empty, read-only

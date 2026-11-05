@@ -200,6 +200,15 @@ def assert_read_only(args: Sequence[str]) -> None:
         raise ToolError("forbidden_flag", "tshark must be run with -r (read an existing file)")
 
 
+def _check_write_argv(argv: Sequence[str]) -> None:
+    """The exact shape write_subset builds; anything else (an extra flag, a second -w) is refused."""
+    shape = ["-n", "-r", None, "-c", None, "-Y", None, "-F", "pcapng", "-w", None]
+    if len(argv) != len(shape) or any(want is not None and got != want for got, want in zip(argv, shape)):
+        raise ToolError("forbidden_flag", "refusing a write run that is not the export shape")
+    if not argv[4].isdigit():
+        raise ToolError("forbidden_flag", "refusing a write run with a bad frame count")
+
+
 class Runner:
     """Runs tshark in read-only mode under the configured limits."""
 
@@ -264,6 +273,37 @@ class Runner:
         argv += list(args)
         return self._execute(self.tshark, argv, timeout=timeout,
                              capture=(capture, identity) if identity is not None else None)
+
+    def write_subset(self, capture: Path, out: Path, export_dir: Path, display_filter: str, frames_read: int,
+                     timeout: float | None = None) -> RunResult:
+        """The only run that writes: ``tshark -n -r <capture> -c N -Y <filter> -F pcapng -w <out>``.
+
+        Built here, never from agent text: ``out`` must be a temporary file the server created
+        directly inside ``export_dir`` (see :mod:`export`). The call's time window goes ahead of
+        the filter as in :meth:`read_capture`. ``-w`` and ``-F`` stay forbidden everywhere else."""
+        from .export import TMP_PREFIX
+        if out.parent != export_dir or not out.name.startswith(TMP_PREFIX) or out.is_symlink():
+            raise ToolError("forbidden_flag", "refusing to write outside the export directory's temporary files")
+        if not display_filter:
+            raise ToolError("forbidden_flag", "an export needs a display filter")
+        identity = _identity(capture)
+        flt = window.combine(window.clause(capture, self.capinfos_summary), display_filter)
+        n = max(1, min(int(frames_read), self.limits.max_scan_packets))
+        argv = ["-n", "-r", str(capture), "-c", str(n), "-Y", flt, "-F", "pcapng", "-w", str(out)]
+        _check_write_argv(argv)
+        return self._execute(self.tshark, argv, timeout=timeout, read_only_check=False,
+                             capture=(capture, identity) if identity is not None else None)
+
+    def cut_payloads(self, src: Path, out: Path, export_dir: Path, snaplen: int) -> RunResult:
+        """``editcap -s <snaplen> <src> <out>`` on two of the export's own temporary files."""
+        from .export import TMP_PREFIX
+        editcap = self._sibling("editcap")
+        if not editcap:
+            raise ToolError("tshark_missing", "editcap (installed with tshark) was not found; cannot cut payloads")
+        for f in (src, out):
+            if f.parent != export_dir or not f.name.startswith(TMP_PREFIX) or f.is_symlink():
+                raise ToolError("forbidden_flag", "refusing to run editcap outside the export directory")
+        return self._execute(editcap, ["-s", str(int(snaplen)), str(src), str(out)], read_only_check=False)
 
     def list_fields(self) -> RunResult:
         return self._execute(self.tshark, ["-G", "fields"])
