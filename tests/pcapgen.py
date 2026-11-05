@@ -2957,6 +2957,274 @@ def write_sbi_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# ----------------------------------------------------------------- 5G SA: NGAP, NAS-5GS, PFCP, N3 (fiveg_session)
+class PerBits:
+    """A tiny ALIGNED PER (X.691) writer for the handful of NGAP IEs the 5G tests need."""
+
+    def __init__(self) -> None:
+        self.bits: list[int] = []
+
+    def put(self, value: int, n: int) -> "PerBits":
+        self.bits += [(value >> (n - 1 - i)) & 1 for i in range(n)]
+        return self
+
+    def align(self) -> "PerBits":
+        while len(self.bits) % 8:
+            self.bits.append(0)
+        return self
+
+    def octets(self, data: bytes) -> "PerBits":
+        self.align()
+        for byte in data:
+            self.put(byte, 8)
+        return self
+
+    def length(self, n: int) -> "PerBits":
+        """An unconstrained length determinant (aligned), up to 16383."""
+        self.align()
+        return self.put(n, 8) if n < 128 else self.put(0x8000 | n, 16)
+
+    def bytes(self) -> bytes:
+        self.align()
+        return bytes(int("".join(map(str, self.bits[i:i + 8])), 2) for i in range(0, len(self.bits), 8))
+
+
+def _ngap_ie(ie_id: int, criticality: int, value: bytes) -> bytes:
+    return PerBits().put(ie_id, 16).put(criticality << 6, 8).length(len(value)).octets(value).bytes()
+
+
+def _ngap_container(ies: list[bytes]) -> bytes:
+    return b"\x00" + struct.pack("!H", len(ies)) + b"".join(ies)
+
+
+def ngap_pdu(kind: str, proc: int, criticality: int, ies: list[bytes]) -> bytes:
+    body = _ngap_container(ies)
+    first = {"initiating": 0x00, "successful": 0x20, "unsuccessful": 0x40}[kind]
+    return PerBits().put(first, 8).put(proc, 8).put(criticality << 6, 8).length(len(body)).octets(body).bytes()
+
+
+def _ngap_amf_id(value: int) -> bytes:
+    n = max(1, (value.bit_length() + 7) // 8)          # INTEGER (0..2^40-1): 3-bit octet count
+    return bytes([(n - 1) << 5]) + value.to_bytes(n, "big")
+
+
+def _ngap_ran_id(value: int) -> bytes:
+    n = max(1, (value.bit_length() + 7) // 8)          # INTEGER (0..2^32-1): 2-bit octet count
+    return bytes([(n - 1) << 6]) + value.to_bytes(n, "big")
+
+
+def _ngap_ids(amf: int | None, ran: int | None) -> list[bytes]:
+    out = []
+    if amf is not None:
+        out.append(_ngap_ie(10, 0, _ngap_amf_id(amf)))
+    if ran is not None:
+        out.append(_ngap_ie(85, 0, _ngap_ran_id(ran)))
+    return out
+
+
+def _ngap_nas(nas: bytes) -> bytes:
+    return _ngap_ie(38, 0, PerBits().length(len(nas)).octets(nas).bytes())
+
+
+def _up_tnl(w: PerBits, ip: str, teid: int) -> None:
+    """UPTransportLayerInformation: gTPTunnel { transportLayerAddress (32 bits), gTP-TEID }."""
+    w.put(0, 1).put(0, 1).put(0, 1)          # CHOICE gTPTunnel, SEQUENCE ext, no iE-Extensions
+    w.put(0, 1).put(31, 8)                    # BIT STRING ext bit, length 32 - 1 in 8 bits
+    w.octets(_ipv4(ip)).octets(struct.pack("!I", teid))
+
+
+def _pdu_setup_request_transfer(upf_ip: str, ul_teid: int, flows: list[tuple[int, int]]) -> bytes:
+    tnl = PerBits()
+    _up_tnl(tnl, upf_ip, ul_teid)
+    qos = PerBits().put(len(flows) - 1, 6)
+    for qfi, five_qi in flows:
+        qos.put(0, 3).put(0, 1).put(qfi, 6)   # item: ext, no e-RAB-ID, no iE-Ext; QFI (0..63, ...)
+        qos.put(0, 5).put(0, 2)               # QosFlowLevelQosParameters preamble; nonDynamic5QI
+        qos.put(0, 5).put(0, 1).align().put(five_qi, 8)   # NonDynamic5QIDescriptor; fiveQI (0..255, ...)
+        qos.put(0, 2).put(1, 4).put(0, 2).put(0, 2)        # ARP: priority 2, shall-not-trigger, not-pre-emptable
+    ies = [_ngap_ie(139, 0, tnl.bytes()), _ngap_ie(134, 0, b"\x00"), _ngap_ie(136, 0, qos.bytes())]
+    return _ngap_container(ies)
+
+
+def ngap_pdu_setup_request(amf: int, ran: int, psi: int, upf_ip: str, ul_teid: int, flows: list[tuple[int, int]],
+                           nas: bytes | None = None, sst: int = 1) -> bytes:
+    transfer = _pdu_setup_request_transfer(upf_ip, ul_teid, flows)
+    item = PerBits().put(0, 1).put(1 if nas else 0, 1).put(0, 1).align().put(psi, 8)   # PDU session id (0..255)
+    if nas:
+        item.length(len(nas)).octets(nas)
+    item.put(0, 3).put(sst, 8)                # S-NSSAI: ext, no SD, no iE-Ext; SST (1 octet, not aligned)
+    item.length(len(transfer)).octets(transfer)
+    lst = bytes([0]) + item.bytes()           # SEQUENCE (1..256) OF: one item
+    return ngap_pdu("initiating", 29, 0, [*_ngap_ids(amf, ran), _ngap_ie(74, 0, lst)])
+
+
+def ngap_pdu_setup_response(amf: int, ran: int, psi: int, gnb_ip: str, dl_teid: int, qfis: list[int]) -> bytes:
+    tr = PerBits().put(0, 5)                  # ResponseTransfer: ext + 4 optional bits
+    tr.put(0, 2)                              # QosFlowPerTNLInformation: ext, no iE-Ext
+    _up_tnl(tr, gnb_ip, dl_teid)
+    tr.put(len(qfis) - 1, 6)
+    for qfi in qfis:
+        tr.put(0, 3).put(0, 1).put(qfi, 6)    # AssociatedQosFlowItem: ext, no mapping, no iE-Ext; QFI
+    transfer = tr.bytes()
+    item = PerBits().put(0, 1).put(0, 1).align().put(psi, 8).length(len(transfer)).octets(transfer)
+    lst = bytes([0]) + item.bytes()
+    return ngap_pdu("successful", 29, 0, [*_ngap_ids(amf, ran), _ngap_ie(75, 1, lst)])
+
+
+_NAS5G_PLMN = bytes.fromhex("00f110")          # 001/01
+
+
+def nas5g_suci(msin: str = "0123456789", routing: bytes = b"\x00\x00") -> bytes:
+    out = bytes([0x01]) + _NAS5G_PLMN + routing + b"\x00\x00"
+    padded = msin + ("F" if len(msin) % 2 else "")
+    return out + bytes((int(padded[i + 1], 16) << 4) | int(padded[i], 16) for i in range(0, len(padded), 2))
+
+
+def nas5g_mm(msg: int, body: bytes = b"") -> bytes:
+    return bytes([0x7E, 0x00, msg]) + body
+
+
+def nas5g_registration_request(suci: bytes) -> bytes:
+    return nas5g_mm(0x41, bytes([0x71]) + struct.pack("!H", len(suci)) + suci)
+
+
+def nas5g_auth_request() -> bytes:
+    return nas5g_mm(0x56, bytes([0x00, 0x02, 0x00, 0x00, 0x21]) + bytes(16) + bytes([0x20, 16]) + bytes(16))
+
+
+def nas5g_sm(msg: int, psi: int, body: bytes = b"", pti: int = 1) -> bytes:
+    return bytes([0x2E, psi, pti, msg]) + body
+
+
+def _nas5g_dnn(dnn: str) -> bytes:
+    labels = b"".join(bytes([len(x)]) + x.encode() for x in dnn.split("."))
+    return bytes([0x25, len(labels)]) + labels
+
+
+def nas5g_ul_sm(psi: int, sm: bytes, dnn: str | None = None) -> bytes:
+    body = bytes([0x01]) + struct.pack("!H", len(sm)) + sm + bytes([0x12, psi, 0x81])
+    if dnn:
+        body += _nas5g_dnn(dnn)
+    return nas5g_mm(0x67, body)
+
+
+def nas5g_dl_sm(psi: int, sm: bytes) -> bytes:
+    return nas5g_mm(0x68, bytes([0x01]) + struct.pack("!H", len(sm)) + sm + bytes([0x12, psi]))
+
+
+def nas5g_pdu_accept(psi: int, dnn: str) -> bytes:
+    rules = bytes([0x01, 0x00, 0x03, 0x30, 0xFF, 0x01])
+    labels = b"".join(bytes([len(x)]) + x.encode() for x in dnn.split("."))
+    body = bytes([0x11]) + struct.pack("!H", len(rules)) + rules + bytes([6, 6, 0, 100, 6, 0, 100])
+    return nas5g_sm(0xC2, psi, body + bytes([0x25, len(labels)]) + labels)
+
+
+
+def pfcp_msg(msg_type: int, seid: int, seq: int, ies: list[bytes]) -> bytes:
+    """A PFCP message with a SEID (TS 29.244 7.2.2.4.1): version 1, S flag set."""
+    body = struct.pack("!Q", seid) + struct.pack("!I", seq << 8) + b"".join(ies)
+    return bytes([0x21, msg_type]) + struct.pack("!H", len(body)) + body
+
+
+def _pfcp_dnn(dnn: str) -> bytes:
+    return _pfcp_ie(159, b"".join(bytes([len(x)]) + x.encode() for x in dnn.split(".")))
+
+
+FIVEG_GNB = "192.0.2.120"
+FIVEG_AMF = "192.0.2.121"
+FIVEG_SMF = "192.0.2.122"
+FIVEG_UPF = "192.0.2.130"
+FIVEG_UE_IP = "100.64.5.1"
+FIVEG_MSIN = {1: "0000000001", 2: "0000000002", 3: "0000000003", 4: "0000000004", 5: "0000000005"}
+FIVEG_SUPI = {ue: "00101" + msin for ue, msin in FIVEG_MSIN.items()}
+
+
+def write_fiveg_pcap(path: Path) -> Path:
+    """5G SA, one gNB, AMF, SMF and UPF, five UEs (RAN-UE-NGAP-ID 1 to 5, AMF-UE-NGAP-ID 101 to 105),
+    plain NAS (no security header), SUCI null scheme:
+
+    1. registers; PDU session 5 to "internet" (PFCP accepted, UPF N3 TEID 0x1001, NGAP setup with
+       QFI 1 / 5QI 9, gNB TEID 0x2001, GTP-U both ways); PDU session 6 to "ims" with only 5QI 5;
+    2. Authentication Failure #21, then Registration Reject #111;
+    3. registers; PDU Session Establishment Reject #27 (missing or unknown DNN) for "nope";
+    4. registers; PFCP Session Establishment rejected with cause 72, no NGAP setup follows;
+    5. registers; PFCP gives UPF TEID 0x5005 but the NGAP setup request carries 0x5555."""
+    t0 = 1_700_070_000.0
+    frames: list[tuple[float, bytes]] = []
+    tsn = {"up": 0, "down": 0}
+
+    def ngap(t: float, uplink: bool, pdu: bytes) -> None:
+        key = "up" if uplink else "down"
+        tsn[key] += 1
+        src, dst = (FIVEG_GNB, FIVEG_AMF) if uplink else (FIVEG_AMF, FIVEG_GNB)
+        frames.append((t, _sctp_data(src, dst, 38412, 38412, 0x51 if uplink else 0x52, tsn[key], 60, pdu)))
+
+    def nas_up(t: float, ue: int, nas: bytes, initial: bool = False) -> None:
+        ids = _ngap_ids(None, ue) if initial else _ngap_ids(100 + ue, ue)
+        ngap(t, True, ngap_pdu("initiating", 15 if initial else 46, 1, [*ids, _ngap_nas(nas)]))
+
+    def nas_down(t: float, ue: int, nas: bytes) -> None:
+        ngap(t, False, ngap_pdu("initiating", 4, 1, [*_ngap_ids(100 + ue, ue), _ngap_nas(nas)]))
+
+    def pfcp(t: float, req: bool, seid: int, seq: int, ies: list[bytes]) -> None:
+        src, dst = (FIVEG_SMF, FIVEG_UPF) if req else (FIVEG_UPF, FIVEG_SMF)
+        frames.append((t, _udp_frame(src, dst, 8805, 8805, pfcp_msg(50 if req else 51, seid, seq, ies))))
+
+    def register(t: float, ue: int) -> None:
+        nas_up(t, ue, nas5g_registration_request(nas5g_suci(FIVEG_MSIN[ue])), initial=True)
+        nas_down(t + 0.010, ue, nas5g_auth_request())
+        nas_up(t + 0.030, ue, nas5g_mm(0x57, bytes([0x2D, 16]) + bytes(16)))
+        nas_down(t + 0.050, ue, nas5g_mm(0x42, bytes([0x01, 0x01])))
+        nas_up(t + 0.060, ue, nas5g_mm(0x43))
+
+    def session(t: float, ue: int, psi: int, dnn: str, upf_teid: int | None, ngap_teid: int | None,
+                flows: list[tuple[int, int]], pfcp_cause: int = 1) -> None:
+        nas_up(t, ue, nas5g_ul_sm(psi, nas5g_sm(0xC1, psi, b"\xff\xff"), dnn))
+        seq = ue * 10 + psi
+        pdi = _pfcp_ie(2, _pfcp_ie(20, bytes([0])) + _pfcp_ie(21, bytes([0x05])))
+        pfcp(t + 0.020, True, 0, seq, [_pfcp_ie(60, b"\x00" + _ipv4(FIVEG_SMF)),
+                                       _pfcp_ie(57, b"\x02" + struct.pack("!Q", 0x5000 + seq) + _ipv4(FIVEG_SMF)),
+                                       _pfcp_ie(1, _pfcp_ie(56, struct.pack("!H", 1)) + _pfcp_ie(29, struct.pack("!I", 255)) + pdi),
+                                       _pfcp_dnn(dnn)])
+        resp = [_pfcp_ie(19, bytes([pfcp_cause]))]
+        if pfcp_cause == 1:
+            resp += [_pfcp_ie(57, b"\x02" + struct.pack("!Q", 0x9000 + seq) + _ipv4(FIVEG_UPF)),
+                     _pfcp_ie(8, _pfcp_ie(56, struct.pack("!H", 1)) + _pfcp_ie(21, b"\x01" + struct.pack("!I", upf_teid)
+                                                                              + _ipv4(FIVEG_UPF)))]
+        pfcp(t + 0.030, False, 0x5000 + seq, seq, resp)
+        if ngap_teid is None:
+            return
+        accept = nas5g_dl_sm(psi, nas5g_pdu_accept(psi, dnn))
+        ngap(t + 0.050, False, ngap_pdu_setup_request(100 + ue, ue, psi, FIVEG_UPF, ngap_teid, flows, nas=accept))
+        ngap(t + 0.070, True, ngap_pdu_setup_response(100 + ue, ue, psi, FIVEG_GNB, 0x2000 + ue * 16 + psi,
+                                                      [q for q, _ in flows]))
+
+    register(t0, 1)
+    session(t0 + 0.2, 1, 5, "internet", 0x1001, 0x1001, [(1, 9)])
+    inner = bytes(IP(src=FIVEG_UE_IP, dst=SERVER_IP) / UDP(sport=40000, dport=40001) / Raw(b"q" * 40))
+    for i in range(3):
+        frames.append((t0 + 0.4 + i * 0.01, _udp_frame(FIVEG_GNB, FIVEG_UPF, 2152, 2152, _gtpu(0x1001, inner))))
+    frames.append((t0 + 0.45, _udp_frame(FIVEG_UPF, FIVEG_GNB, 2152, 2152, _gtpu(0x2015, inner))))
+    session(t0 + 0.6, 1, 6, "ims", 0x1002, 0x1002, [(1, 5)])
+
+    nas_up(t0 + 1.0, 2, nas5g_registration_request(nas5g_suci(FIVEG_MSIN[2])), initial=True)
+    nas_down(t0 + 1.010, 2, nas5g_auth_request())
+    nas_up(t0 + 1.030, 2, nas5g_mm(0x59, bytes([21])))
+    nas_down(t0 + 1.040, 2, nas5g_mm(0x44, bytes([111])))
+
+    register(t0 + 2.0, 3)
+    nas_up(t0 + 2.2, 3, nas5g_ul_sm(5, nas5g_sm(0xC1, 5, b"\xff\xff"), "nope"))
+    nas_down(t0 + 2.25, 3, nas5g_dl_sm(5, nas5g_sm(0xC3, 5, bytes([27]))))
+
+    register(t0 + 3.0, 4)
+    session(t0 + 3.2, 4, 5, "internet", None, None, [(1, 9)], pfcp_cause=72)
+
+    register(t0 + 4.0, 5)
+    session(t0 + 4.2, 5, 5, "internet", 0x5005, 0x5555, [(1, 9)])
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

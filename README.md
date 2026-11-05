@@ -193,7 +193,7 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-<!-- tool-count -->Fifty-seven<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Fifty-eight<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Only the default toolset (34 tools, about 60% of the
@@ -239,6 +239,7 @@ what it cost in `tokens_estimate`.
 | `gtp_tunnel_health` | Inner TCP loss, reordering, MSS/MTU and ICMP per GTP-U tunnel |
 | `pfcp_sessions` | PFCP (N4/Sx) sessions, rejections, reports, usage and peer restarts |
 | `sbi_transactions` | 5G core SBI (HTTP/2 between NFs): per request the service, consumer and producer NF, status, latency, ProblemDetails cause explained, resets, NRF discovery; TLS without keys is counted, not read |
+| `fiveg_session` | 5G SA per UE: registration (authentication, 5GMM cause), PDU sessions (5GSM cause, QoS flows with 5QI, PFCP establishment, UPF and gNB N3 TEIDs, n3_consistent, GTP-U counts), a VoNR 5QI 1 check and a verdict |
 | `message_rates` | Messages per interval, bursts, storms and subscriber loops with the nodes involved |
 | `dns_transactions` | Queries paired with responses, unanswered ones included, per-server latency, failing names |
 | `tls_handshakes` | Client offer versus server choice, alerts, certificate, outcome per connection |
