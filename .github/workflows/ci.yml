@@ -68,3 +68,43 @@ jobs:
         run: |
           if tshark-mcp; then echo "expected a non-zero exit"; exit 1; fi
           tshark-mcp --version
+
+  docker:
+    # Builds the image (never pushed anywhere) and runs the stdio checks inside it.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the eval harness on the host (it writes the synthetic captures)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Build the image
+        run: docker build -t tshark-mcp:ci .
+
+      - name: Image checks (non-root, tshark version, refusal without --allow-dir, healthcheck)
+        run: python -m pytest -v tests/test_docker.py
+
+      - name: Every task-success scenario over stdio inside the container
+        run: |
+          mkdir -p "$RUNNER_TEMP/captures"
+          python -m evals --captures "$RUNNER_TEMP/captures" --server-dir /captures -- \
+            docker run --rm -i --read-only --tmpfs /tmp --cap-drop ALL --network none \
+              --security-opt no-new-privileges --memory 2g \
+              -v "$RUNNER_TEMP/captures:/captures:ro" tshark-mcp:ci
+
+      - name: Healthcheck reports healthy
+        run: |
+          docker run -d --name hc --read-only --tmpfs /tmp --cap-drop ALL --network none \
+            --health-interval 2s --health-start-period 1s -i tshark-mcp:ci
+          for i in $(seq 1 30); do
+            s=$(docker inspect --format '{{.State.Health.Status}}' hc); echo "$s"
+            [ "$s" = healthy ] && break; sleep 2
+          done
+          docker rm -f hc
+          [ "$s" = healthy ]

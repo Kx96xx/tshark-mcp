@@ -7,6 +7,12 @@ the project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
+- `Dockerfile`: tshark from Debian pinned to the 4.4 series (the build fails if the series
+  changes), the server installed from the checkout, a non-root user (uid 10001), `/captures` as the
+  read-only capture mount, a healthcheck (package imports, tshark runs) and no port. A CI `docker`
+  job builds it (never pushes it), checks the user, the tshark version and the refusal without
+  `--allow-dir`, and runs every task-success scenario over stdio inside `docker run -i --read-only
+  --cap-drop ALL --network none`.
 - Task-success evals (`python -m evals`, docs/EVALS.md): sixteen scenarios over the synthetic
   captures, each an operator question, the calls that answer it and the facts the results must
   hold, with call and token budgets. The harness runs them over the stdio server and scores them
