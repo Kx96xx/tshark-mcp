@@ -97,7 +97,8 @@ what an agent needs to choose the tool and move the rest (how pairing works, eve
 the resource. The full description, input schema and output schema of any tool are the
 resource `schema://tools/<name>` (one per tool, in `resources/list`) in either profile;
 `--schema-profile full` (or `TSHARK_MCP_SCHEMA_PROFILE=full`) publishes the full list as
-before. `tests/test_tool_list.py` keeps the compact list within budget: at most 2,750 bytes
+before. `--toolsets` (or `TSHARK_MCP_TOOLSETS`) picks which tools are listed at all: `default`
+(always on, 33 tools), `mobile`, `voice`, `network` or `all` (see AGENTS.md, "Toolsets"). `tests/test_tool_list.py` keeps the compact list within budget: at most 2,750 bytes
 per tool on average and 4,608 for any tool, descriptions at most 1,500 characters (a longer
 one moves its detail after a `Details:` line in the docstring), instructions at most 3,900.
 

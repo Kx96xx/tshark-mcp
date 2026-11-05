@@ -12,6 +12,8 @@ from .. import causes, diampeers, models
 from ..limits import ToolError, clamp_limit, echo, lint_hostname
 from ..server import READ_ONLY, _envelope, _fields_run, _filter, _guarded, _last_packet_time, _resolve, _tool, state
 
+TOOLSET = "mobile"  # which --toolsets lists this tool (see tshark_mcp/toolsets.py)
+
 
 @_tool(title="Diameter peers: capabilities, watchdog, KPIs", annotations=READ_ONLY)
 def diameter_peers(path: str, host: str | None = None, realm: str | None = None, application: int | None = None,

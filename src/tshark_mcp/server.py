@@ -57,6 +57,7 @@ from . import progress
 from . import prompts as guided
 from . import window
 from . import schemas
+from . import toolsets
 from .errors import add_fix
 from .runner import Runner, begin_warnings, check_result, collect_warnings
 from .runner import reset_deadline as runner_deadline_reset, set_deadline as runner_deadline
@@ -140,12 +141,22 @@ class _TsharkServer(_Server):  # type: ignore[misc,valid-type]
     """The SDK server with the tool list published in the configured schema profile."""
 
     async def list_full_tools(self) -> list[Any]:
-        return [schemas.full_tool(t) for t in await super().list_tools()]
+        return [schemas.full_tool(t) for t in await super().list_tools() if _listed(t.name)]
 
     async def list_tools(self) -> list[Any]:
         if _SCHEMA_PROFILE == "full":
             return await self.list_full_tools()
-        return [schemas.compact_tool(t) for t in await super().list_tools()]
+        return [schemas.compact_tool(t) for t in await super().list_tools() if _listed(t.name)]
+
+    async def list_prompts(self) -> list[Any]:
+        # A prompt that names a tool outside the active toolsets is not offered.
+        return [p for p in await super().list_prompts() if guided.PROMPTS.get(p.name) is None
+                or all(_listed(t) for t in guided.prompt_tools(p.name))]
+
+
+def _listed(name: str) -> bool:
+    """True when the active toolsets (``--toolsets``) list the tool ``name`` (see :mod:`toolsets`)."""
+    return toolsets.listed(name, TOOLS.get(name))
 
 
 app = _TsharkServer("tshark-mcp", instructions=INSTRUCTIONS, version=__version__)
@@ -5282,6 +5293,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="compact (default): tools/list carries top-level output keys and short descriptions, "
                         "the full schema of each tool is the resource schema://tools/<name>; full: publish "
                         "every schema in full (or TSHARK_MCP_SCHEMA_PROFILE)")
+    p.add_argument("--toolsets", default=os.environ.get("TSHARK_MCP_TOOLSETS", toolsets.DEFAULT), metavar="NAMES",
+                   help="tool groups tools/list shows, comma-separated: default (always on: "
+                        "incident_summary, overview, the most used TCP/IP and telecom tools), mobile, voice, "
+                        "network or all (or TSHARK_MCP_TOOLSETS). Unlisted tools still answer a call by name")
     p.add_argument("--export-dir", default=None, metavar="DIR",
                    help="turn on export_subset: the one directory it may write new pcapng files to (default off; "
                         "or TSHARK_MCP_EXPORT_DIR). Must not overlap an --allow-dir")
@@ -5325,6 +5340,7 @@ def main(argv: list[str] | None = None) -> int:
             print("tshark-mcp: no --allow-dir given and TSHARK_MCP_ALLOW_DIRS is unset; refusing to start", file=sys.stderr)
             return 2
         set_schema_profile(args.schema_profile)
+        toolsets.set_active(toolsets.parse(args.toolsets))
         key_text = os.environ.get("TSHARK_MCP_REDACT_KEY")
         if key_text is not None and len(key_text) < 16:
             raise ValueError("TSHARK_MCP_REDACT_KEY must be at least 16 characters")
@@ -5341,6 +5357,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"tshark-mcp {__version__}: tshark={st.runner.tshark} allow={st.allowlist.describe()} limits={st.limits.describe()} "
           f"redact={st.redact_mode} user_profile={st.runner.user_profile} schema_profile={_SCHEMA_PROFILE} "
+          f"toolsets={toolsets.describe()} "
           f"export={st.export.describe() if st.export else 'off'}",
           file=sys.stderr)
     app.run(transport=args.transport)
