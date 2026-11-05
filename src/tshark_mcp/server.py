@@ -40,6 +40,7 @@ from . import capdiff
 from . import incident
 from . import throughput
 from . import certs
+from . import quicconn
 from . import overlays
 from . import export as exporting
 from . import progress
@@ -87,7 +88,7 @@ roaming_attach_check (the first failure). Voice: sip_call_detail (one call), med
 ims_registration (verdict per UE; call it before blaming voice or SMS on a UE),
 sms_over_ims (each SMS and why it failed). A working and a failing capture of
 one procedure: compare_captures; before and after a change (TCP/IP): diff_captures. IP services: dns_transactions, tls_handshakes,
-tls_certificates (chains, expiry), http_transactions (HTTP and gRPC per endpoint), response_times (network, server
+tls_certificates (chains, expiry), quic_connections (HTTP/3, TCP fallback), http_transactions (HTTP and gRPC per endpoint), response_times (network, server
 or receiver time), throughput_timeline (when a transfer slowed and why), tunnels_overview (VPNs, overlays). Before reading missing packets or retransmissions as network
 faults, capture_quality says whether the capture can be trusted; tcp_health
 tells real TCP loss, resets and MTU black holes from capture artifacts;
@@ -2560,6 +2561,53 @@ def tls_certificates(path: str, server_name: str | None = None, server: str | No
     return _guarded("tls_certificates", {"path": path, "server_name": server_name, "server": server,
                                          "expiring_within_days": expiring_within_days, "filter": filter,
                                          "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="QUIC connections (HTTP/3, fallback to TCP)", annotations=READ_ONLY)
+def quic_connections(path: str, server_name: str | None = None, server: str | None = None, filter: str | None = None,
+                     limit: int = 200, offset: int = 0) -> models.QuicConnectionsResult:
+    """Did QUIC / HTTP/3 work, did the client fall back to TCP, did the server ask for
+    another version, is UDP 443 blocked? Per connection (by connection ID and 4-tuple):
+    client, server, SNI (when tshark can decrypt the Initial), `version`, `initial_sent`,
+    `server_initial`, `handshake_packets_both_ways`, `one_rtt_both_ways` (the practical "it
+    worked"), `retry`, `version_negotiation` (offered and supported versions), `zero_rtt`,
+    `connection_close` (when in clear), `migrated` (same connection ID, new address or port),
+    `spin_rtt_ms`, `tcp_fallback` (a TCP ClientHello from the client within 2 s of a failed
+    attempt) and `outcome`. `summary.udp_443_blocked_likely` when no QUIC server answered and
+    the clients fell back to TCP. `server_name` and `server` (IP) narrow it.
+    Details: Headers only: QUIC encrypts everything else, so no keys are needed and nothing
+    is decrypted beyond what tshark derives itself for Initials. Outcomes: established (1-RTT
+    packets both ways), handshake_only (Handshake packets both ways, no 1-RTT yet),
+    handshake_incomplete (the server answered, the handshake did not finish), version_negotiation,
+    retry_unanswered, closed_with_error (a CONNECTION_CLOSE with a non-zero code), no_response.
+    The spin-bit RTT is the median time between spin flips in one direction. A connection
+    whose first packet in the capture is the server's has its ends swapped."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        wanted = lint_hostname(server_name, "server_name") if server_name is not None and str(server_name).strip() != "" else None
+        addr = _lint_ip(server, "server") if server is not None and str(server).strip() != "" else None
+        cap = clamp_limit(limit, st.limits.max_packets, 200)
+        known = field_catalogue(st.runner)
+        names = [f for f in quicconn.FIELDS if f in known]
+        flt = _filter(filter, base=quicconn.FILTER)
+        stdout, scan = _fields_run(capture, flt, names, st.limits.max_scan_packets, aggregator=quicconn.AGGREGATOR)
+        conns, hellos = quicconn.build(quicconn.parse(stdout, names))
+        rows = quicconn.rows(conns, hellos)
+        if wanted:
+            rows = [r for r in rows if r.get("sni") and tls.matches_name(r["sni"], wanted)]
+        if addr:
+            rows = [r for r in rows if r["server"].rsplit(":", 1)[0] == addr]
+        out_summary = quicconn.summary(rows)
+        issues = [i for r in rows for i in r.get("issues", [])][:20]
+        if out_summary.get("udp_443_blocked_likely"):
+            issues.insert(0, "no QUIC server in this capture answered an Initial and the clients fell back to TCP: "
+                             "UDP 443 is most likely blocked on the path")
+        rows.sort(key=lambda r: (r["outcome"] == "established", r.get("first_frame") or 0))
+        return _envelope("connections", rows, cap, scan, offset=offset, display_filter=flt, summary=out_summary,
+                         issues=issues)
+    return _guarded("quic_connections", {"path": path, "server_name": server_name, "server": server,
+                                         "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="TCP response times", annotations=READ_ONLY)

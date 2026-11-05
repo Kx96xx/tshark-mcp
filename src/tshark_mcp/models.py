@@ -1277,6 +1277,46 @@ class TlsCertificatesResult(RowsResult, total=False):
     issues: list[str]
 
 
+class QuicConnectionRow(TypedDict, total=False):
+    """One QUIC connection: ``client``, ``server``, ``sni``, ``version``, ``server_version``, ``initial_sent``,
+    ``server_initial``, ``handshake_packets_both_ways``, ``one_rtt_both_ways``, ``zero_rtt``, ``retry``,
+    ``version_negotiation``, ``connection_close``, ``migrated``, ``spin_rtt_ms``, ``packets`` per side and type,
+    ``tcp_fallback``, ``outcome``, ``issues``, frames."""
+    __pydantic_config__ = _EXTRA_OK
+    client: str
+    server: str
+    sni: str
+    version: str
+    server_version: str
+    first: str
+    last: str
+    first_frame: int
+    last_frame: int
+    initial_sent: int
+    server_initial: bool
+    handshake_packets_both_ways: bool
+    one_rtt_both_ways: bool
+    zero_rtt: int
+    retry: dict[str, Any]
+    version_negotiation: dict[str, Any]
+    connection_close: dict[str, Any]
+    migrated: bool
+    migration_frames: list[int]
+    spin_rtt_ms: float
+    packets: dict[str, int]
+    tcp_fallback: dict[str, Any]
+    outcome: str
+    issues: list[str]
+
+
+class QuicConnectionsResult(RowsResult, total=False):
+    """``connections`` failed first; ``summary`` outcomes, versions, fallbacks, ``udp_443_blocked_likely``; ``issues``."""
+    connections: list[QuicConnectionRow]
+    display_filter: str
+    summary: dict[str, Any]
+    issues: list[str]
+
+
 class SipMessage(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
     frame: int

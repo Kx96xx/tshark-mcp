@@ -90,6 +90,12 @@ the project uses [semantic versioning](https://semver.org/).
   and alerts seen and how many clients refused the certificate. TLS 1.3 connections are counted
   as skipped because their certificates are encrypted. No private keys, no decryption.
 
+- `quic_connections`: QUIC / HTTP/3 connections read from their clear headers (no keys needed):
+  version, Retry, Version Negotiation with the versions the server offered, Handshake and 1-RTT
+  packets both ways, 0-RTT, CONNECTION_CLOSE when in clear, migration to a new address or port,
+  a spin-bit RTT, the outcome per connection, the TCP fallback after a failed attempt and a
+  `udp_443_blocked_likely` summary flag.
+
 ### Fixed
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared

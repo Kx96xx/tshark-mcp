@@ -163,6 +163,7 @@ class TestRegistration:
             "tunnels_overview",
             "export_subset",
             "tls_certificates",
+            "quic_connections",
             "call_legs",
         ])
         by_name = {t.name: t for t in tools}
