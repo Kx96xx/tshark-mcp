@@ -129,6 +129,7 @@ class Duplicates(TypedDict, total=False):
     share: float
     causes: dict[str, int]
     examples: list[CopyExample]
+    repeated_identical: dict[str, int]
 
 
 class CaptureGaps(TypedDict, total=False):
