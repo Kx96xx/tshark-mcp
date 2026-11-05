@@ -67,6 +67,25 @@ class ToolResult(TypedDict, total=False):
     window: dict[str, Any]
 
 
+class IpsecSpi(TypedDict, total=False):
+    __pydantic_config__ = _EXTRA_OK
+    spi: str
+    packets: int
+
+
+class IpsecVisibility(TypedDict, total=False):
+    """ESP on the capture, as seen by a SIP/IMS tool: ``esp_packets``, the busiest ``spis``,
+    ``decoded_null`` (read with ``esp_null``: NULL encryption), ``unreadable`` (encrypted),
+    ``first_unreadable_frame`` and a ``hint`` saying whether SIP may be hidden inside."""
+    __pydantic_config__ = _EXTRA_OK
+    esp_packets: int
+    spis: list[IpsecSpi]
+    decoded_null: int
+    unreadable: int
+    esp_null: bool
+    hint: str
+
+
 class RowsResult(ToolResult, total=False):
     """One page of rows. ``total_matched`` rows were found; ``returned`` of them are in
     this page, starting at ``offset``; ``dropped`` come after it and ``next_offset``
@@ -99,6 +118,7 @@ class ProtocolHierarchyEntry(TypedDict, total=False):
 
 
 class PcapInfoResult(ToolResult, total=False):
+    ipsec: IpsecVisibility
     path: str
     file_size_bytes: int
     file_type: str
@@ -742,6 +762,7 @@ class StitchedCall(TypedDict, total=False):
 
 
 class CallLegsResult(RowsResult, total=False):
+    ipsec: IpsecVisibility
     calls: list[StitchedCall]
     summary: dict[str, Any]
     method: dict[str, str]
@@ -817,6 +838,7 @@ class VolteCall(TypedDict, total=False):
 
 
 class VolteCallChainResult(RowsResult, total=False):
+    ipsec: IpsecVisibility
     calls: list[VolteCall]
 class SigtranAssociation(TypedDict, total=False):
     """One SCTP association with its episodes, heartbeats, M3UA ASP state, SCCP returns and TCAP aborts."""
@@ -1505,6 +1527,7 @@ SipDialogRow.__pydantic_config__ = _EXTRA_OK  # type: ignore[attr-defined]
 
 
 class SipDialogsResult(RowsResult, total=False):
+    ipsec: IpsecVisibility
     dialogs: list[SipDialogRow]
     summary: MessageSummary
     selection: str | None
@@ -1536,6 +1559,7 @@ class SipCallDetail(SipDialogRow, total=False):  # type: ignore[misc]
 
 
 class SipCallDetailResult(ToolResult, total=False):
+    ipsec: IpsecVisibility
     call: SipCallDetail
     found: bool
     packets_scanned: int
@@ -1765,6 +1789,7 @@ class ImsRegistrationRow(TypedDict, total=False):
 
 
 class ImsRegistrationResult(RowsResult, total=False):
+    ipsec: IpsecVisibility
     registrations: list[ImsRegistrationRow]
     summary: dict[str, Any]
     capture_end: str
@@ -1813,6 +1838,7 @@ class SmsOverImsRow(TypedDict, total=False):
 
 
 class SmsOverImsResult(RowsResult, total=False):
+    ipsec: IpsecVisibility
     messages: list[SmsOverImsRow]
     summary: dict[str, Any]
     capture_end: str
@@ -1930,6 +1956,7 @@ class SubscriberIdentity(TypedDict, total=False):
 
 
 class TraceSubscriberResult(RowsResult, total=False):
+    ipsec: IpsecVisibility
     timeline: list[TimelineRow]
     identity: SubscriberIdentity
     by_protocol: dict[str, int]

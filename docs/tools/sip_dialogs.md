@@ -6,4 +6,4 @@ llms: SIP grouped by Call-ID with the method chain, From/To, final status, time 
 
 Messages grouped by Call-ID: method chain, From, To, Request-URI, P-Asserted-Identity, final status,
 outcome after any 401/407 challenge, retransmission count, time to final response, dialog duration;
-a TCP segment carrying several SIP messages is split so each message joins its own dialog
+a TCP segment carrying several SIP messages is split so each message joins its own dialog. `esp_null=true` reads SIP inside NULL-encrypted ESP (Gm); `ipsec` says when SIP may be hidden in unreadable ESP.

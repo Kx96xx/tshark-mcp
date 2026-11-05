@@ -58,9 +58,11 @@ from . import prompts as guided
 from . import window
 from . import schemas
 from . import toolsets
+from . import ipsec
 from .errors import add_fix
-from .runner import Runner, begin_warnings, check_result, collect_warnings
+from .runner import Runner, begin_warnings, check_result, collect_warnings, note_warning
 from .runner import reset_deadline as runner_deadline_reset, set_deadline as runner_deadline
+from .runner import preferences as runner_preferences, reset_preferences, set_preferences
 
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
@@ -260,6 +262,7 @@ _CALL_OUTPUT: contextvars.ContextVar[shaping.OutputOptions] = contextvars.Contex
 # frame or the file's own blocks, nor on capture_index, whose start and end pick files.
 WindowStart = Annotated[str | float | None, Field(description="ISO 8601, epoch s, +Ns from start, -Ns from end")]
 WindowEnd = Annotated[str | float | None, Field(description="Same forms as start")]
+EspNull = Annotated[bool, Field(description="Read SIP in NULL-encrypted ESP")]
 WINDOWLESS_TOOLS = frozenset({"packet_detail", "capture_metadata", "capture_index"})
 
 
@@ -468,7 +471,8 @@ def _prescan(capture: Path) -> Prescan:
         info = capture.stat()
     except OSError as exc:
         return Prescan(False, 0, 0.0, f"the capture could not be read again: {exc}")
-    key = (str(capture), info.st_mtime_ns, info.st_size)
+    # A call that reads inside NULL ESP (esp_null) sees identities a plain read does not.
+    key = (str(capture), info.st_mtime_ns, info.st_size, runner_preferences())
     with st.prescan_guard:
         lock = st.prescan_locks.setdefault(key, threading.Lock())
     with lock:
@@ -502,6 +506,63 @@ def _prescan_warning(capture: Path, outcome: Prescan, mode: str) -> str:
     advice = "" if mode == "ids+ips" else "; call again with redact='ids+ips' to hide every IP address"
     return (f"redaction may be incomplete for {capture.name}: {outcome.reason}. Past that point {what} are "
             f"replaced only where a tool shows them in a known field{advice}")
+
+
+# ------------------------------------------------------------------ IPsec (Gm) visibility
+def _esp_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ToolError("invalid_argument", f"esp_null must be true or false, got {echo(value)}")
+
+
+def _sip_guarded(tool: str, args: dict[str, Any], path: str, esp_null: Any,
+                 fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """:func:`_guarded` for a SIP/IMS tool: with ``esp_null`` every tshark run of the call
+    (nested tools and the redaction pre-scan included) reads inside NULL-encrypted ESP, and
+    a top-level call's result gains an ``ipsec`` block when the capture carries ESP."""
+    args = {**args, "esp_null": esp_null}
+    try:
+        flag = _esp_flag(esp_null)
+    except ToolError as exc:
+        bad = exc
+        return _guarded(tool, args, lambda: _reraise(bad))
+    nested = _DEPTH.get() > 0
+
+    def run() -> dict[str, Any]:
+        started = time.monotonic()
+        out = fn()
+        if not nested and isinstance(out, dict) and "error" not in out:
+            found = out.get("total_matched")
+            if found is None and "found" in out:
+                found = 1 if out.get("found") else 0
+            # The probe shares the call's time budget: it never makes a call slower than one run's limit.
+            left = state().limits.timeout_seconds - (time.monotonic() - started)
+            visibility = None
+            if left > 0.2:
+                try:
+                    visibility = _ipsec_visibility(_resolve(path), flag, found, left)
+                except ToolError as exc:
+                    note_warning(f"the IPsec (ESP) count was skipped: {exc.message}")
+            else:
+                note_warning("the IPsec (ESP) count was skipped: the call used its time budget")
+            if visibility is not None:
+                out["ipsec"] = visibility
+        return out
+
+    token = set_preferences(ipsec.PREFERENCES) if flag and ipsec.PREFERENCE not in runner_preferences() else None
+    try:
+        return _guarded(tool, args, run)
+    finally:
+        if token is not None:
+            reset_preferences(token)
+
+
+def _ipsec_visibility(capture: Path, esp_null: bool, rows_found: int | None,
+                      timeout: float | None = None) -> dict[str, Any] | None:
+    """The ``ipsec`` block: ESP packets, SPIs, how many were read as NULL encryption."""
+    stdout, _ = _fields_run(capture, ipsec.DISPLAY_FILTER, ipsec.FIELDS, state().limits.max_scan_packets,
+                            timeout=timeout)
+    return ipsec.block(ipsec.parse(stdout), esp_null, rows_found)
 
 
 # ------------------------------------------------------------------ guard rail
@@ -983,6 +1044,11 @@ def pcap_info(path: str) -> models.PcapInfoResult:
         sink = _PHS_SINK.get()
         if sink is not None:  # incident_summary reads every protocol, not only the top 15
             sink.extend(hierarchy)
+        esp_frames = sum(r["frames"] for r in hierarchy if r["protocol"].rsplit("/", 1)[-1] == "esp")
+        if esp_frames:
+            info["ipsec"] = {"esp_packets": esp_frames,
+                             "hint": "IPsec ESP present: SIP between UE and P-CSCF may be inside it; the SIP/IMS "
+                                     "tools report it in `ipsec` and read NULL-encrypted ESP with esp_null=true"}
         meta = _capture_metadata(capture)
         info["metadata_available"] = bool(meta.get("metadata_available"))
         if meta.get("drops_total") is not None:
@@ -2754,7 +2820,8 @@ def response_times(path: str, filter: str | None = None, limit: int = 100,
 
 @_tool(title="SIP dialogs", annotations=READ_ONLY)
 def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None, method: str | None = None,
-                filter: str | None = None, limit: int = 200, offset: int = 0) -> models.SipDialogsResult:
+                filter: str | None = None, limit: int = 200, offset: int = 0,
+                esp_null: EspNull = False) -> models.SipDialogsResult:
     """Group SIP messages by Call-ID. Each dialog lists the method/response sequence with
     timestamps, From, To, Request-URI, P-Asserted-Identity, the method chain, the final
     status of the initial request, time to that final response and the dialog duration;
@@ -2794,8 +2861,8 @@ def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None
             rows = [r for r in rows if r["call_id"] not in shared or r["call_id"] in keep]
         summary = _summarise(rows, "initial_method", "no_final_response", sip.dialog_failed)
         return _envelope("dialogs", rows, cap, _merge_scans(pre, scan), offset=offset, summary=summary, selection=select)
-    return _guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
-                                    "filter": filter, "limit": limit, "offset": offset}, run)
+    return _sip_guarded("sip_dialogs", {"path": path, "call_id": call_id, "number": number, "method": method,
+                                    "filter": filter, "limit": limit, "offset": offset}, path, esp_null, run)
 
 
 @_tool(title="SIP call KPIs (ASR, NER, PDD, ACD)", annotations=READ_ONLY)
@@ -2850,7 +2917,7 @@ def call_kpis(path: str, group_by: str = "peer", prefix_len: int = 4, interval: 
 @_tool(title="SIP call legs across B2BUAs and SBCs", annotations=READ_ONLY)
 def call_legs(path: str, call_id: str | None = None, number: str | None = None, window_s: float = 5.0,
               ladder: bool = False, filter: str | None = None, limit: int = 50,
-              offset: int = 0) -> models.CallLegsResult:
+              offset: int = 0, esp_null: EspNull = False) -> models.CallLegsResult:
     """Stitch the legs of a call that a B2BUA, SBC or the P-/S-CSCF/TAS chain gave
     different Call-IDs, and say which hop failed it. One row per call: `legs` in order
     (Call-ID, src > dst, From/To/R-URI, final status, responder, Reason with Q.850 cause,
@@ -2904,8 +2971,8 @@ def call_legs(path: str, call_id: str | None = None, number: str | None = None, 
                 call["ladder"] = calllegs.ladder(call, ladders)
             calllegs.finish(call)
         return _envelope("calls", calls, cap, scan, offset=offset, summary=summary, method=calllegs.METHOD)
-    return _guarded("call_legs", {"path": path, "call_id": call_id, "number": number, "window_s": window_s,
-                                  "ladder": ladder, "filter": filter, "limit": limit, "offset": offset}, run)
+    return _sip_guarded("call_legs", {"path": path, "call_id": call_id, "number": number, "window_s": window_s,
+                                  "ladder": ladder, "filter": filter, "limit": limit, "offset": offset}, path, esp_null, run)
 
 
 @_tool(title="NAS EPS procedures per UE", annotations=READ_ONLY)
@@ -2979,7 +3046,8 @@ def nas_procedures(path: str, imsi: str | None = None, guti: str | int | None = 
                                        "limit": limit, "offset": offset}, run)
 @_tool(title="VoLTE call chain: SIP, Rx, Gx, bearer, media", annotations=READ_ONLY)
 def volte_call_chain(path: str, call_id: str | None = None, ue_ip: str | None = None, window_s: float = 10.0,
-                     filter: str | None = None, limit: int = 20, offset: int = 0) -> models.VolteCallChainResult:
+                     filter: str | None = None, limit: int = 20, offset: int = 0,
+                     esp_null: EspNull = False) -> models.VolteCallChainResult:
     """Follow one VoLTE call through every element and say where the setup broke. One row
     per INVITE call with `links` in time order: `invite` (SDP address and ports, icid,
     preconditions), `rx_aar` (P-CSCF to PCRF), `gx_rar_install` (PCRF to PGW, QCI, rule
@@ -3034,8 +3102,8 @@ def volte_call_chain(path: str, call_id: str | None = None, ue_ip: str | None = 
         chains = [volte.chain(c, idx, ip, window, explain) for c in volte.select(volte.calls(rows), cid, ip, None)]
         return _envelope("calls", chains, cap, scan, offset=offset, summary=volte.summary(chains, idx),
                          method=volte.METHOD)
-    return _guarded("volte_call_chain", {"path": path, "call_id": call_id, "ue_ip": ue_ip, "window_s": window_s,
-                                         "filter": filter, "limit": limit, "offset": offset}, run)
+    return _sip_guarded("volte_call_chain", {"path": path, "call_id": call_id, "ue_ip": ue_ip, "window_s": window_s,
+                                         "filter": filter, "limit": limit, "offset": offset}, path, esp_null, run)
 @_tool(title="SIGTRAN link health per association", annotations=READ_ONLY)
 def sigtran_health(path: str, peer: str | None = None, point_code: int | None = None, gt: str | None = None,
                    filter: str | None = None, limit: int = 100, offset: int = 0) -> models.SigtranHealthResult:
@@ -3141,7 +3209,7 @@ def sms_delivery(path: str, imsi: str | None = None, msisdn: str | None = None, 
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)
-def sip_call_detail(path: str, call_id: str) -> models.SipCallDetailResult:
+def sip_call_detail(path: str, call_id: str, esp_null: EspNull = False) -> models.SipCallDetailResult:
     """Everything about one SIP call (INVITE dialog) by Call-ID: the message ladder
     (messages carrying SDP are marked), From/To/Request-URI/P-Asserted-Identity, the
     `outcome` (answered, failed <status>, cancelled, no final response),
@@ -3168,7 +3236,7 @@ def sip_call_detail(path: str, call_id: str) -> models.SipCallDetailResult:
             out["truncated"] = True
             out["truncated_reason"] = scan.reason()
         return out
-    return _guarded("sip_call_detail", {"path": path, "call_id": call_id}, run)
+    return _sip_guarded("sip_call_detail", {"path": path, "call_id": call_id}, path, esp_null, run)
 
 
 def _sip_media(capture: Path, cid: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Scan]:
@@ -3323,7 +3391,7 @@ def dtmf_events(path: str, call_id: str | None = None, heuristic: bool = False, 
 
 @_tool(title="IMS registration", annotations=READ_ONLY)
 def ims_registration(path: str, impu: str | None = None, imsi: str | None = None, filter: str | None = None,
-                     limit: int = 50, offset: int = 0) -> models.ImsRegistrationResult:
+                     limit: int = 50, offset: int = 0, esp_null: EspNull = False) -> models.ImsRegistrationResult:
     """IMS registration per UE (public identity in the To header), built from every
     SIP REGISTER transaction in the capture; the legs of one REGISTER through the
     CSCFs (same Call-ID and CSeq) count once, copies of a packet are told apart from
@@ -3386,13 +3454,13 @@ def ims_registration(path: str, impu: str | None = None, imsi: str | None = None
             if end_source != "capinfos":
                 extra["capture_end_source"] = end_source
         return _envelope("registrations", rows, cap, scan, offset=offset, **extra)
-    return _guarded("ims_registration", {"path": path, "impu": impu, "imsi": imsi, "filter": filter, "limit": limit,
-                                         "offset": offset}, run)
+    return _sip_guarded("ims_registration", {"path": path, "impu": impu, "imsi": imsi, "filter": filter, "limit": limit,
+                                         "offset": offset}, path, esp_null, run)
 
 
 @_tool(title="SMS over IMS", annotations=READ_ONLY)
 def sms_over_ims(path: str, number: str | None = None, imsi: str | None = None, filter: str | None = None,
-                 limit: int = 100, offset: int = 0) -> models.SmsOverImsResult:
+                 limit: int = 100, offset: int = 0, esp_null: EspNull = False) -> models.SmsOverImsResult:
     """SMS over IMS (TS 24.341): SIP MESSAGE carrying application/vnd.3gpp.sms, one row
     per RP-DATA or RP-SMMA. Each row gives `direction` (MO: RP-DATA from the UE with an
     SMS-SUBMIT; MT: RP-DATA to the UE with an SMS-DELIVER or SMS-STATUS-REPORT), the RP
@@ -3454,8 +3522,8 @@ def sms_over_ims(path: str, number: str | None = None, imsi: str | None = None, 
             if end_source != "capinfos":
                 extra["capture_end_source"] = end_source
         return _envelope("messages", rows, cap, scan, offset=offset, **extra)
-    return _guarded("sms_over_ims", {"path": path, "number": number, "imsi": imsi, "filter": filter, "limit": limit,
-                                     "offset": offset}, run)
+    return _sip_guarded("sms_over_ims", {"path": path, "number": number, "imsi": imsi, "filter": filter, "limit": limit,
+                                     "offset": offset}, path, esp_null, run)
 
 
 def _last_packet_time(capture: Path, stdout: str) -> tuple[float | None, str]:
@@ -4363,7 +4431,8 @@ def sigtran_messages(path: str, filter: str | None = None, limit: int = 200, off
 
 
 @_tool(title="Subscriber trace", annotations=READ_ONLY)
-def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300, offset: int = 0) -> models.TraceSubscriberResult:
+def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = None, limit: int = 300, offset: int = 0,
+                     esp_null: EspNull = False) -> models.TraceSubscriberResult:
     """Build one time-ordered timeline for a subscriber across Diameter (User-Name),
     GTPv2-C and GTPv1-C (IMSI/MSISDN IEs, then following the control-plane TEIDs), PFCP
     (sessions naming the IMSI or a UE address the GTP rows allocated, followed by SEID), MAP (IMSI/MSISDN)
@@ -4400,7 +4469,7 @@ def trace_subscriber(path: str, imsi: str | None = None, msisdn: str | None = No
             out["truncated"] = True
             out["truncated_reason"] = "; ".join(reasons)
         return out
-    return _guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit, "offset": offset}, run)
+    return _sip_guarded("trace_subscriber", {"path": path, "imsi": imsi, "msisdn": msisdn, "limit": limit, "offset": offset}, path, esp_null, run)
 
 
 @_tool(title="Roaming attach check", annotations=READ_ONLY)

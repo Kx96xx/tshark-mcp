@@ -65,6 +65,24 @@ def reset_deadline(token: Token) -> None:
     _DEADLINE.reset(token)
 
 
+_PREFERENCES: ContextVar[tuple[str, ...]] = ContextVar("tshark_mcp_preferences", default=())
+
+
+def set_preferences(prefs: tuple[str, ...]) -> Token:
+    """Add ``-o <pref>`` to every capture read of this call (context), nested tools included.
+    Each preference must be in :data:`ALLOWED_PREFERENCES` (checked again on every run)."""
+    return _PREFERENCES.set(tuple(prefs))
+
+
+def reset_preferences(token: Token) -> None:
+    _PREFERENCES.reset(token)
+
+
+def preferences() -> tuple[str, ...]:
+    """The preferences :func:`set_preferences` put on this call's capture reads."""
+    return _PREFERENCES.get()
+
+
 def begin_warnings() -> Token:
     """Start collecting per-call warnings (one list per tool call, context-local)."""
     return _WARNINGS.set([])
@@ -119,6 +137,8 @@ ALLOWED_PREFERENCES: frozenset[str] = frozenset({
     # http_transactions: read a response's status line from its first segment when tshark cannot
     # reassemble the whole response in one pass. Changes dissection only, never what is read or written.
     "tcp.desegment_tcp_streams:FALSE",
+    # SIP/IMS tools with esp_null=True: read SIP inside ESP that uses NULL encryption (RFC 2410).
+    "esp.enable_null_encryption_decode_heuristic:TRUE",
 })
 
 
@@ -277,6 +297,8 @@ class Runner:
             display_filter = f"({display_filter}) || frame.number == {int(sentinel)}"
         if display_filter:
             argv += ["-Y", display_filter]
+        for pref in _PREFERENCES.get():
+            argv += ["-o", pref]
         argv += list(args)
         return self._execute(self.tshark, argv, timeout=timeout,
                              capture=(capture, identity) if identity is not None else None)
