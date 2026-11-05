@@ -102,6 +102,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | SMS over MAP or SGs not delivered: absent subscriber, paging failed, RP-ERROR? | `sms_delivery(path, imsi=... or msisdn=..., via="map" / "sgs")`: steps and verdict per message |
 | DTMF not working | `dtmf_events(path, call_id=...)` |
 | UE cannot register on IMS | `ims_registration(path, imsi=... or impu=...)` |
+| No SIP on a UE-side or P-CSCF capture, only IPsec ESP | read the `ipsec` block of any SIP/IMS tool; with NULL encryption call again with `esp_null=true` |
 | SMS over IMS lost or rejected | `sms_over_ims(path, number=... or imsi=...)` |
 | Purge or attach storm, message rates | `message_rates(path, protocol=..., interval=...)` |
 | Working versus failing capture of the same procedure | `compare_captures(path_a, path_b, imsi=...)` |
@@ -245,7 +246,7 @@ src/tshark_mcp/
   callkpi.py    call_kpis: call KPIs per group, built on sip.py's message parser
   calllegs.py   call_legs: B2BUA/SBC/CSCF legs stitched by icid, Session-ID, X- headers, media or number
   diameter.py gtp.py gtpv1.py pfcp.py sip.py sdp.py rtp.py media.py dtmf.py ims.py sms.py
-  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py
+  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py ipsec.py
   rates.py compare.py avps.py packets.py expert.py models.py (TypedDict output schemas)
   causes.py     cause_lookup; names from tshark -G values, text in causedata.py
   gtpies.py     gtp_ies: GTPv2-C IE key view, full tree and likely causes

@@ -2695,6 +2695,54 @@ def write_rtp_over_stun_pcap(path: Path) -> Path:
                        _udp_frame(a, b, pa, pb, _stun(0x0016, txi, [(0x0012, xaddr), (0x0013, rtp)]))))
     return _frames_to_pcap(path, frames)
 
+
+# ----------------------------------------------------------------- IPsec ESP on Gm (esp_null)
+IMS_GM = "001010000000110"          # registers through ESP with NULL encryption
+UE_GM = "198.51.100.48"
+GM_SPI_ENCRYPTED = 0x0BADC0DE       # an SA whose payload is really encrypted
+
+
+def esp_null_frame(src: str, dst: str, spi: int, seq: int, sport: int, dport: int, payload: bytes) -> bytes:
+    """IPv4 ESP with NULL encryption (RFC 2410, RFC 4303): SPI, sequence number, the cleartext
+    UDP datagram, RFC padding (1, 2, 3, ...) to a 4-byte boundary, pad length, next header 17
+    and a 12-byte ICV of zeros (HMAC-SHA-1-96 is not checked)."""
+    udp = struct.pack("!HHHH", sport, dport, 8 + len(payload), 0) + payload
+    pad_len = (-(len(udp) + 2)) % 4
+    body = struct.pack("!II", spi, seq) + udp + bytes(range(1, pad_len + 1)) + bytes([pad_len, 17]) + bytes(12)
+    return bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=src, dst=dst, proto=50) / Raw(body))
+
+
+def esp_encrypted_frame(src: str, dst: str, spi: int, seq: int, size: int = 160) -> bytes:
+    """IPv4 ESP whose payload looks encrypted (no UDP header a heuristic could accept)."""
+    payload = bytes((i * 197 + 89) % 256 for i in range(size))
+    return bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=src, dst=dst, proto=50) / Raw(struct.pack("!II", spi, seq) + payload))
+
+
+def write_gm_esp_null_pcap(path: Path, clear_challenge: bool = True) -> Path:
+    """IMS registration of ``IMS_GM`` over Gm protected by ESP NULL: REGISTER and 401 in clear
+    (when ``clear_challenge``), then the authenticated REGISTER and its 200 OK inside ESP with
+    NULL encryption on the ports and SPIs of the sec-agree headers; three packets of an
+    encrypted SA follow. Without the NULL-ESP heuristic tshark shows only ESP after the 401."""
+    t0 = 1_700_031_000.0
+    ue, p = UE_GM, PCSCF_IP
+    impu = f"sip:{IMS_GM}@{IMS_DOMAIN}"
+    frames: list[tuple[float, bytes]] = []
+    if clear_challenge:
+        frames.append((t0, _udp_frame(ue, p, 5060, 5060, _register(IMS_GM, 1, 600000, ue=ue))))
+        frames.append((t0 + 0.05, _udp_frame(p, ue, 5060, 5060, _reg_response(IMS_GM, 1, 401, "Unauthorized",
+                                                                                _challenge(IMS_GM), ue=ue))))
+    reg2 = _register(IMS_GM, 2, 600000, response="0f1e2d3c4b5a69788796a5b4c3d2e1f0", ue=ue)
+    ok = _reg_response(IMS_GM, 2, 200, "OK", [
+        f"Contact: <sip:{ue}:5060>;expires=600000;+g.3gpp.smsip;{MMTEL_TAG}",
+        f"P-Associated-URI: <{impu}>", f"Service-Route: <sip:orig@scscf.{IMS_DOMAIN};lr>",
+    ], ue=ue)
+    frames.append((t0 + 1.0, esp_null_frame(ue, p, PCSCF_SPI_S, 1, 5100, 6101, reg2)))
+    frames.append((t0 + 1.2, esp_null_frame(p, ue, 2222, 1, 6100, 5101, ok)))
+    for i in range(3):
+        frames.append((t0 + 2.0 + i, esp_encrypted_frame(ue, p, GM_SPI_ENCRYPTED, i + 1)))
+    return _frames_to_pcap(path, frames)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

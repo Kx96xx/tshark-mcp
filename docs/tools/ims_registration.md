@@ -16,4 +16,4 @@ state and contact event they report, a terminated one after the last successful 
 registration; a `verdict` (registered, expired, deregistered by the UE or by the network,
 challenge-loop, failed, in_progress near the end of the capture) with `reasons` naming 403, 404,
 408, 421, 423, 500, 503 with Retry-After in IMS terms. Nonces, AKA vectors and CK/IK are never
-returned
+returned. `esp_null=true` reads REGISTERs inside ESP with NULL encryption (RFC 2410); the `ipsec` block counts ESP packets, SPIs, decoded and unreadable ones.

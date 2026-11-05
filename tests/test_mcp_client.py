@@ -171,7 +171,7 @@ def test_list_tools_names_and_schemas(client_run):
     assert {"path", "identifier", "kind", "max_files", "offset", "start", "end", "redact"} == set(props("find_identifier"))
     assert {"path", "session_id", "imsi", "command_code", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("diameter_sessions"))
     assert {"path", "imsi", "apn", "teid", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("gtp_sessions"))
-    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("sip_dialogs"))
+    assert {"path", "call_id", "number", "method", "filter", "limit", "offset", "esp_null", "start", "end", "redact", *SHAPING} == set(props("sip_dialogs"))
     assert {"path", "layer", "filter", "limit", "offset", "start", "end", "redact", *SHAPING} == set(props("conversations"))
     # The paging contract: every tool that takes a row limit also takes an offset and
     # reports total_matched / returned / dropped / next_offset.
