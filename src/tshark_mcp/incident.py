@@ -117,6 +117,15 @@ def from_quality(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]
 
 def from_tcp_connections(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
+    one_sided = [d for d in r.get("destinations") or [] if d.get("one_sided")]
+    if one_sided:
+        n = sum(d["one_sided"] for d in one_sided)
+        out.append(finding("tcp_one_sided", "low",
+                           f"{n} TCP connection(s) appear in one direction only: the capture point misses the other "
+                           "direction, so no verdict on them is possible", "tcp_connections", args,
+                           frames=_frames(one_sided, "first_frame"),
+                           details=[i for d in one_sided for i in d.get("issues") or [] if "one direction" in i],
+                           next_call={"tool": "capture_quality", "args": {"path": args.get("path")}}))
     for d in r.get("destinations") or []:
         attempts, connected = d.get("attempts") or 0, d.get("connected") or 0
         if not attempts or connected >= attempts:
@@ -134,7 +143,7 @@ def from_tcp_connections(r: dict[str, Any], args: dict[str, Any]) -> list[dict[s
         out.append(finding("connect_failures", severity, text, "tcp_connections", args,
                            frames=_frames([d], "first_frame") + _text_frames(d.get("issues") or []),
                            details=d.get("issues"), next_call={"tool": "tcp_connections", "args": call_args}))
-    return out[:5]
+    return out[:6]
 
 
 def from_tcp_health(r: dict[str, Any], args: dict[str, Any], confidence: str) -> list[dict[str, Any]]:
@@ -236,8 +245,11 @@ def from_tls(r: dict[str, Any], args: dict[str, Any]) -> list[dict[str, Any]]:
     issues = r.get("issues") or []
     outcomes = s.get("outcomes") or {}
     total = sum(outcomes.values())
+    # One-sided connections (only one direction captured) cannot be judged, so they are neither
+    # failures nor part of the total.
+    total -= outcomes.get("one_sided") or 0
     failed = total - (outcomes.get("established") or 0)
-    rows = [c for c in r.get("connections") or [] if c.get("outcome") != "established"]
+    rows = [c for c in r.get("connections") or [] if c.get("outcome") not in ("established", "one_sided")]
     if failed > 0:
         out.append(finding("tls_failed", "high", f"{failed} of {total} TLS handshakes did not complete",
                            "tls_handshakes", args, frames=_frames(rows, "frame"),

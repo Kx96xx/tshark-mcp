@@ -11,9 +11,10 @@ SYN-to-ClientHello and ClientHello-to-ServerHello times, alerts with level, name
 CONNECTION_CLOSE too), the leaf certificate for TLS 1.2 and older (subject, issuer, SAN, validity,
 chain length), and an `outcome`: established, alert, no_server_hello, reset_by_server,
 closed_by_server, client_gave_up, client_rejected_likely (TLS 1.3 alert-sized record instead of
-Finished), unreadable, incomplete, or server_hello for QUIC; `issues` names expired certificates,
+Finished), unreadable, incomplete, one_sided (only one direction of the TCP connection is in the
+capture, so the handshake cannot be judged; not counted as a failure), or server_hello for QUIC; `issues` names expired certificates,
 SNI/SAN mismatches, deprecated or unoffered versions and repeated ClientHellos. A connection whose
-ClientHello is not readable is still listed (`client_hello_missing`) when its ServerHello,
+ClientHello is not readable is still listed (`client_hello_missing`, counted in the summary) when its ServerHello,
 certificate or alerts are. Copies of the same packet are found with the same rule as `tcp_health`
 (same IP ID and transport header, or with IP ID 0 the same checksum within a few milliseconds), plus
 a tap's copies with the TCP header or the IP ID zeroed; they are counted in `duplicate_copies` and

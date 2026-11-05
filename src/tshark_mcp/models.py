@@ -295,7 +295,8 @@ class TcpHealthResult(RowsResult, total=False):
 class TcpConnectionRow(TypedDict, total=False):
     """One TCP connection attempt. ``outcome``: connected, refused (reset to the SYN),
     filtered (no answer), prohibited (ICMP administratively prohibited), unreachable (other
-    ICMP unreachable or time exceeded), reset_during_handshake, handshake_incomplete or
+    ICMP unreachable or time exceeded), reset_during_handshake, handshake_incomplete,
+    one_sided (one direction missing from the capture; ``missing_direction``) or
     seen_midway. ``closed_by``: client_fin, server_fin, client_rst, server_rst or
     open_at_capture_end."""
     __pydantic_config__ = _EXTRA_OK
@@ -303,6 +304,7 @@ class TcpConnectionRow(TypedDict, total=False):
     client: str
     server: str
     outcome: str
+    missing_direction: str
     near_capture_end: bool
     syns: int
     syn_retries: int
@@ -334,6 +336,7 @@ class TcpDestinationRow(TypedDict, total=False):
     unreachable: int
     reset_during_handshake: int
     handshake_incomplete: int
+    one_sided: int
     seen_midway: int
     success_rate: float
     syn_retries: int
