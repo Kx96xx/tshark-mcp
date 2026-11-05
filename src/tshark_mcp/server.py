@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sip, sms, tcpconn, tcphealth, timing, tls, tunnels, untrusted
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_int, validate_fields,
@@ -2536,6 +2536,67 @@ def call_kpis(path: str, group_by: str = "peer", prefix_len: int = 4, interval: 
                          worst_calls=worst, method=callkpi.METHOD)
     return _guarded("call_kpis", {"path": path, "group_by": group_by, "prefix_len": prefix_len, "interval": interval,
                                   "filter": filter, "number": number, "limit": limit, "offset": offset}, run)
+
+
+@_tool(title="SIP call legs across B2BUAs and SBCs", annotations=READ_ONLY)
+def call_legs(path: str, call_id: str | None = None, number: str | None = None, window_s: float = 5.0,
+              ladder: bool = False, filter: str | None = None, limit: int = 50,
+              offset: int = 0) -> models.CallLegsResult:
+    """Stitch the legs of a call that a B2BUA, SBC or the P-/S-CSCF/TAS chain gave
+    different Call-IDs, and say which hop failed it. One row per call: `legs` in order
+    (Call-ID, src > dst, From/To/R-URI, final status, responder, Reason with Q.850 cause,
+    PDD), each later leg's `linked_by` (icid, session_id, x_call_id, replaces,
+    target_dialog: high; same_media_endpoint: medium; number_and_time: low) and the call's
+    weakest `confidence`; `added_delay_ms` and `header_changes` per hop; `status_mapping`
+    (the element that turned a 480 into a 503); `where_it_failed` (deepest failed leg with
+    the SIP and Q.850 meaning from cause_lookup). `call_id` returns the call holding that
+    leg, `number` the calls whose From, To, R-URI or PAI contains the digits; `window_s`
+    bounds the media and number links; `ladder=true` (implied by call_id) adds the merged
+    message ladder with the leg per row.
+
+    Details: A leg is one Call-ID whose first request is an INVITE; a proxy that keeps the
+    Call-ID adds `hops` to that leg instead of a new leg. Legs form a tree: each later leg
+    hangs from the earlier leg it is linked to most strongly, preferring the one whose
+    INVITE went to this leg's source, so forks keep both branches (`depth`). Always check a
+    number_and_time link with sip_call_detail before quoting it. `filter` is a display
+    filter ANDed with `sip` and applies to each packet, so it can drop legs; prefer
+    `call_id` or `number`. `summary` counts calls, legs, multi-leg calls, rewritten statuses
+    and links per method; `method` states each definition. Content-free: header values and
+    SDP addresses only."""
+    def run() -> dict[str, Any]:
+        capture = _resolve(path)
+        st = state()
+        cid = lint_quoted_value(call_id, "call_id") if call_id else None
+        num = lint_digits(number, "number") if number else None
+        try:
+            window = float(window_s)
+        except (TypeError, ValueError):
+            raise ToolError("invalid_argument", "window_s must be a number of seconds") from None
+        if not 0.0 <= window <= 300.0:
+            raise ToolError("invalid_argument", "window_s must be 0 to 300 seconds")
+        cap = clamp_limit(limit, st.limits.max_packets, 50)
+        stdout, scan = _fields_run(capture, _filter(filter, base="sip"), calllegs.FIELDS, st.limits.max_scan_packets,
+                                   aggregator=sip.AGGREGATOR)
+        legs, ladders = calllegs.build_legs(stdout)
+        links = calllegs.find_links(legs, window)
+        explained: dict[tuple[str, int], Any] = {}
+
+        def explain(protocol: str, code: int) -> Any:
+            key = (protocol, code)
+            if key not in explained:
+                explained[key] = causes.brief(st.runner, protocol, code)
+            return explained[key]
+        calls = calllegs.stitch(legs, links, explain)
+        summary = calllegs.summary(calls, links)
+        calls = calllegs.select(calls, cid, num, legs)
+        start = _offset(offset)
+        for k, call in enumerate(calls):
+            if (ladder or cid) and start <= k < start + cap:
+                call["ladder"] = calllegs.ladder(call, ladders)
+            calllegs.finish(call)
+        return _envelope("calls", calls, cap, scan, offset=offset, summary=summary, method=calllegs.METHOD)
+    return _guarded("call_legs", {"path": path, "call_id": call_id, "number": number, "window_s": window_s,
+                                  "ladder": ladder, "filter": filter, "limit": limit, "offset": offset}, run)
 
 
 @_tool(title="SIP call detail", annotations=READ_ONLY)

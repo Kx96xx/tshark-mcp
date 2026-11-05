@@ -669,6 +669,73 @@ class CallKpisResult(RowsResult, total=False):
     summary: CallKpis
     worst_calls: list[WorstCall]
     method: dict[str, str]
+
+
+class CallLegLink(TypedDict, total=False):
+    """How a leg was tied to an earlier leg of the same call."""
+    __pydantic_config__ = _EXTRA_OK
+    leg: int
+    method: str
+    confidence: str
+    evidence: str
+
+
+class CallLeg(TypedDict, total=False):
+    """One INVITE Call-ID of a stitched call; ``leg`` 0 is the caller's side."""
+    __pydantic_config__ = _EXTRA_OK
+    leg: int
+    call_id: str
+    frame: int
+    time: str
+    src: str
+    dst: str
+    hops: list[str]
+    to: str
+    request_uri: str
+    status: int
+    final_frame: int
+    responder: str
+    reason: str
+    q850_cause: int
+    no_final_response: bool
+    pdd_ms: float
+    linked_by: CallLegLink
+    depth: int
+    added_delay_ms: dict[str, float]
+    header_changes: list[dict[str, Any]]
+
+
+class StatusMapping(TypedDict, total=False):
+    """What a child leg received and what the element in between sent upstream."""
+    __pydantic_config__ = _EXTRA_OK
+    downstream_leg: int
+    upstream_leg: int
+    element: str
+    received: dict[str, int]
+    sent: dict[str, int]
+    rewritten: bool
+    note: str
+
+
+class StitchedCall(TypedDict, total=False):
+    """One call stitched from its legs, with where it failed and how statuses were mapped."""
+    __pydantic_config__ = _EXTRA_OK
+    first_frame: int
+    time: str
+    legs_count: int
+    caller_status: int
+    caller_q850_cause: int
+    confidence: str
+    where_it_failed: dict[str, Any]
+    status_mapping: list[StatusMapping]
+    legs: list[CallLeg]
+    ladder: list[dict[str, Any]]
+
+
+class CallLegsResult(RowsResult, total=False):
+    calls: list[StitchedCall]
+    summary: dict[str, Any]
+    method: dict[str, str]
 class GtpIeTransaction(TypedDict, total=False):
     """One paired GTPv2-C transaction with its IEs (``request_ies``/``response_ies``:
     key view or full tree); ``likely_causes`` explains a reject from the request."""

@@ -1409,6 +1409,93 @@ def write_call_mix_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+LEGS_UE = "198.51.100.70"
+LEGS_PEER = "192.0.2.95"
+LEGS_ICID = "icid-test-0001"
+LEGS_UUID_1 = "0123456789abcdef0123456789abcdef"
+LEGS_UUID_2 = "fedcba9876543210fedcba9876543210"
+LEGS_NUMBER = "15550100700"
+
+
+def write_call_legs_pcap(path: Path) -> Path:
+    """Five calls through B2BUAs, for call_legs. A (t0): UE > SBC > S-CSCF > carrier X,
+    linked by icid (legs 0 and 1) and Session-ID (legs 1 and 2); the carrier answers 480
+    with Q.850 18, the S-CSCF passes it on, the SBC sends 503 with Q.850 34 to the UE; the
+    SBC strips the offer to PCMU and the S-CSCF adds Privacy: id. B (t0+20): peer > SBC >
+    carrier Y linked by X-Orig-Call-ID, answered (SBC adds 40 ms to the INVITE and 30 ms to
+    the 200). C (t0+40): peer > SBC > carrier Y with no identifier, the same SDP address and
+    port on both legs, answered. D (t0+60): UE > SBC (+15550100700) > carrier X
+    (015550100700, no SDP) linked only by number and time, 404 with Q.850 1 on both. E
+    (t0+120): one more INVITE from the SBC to the same number, outside any window: a call of
+    one leg, answered."""
+    t0 = 1_700_008_000.0
+    frames: list[tuple[float, bytes]] = []
+
+    def leg(cid: str, src: str, dst: str, called: str, start: float, steps: list[tuple[float, int, list[str]]],
+            extra: list[str] | None = None, body: str = "", pai: str | None = None) -> None:
+        ruri = f"sip:{called}@legs.example"
+        frm = f"<sip:+15550100100@legs.example>;tag={cid[:6]}"
+        to = f"<{ruri}>"
+        via = f"Via: SIP/2.0/UDP {src}:5060;branch=z9hG4bK{cid.replace('@', '').replace('.', '')}"
+        lines = [f"INVITE {ruri} SIP/2.0", via, f"From: {frm}", f"To: {to}", f"Call-ID: {cid}", "CSeq: 1 INVITE",
+                 "Max-Forwards: 70"] + ([f"P-Asserted-Identity: {pai}"] if pai else []) + (extra or [])
+        if body:
+            lines.append("Content-Type: application/sdp")
+        frames.append((start, _udp_frame(src, dst, 5060, 5060, _sip(lines, body))))
+        for offset, code, hdrs in steps:
+            if code == 0:  # ACK or BYE from the caller side
+                method = hdrs[0]
+                cseq = 1 if method == "ACK" else 2
+                req = [f"{method} {ruri} SIP/2.0", via, f"From: {frm}", f"To: {to};tag=far", f"Call-ID: {cid}",
+                       f"CSeq: {cseq} {method}"]
+                frames.append((start + offset, _udp_frame(src, dst, 5060, 5060, _sip(req))))
+                continue
+            phrase, *rest = hdrs
+            cseq_line = "CSeq: 2 BYE" if phrase == "OK BYE" else "CSeq: 1 INVITE"
+            resp = [f"SIP/2.0 {code} {phrase.replace(' BYE', '')}", via, f"From: {frm}",
+                    f"To: {to}" + (";tag=far" if code > 100 else ""), f"Call-ID: {cid}", cseq_line] + rest
+            frames.append((start + offset, _udp_frame(dst, src, 5060, 5060, _sip(resp))))
+
+    wide = _sdp(LEGS_UE, 40000, [118, 0], ["118 AMR-WB/16000", "0 PCMU/8000"])
+    narrow = _sdp(SBC_IP, 20000, [0], ["0 PCMU/8000"])
+    pai = "<sip:+15550100100@legs.example>"
+    # A: 480 from the carrier, 503 to the UE.
+    fail = lambda code, phrase, cause: [(0.05, 100, ["Trying"]), (0.6, 180, ["Ringing"]),  # noqa: E731
+                                       (3.0, code, [phrase, f"Reason: Q.850;cause={cause}"]), (3.01, 0, ["ACK"])]
+    leg("legs-a1@ue.example", LEGS_UE, SBC_IP, "+15550100500", t0,
+        [(0.02, 100, ["Trying"]), (0.65, 180, ["Ringing"]), (3.2, 503, ["Service Unavailable", "Reason: Q.850;cause=34"]),
+         (3.21, 0, ["ACK"])], extra=[f'P-Charging-Vector: icid-value="{LEGS_ICID}";orig-ioi=legs.example'],
+        body=wide, pai=pai)
+    leg("legs-a2@sbc.example", SBC_IP, SCSCF_IP, "+15550100500", t0 + 0.03,
+        [(0.02, 100, ["Trying"]), (0.6, 180, ["Ringing"]), (3.02, 480, ["Temporarily Unavailable",
+                                                                       "Reason: Q.850;cause=18"]), (3.03, 0, ["ACK"])],
+        extra=[f'P-Charging-Vector: icid-value="{LEGS_ICID}"', f"Session-ID: {LEGS_UUID_1}"], body=narrow, pai=pai)
+    leg("legs-a3@scscf.example", SCSCF_IP, CARRIER_X, "+15550100500", t0 + 0.05,
+        fail(480, "Temporarily Unavailable", 18),
+        extra=[f"Session-ID: {LEGS_UUID_2};remote={LEGS_UUID_1}", "Privacy: id"], body=narrow, pai=pai)
+    # B: answered, linked by X-Orig-Call-ID.
+    tb = t0 + 20.0
+    ok = lambda answer: [(0.02, 100, ["Trying"]), (answer, 200, ["OK"]), (answer + 0.01, 0, ["ACK"]),  # noqa: E731
+                         (answer + 10.0, 0, ["BYE"]), (answer + 10.01, 200, ["OK BYE"])]
+    leg("legs-b1@peer.example", LEGS_PEER, SBC_IP, "+15550100600", tb, ok(4.03), body=wide)
+    leg("legs-b2@sbc.example", SBC_IP, CARRIER_Y, "+15550100600", tb + 0.04, ok(3.96),
+        extra=["X-Orig-Call-ID: legs-b1@peer.example"], body=narrow)
+    # C: no identifier, the SBC passes the SDP through.
+    tc = t0 + 40.0
+    leg("legs-c1@peer.example", LEGS_PEER, SBC_IP, "+15550100650", tc, ok(2.0), body=wide)
+    leg("legs-c2@sbc.example", SBC_IP, CARRIER_Y, "+445550100650", tc + 0.02, ok(1.98), body=wide)
+    # D: only the number and the time link the legs.
+    td = t0 + 60.0
+    leg("legs-d1@ue.example", LEGS_UE, SBC_IP, f"+{LEGS_NUMBER}", td,
+        [(0.02, 100, ["Trying"]), (0.5, 404, ["Not Found", "Reason: Q.850;cause=1"]), (0.51, 0, ["ACK"])], body=wide)
+    leg("legs-d2@sbc.example", SBC_IP, CARRIER_X, f"0{LEGS_NUMBER}", td + 0.03,
+        [(0.02, 100, ["Trying"]), (0.45, 404, ["Not Found", "Reason: Q.850;cause=1"]), (0.46, 0, ["ACK"])])
+    # E: the same number again, a minute later.
+    leg("legs-e1@sbc.example", SBC_IP, CARRIER_X, f"0{LEGS_NUMBER}", t0 + 120.0, ok(1.0))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:
     """The voice captures, kept in their own directory so the directory scans of the
     signalling captures are unchanged."""
@@ -1419,6 +1506,7 @@ def write_voice_pcaps(directory: Path) -> dict[str, Path]:
         "rtp_no_sdp": write_rtp_without_sdp_pcap(directory / "rtp_no_sdp.pcap"),
         "voice_dtmf": write_voice_dtmf_pcap(directory / "voice_dtmf.pcap"),
         "call_mix": write_call_mix_pcap(directory / "call_mix.pcap"),
+        "call_legs": write_call_legs_pcap(directory / "call_legs.pcap"),
     }
 
 

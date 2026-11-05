@@ -31,6 +31,8 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({
     "name", "cnames", "answers", "sni", "san", "subject_cn", "subject_o", "issuer_cn", "issuer_o", "alpn",
     # GTP, trace rows, expert info
     "apn", "identity", "detail", "summary",
+    # call_legs: the icid, Session-ID, X- header or number a link was made on
+    "evidence",
     # IMS registration and SMS over IMS
     "impu", "impi", "associated_uris", "service_route", "path_header", "contact", "application_server", "warning",
     "feature_tags", "sec_agree", "reason_phrase",
@@ -47,6 +49,7 @@ PACKET_CONTAINERS: frozenset[str] = frozenset({
     "request_avps", "answer_avps",     # diameter_avps, trace and compare rows
     "request_ies", "response_ies",     # gtp_ies
     "subscription",                    # roaming_attach_check: the ULA subscription digest
+    "header_changes",                  # call_legs: header values of both legs
     "differences",                     # compare_captures: values from both captures
     "writer",                          # capture_metadata: application, OS, hardware of the file's writer
 })
