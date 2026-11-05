@@ -3225,6 +3225,38 @@ def write_fiveg_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# --------------------------------------------------------------------------- USSD
+USSD_NUMBER = "15550100777"  # the number the subscriber types into the USSD string
+
+
+def _gsm7_pack(text: str) -> bytes:
+    """GSM 03.38 default alphabet packed 7-bit (TS 23.038 6.1.2.1); only characters that map 1:1 to ASCII."""
+    out, acc, bits = bytearray(), 0, 0
+    for ch in text.encode("ascii"):
+        acc |= ch << bits
+        bits += 7
+        while bits >= 8:
+            out.append(acc & 0xFF)
+            acc >>= 8
+            bits -= 8
+    if bits:
+        out.append(acc & 0xFF)
+    return bytes(out)
+
+
+def write_ussd_pcap(path: Path) -> Path:
+    """MAP processUnstructuredSS-Request (opcode 59) from a VLR: the subscriber's USSD string
+    ``*140*<USSD_NUMBER>#`` (a top-up for another number), with the subscriber's own MSISDN."""
+    t0 = 1_700_003_300.0
+    vlr_gt, hlr_gt = "15550109011", "15550109012"
+    arg = _ber(0x30, _ber(0x04, b"\x0f") + _ber(0x04, _gsm7_pack(f"*140*{USSD_NUMBER}#"))
+               + _ber(0x80, _addr_string(MSISDN)))
+    begin = _tcap_begin(b"\x00\x00\x00\x09", _invoke(1, 59, arg))
+    frames = [(t0, _sctp_data(STP_A, STP_B, 2905, 2905, 0x3333, 900, 3,
+                              _m3ua_data(100, 200, _sccp_udt(_sccp_gt(hlr_gt, 6), _sccp_gt(vlr_gt, 7), begin))))]
+    return _frames_to_pcap(path, frames)
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 

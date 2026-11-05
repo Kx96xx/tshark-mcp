@@ -88,6 +88,10 @@ diameter_sessions(path="/pcaps/dra.pcap", imsi="001010123456789")
   only, and costs about one more read of the file (2.2 s on a 39 MB, 80 000-frame capture whose `conversations` call takes 1.0 s). If it stops at a cap
   (frame cap, timeout, a full token table), the result says `redaction.complete: false` with
   a warning: use `ids+ips` then.
+* Numbers typed into USSD strings and SMS text (`gsm_map.ussd_string`, `gsm_sms.sms_text`): every
+  run of 6 or more digits is replaced as a number (`*140*msisdn:3f2a9c1b0d#`), the pre-scan learns
+  them too, and the packed GSM 7-bit bytes of the same text (`gsm_map.ss.ussd_String`) are dropped
+  (`<redacted: N bytes of packed text>`). Shorter codes (`*100#`) stay.
 * Limits: names in free text (SIP display names, SMS text) are not touched; a number of 13
   digits or fewer, or in `ids` mode a UE address, that sits in none of the fields above is
   replaced only once a tool shows it under a known key or in a URI; values inside compressed
