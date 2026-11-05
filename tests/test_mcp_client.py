@@ -93,6 +93,7 @@ def _calls(pcap_dir: Path) -> list[tuple[str, dict[str, Any]]]:
         ("dtmf_events", {"path": f"{d}/voice/voice_dtmf.pcap"}),
         ("call_kpis", {"path": f"{d}/voice/call_mix.pcap", "group_by": "destination_prefix"}),
         ("call_legs", {"path": f"{d}/voice/call_legs.pcap", "call_id": "legs-a1@ue.example"}),
+        ("diameter_avps", {"path": f"{d}/ims/diameter_apps.pcap", "command_code": 265, "detail": "key"}),
         ("ims_registration", {"path": f"{d}/ims/ims_register.pcap"}),
         ("sms_over_ims", {"path": f"{d}/ims/ims_sms.pcap"}),
         ("find_fields", {"query": "result code", "protocol": "diameter", "limit": 5}),
@@ -270,6 +271,10 @@ def test_every_tool_call_returns_structured_content(client_run):
     kpis = by_name[("call_kpis", ("group_by", "path"))]
     assert {r["destination_prefix"]: r["asr_pct"] for r in kpis["groups"]} == {"4477": 40.0, "1555": 50.0}
     assert kpis["summary"]["calls"] == 10 and kpis["worst_calls"][0]["frame"] > 0
+    rx = by_name[("diameter_avps", ("command_code", "detail", "path"))]
+    (aar,) = rx["transactions"]
+    assert aar["request_avps"]["rx"]["media_components"][0]["media_type"] == "AUDIO (0)"
+    assert aar["answer_avps"]["rx"]["results"][0]["explained"]["ref"].startswith("TS 29.214")
     legs = by_name[("call_legs", ("call_id", "path"))]
     (stitched,) = legs["calls"]
     assert stitched["legs_count"] == 3 and stitched["where_it_failed"]["status"] == 480

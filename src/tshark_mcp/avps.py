@@ -11,6 +11,7 @@ mobility and policy troubleshooting, and stops at a leaf cap.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .fields import Json, to_int
@@ -69,7 +70,84 @@ ENUMS: dict[str, dict[int, str]] = {
                                13: "PGW_UPDATE", 14: "RESTORATION"},
     "Reason-Code": {0: "PERMANENT_TERMINATION", 1: "NEW_SERVER_ASSIGNED", 2: "SERVER_CHANGE",
                     3: "REMOVE_S-CSCF"},
+    # Gy/Ro (RFC 4006, TS 32.299)
+    "Final-Unit-Action": {0: "TERMINATE", 1: "REDIRECT", 2: "RESTRICT_ACCESS"},
+    "Redirect-Address-Type": {0: "IPv4 Address", 1: "IPv6 Address", 2: "URL", 3: "SIP URI"},
+    "Reporting-Reason": {0: "THRESHOLD", 1: "QHT", 2: "FINAL", 3: "QUOTA_EXHAUSTED", 4: "VALIDITY_TIME",
+                         5: "OTHER_QUOTA_TYPE", 6: "RATING_CONDITION_CHANGE", 7: "FORCED_REAUTHORISATION",
+                         8: "POOL_EXHAUSTED", 9: "UNUSED_QUOTA_TIMER"},
+    "Subscription-Id-Type": {0: "END_USER_E164", 1: "END_USER_IMSI", 2: "END_USER_SIP_URI", 3: "END_USER_NAI",
+                             4: "END_USER_PRIVATE"},
+    # Rx (TS 29.214)
+    "Rx-Request-Type": {0: "INITIAL_REQUEST", 1: "UPDATE_REQUEST", 2: "PCSCF_RESTORATION"},
+    "Media-Type": {0: "AUDIO", 1: "VIDEO", 2: "DATA", 3: "APPLICATION", 4: "CONTROL", 5: "TEXT", 6: "MESSAGE",
+                   4294967295: "OTHER"},
+    "Flow-Status": {0: "ENABLED-UPLINK", 1: "ENABLED-DOWNLINK", 2: "ENABLED", 3: "DISABLED", 4: "REMOVED"},
+    "Specific-Action": {1: "CHARGING_CORRELATION_EXCHANGE", 2: "INDICATION_OF_LOSS_OF_BEARER",
+                        3: "INDICATION_OF_RECOVERY_OF_BEARER", 4: "INDICATION_OF_RELEASE_OF_BEARER",
+                        6: "IP-CAN_CHANGE", 7: "INDICATION_OF_OUT_OF_CREDIT",
+                        8: "INDICATION_OF_SUCCESSFUL_RESOURCES_ALLOCATION",
+                        9: "INDICATION_OF_FAILED_RESOURCES_ALLOCATION", 10: "INDICATION_OF_LIMITED_PCC_DEPLOYMENT",
+                        11: "USAGE_REPORT", 12: "ACCESS_NETWORK_INFO_REPORT",
+                        13: "INDICATION_OF_RECOVERY_FROM_LIMITED_PCC_DEPLOYMENT",
+                        14: "INDICATION_OF_ACCESS_NETWORK_INFO_REPORTING_FAILURE",
+                        15: "INDICATION_OF_TRANSFER_POLICY_EXPIRED", 16: "PLMN_CHANGE", 17: "EPS_FALLBACK",
+                        18: "INDICATION_OF_REALLOCATION_OF_CREDIT", 19: "SUCCESSFUL_QOS_UPDATE",
+                        20: "FAILED_QOS_UPDATE"},
+    "Abort-Cause": {0: "BEARER_RELEASED", 1: "INSUFFICIENT_SERVER_RESOURCES", 2: "INSUFFICIENT_BEARER_RESOURCES",
+                    3: "PS_TO_CS_HANDOVER", 4: "SPONSORED_DATA_CONNECTIVITY_DISALLOWED"},
+    # Cx (TS 29.229) and Sh (TS 29.329)
+    "User-Authorization-Type": {0: "REGISTRATION", 1: "DE_REGISTRATION", 2: "REGISTRATION_AND_CAPABILITIES"},
+    "Data-Reference": {0: "RepositoryData", 10: "IMSPublicIdentity", 11: "IMSUserState", 12: "S-CSCFName",
+                       13: "InitialFilterCriteria", 14: "LocationInformation", 15: "UserState",
+                       16: "ChargingInformation", 17: "MSISDN", 18: "PSIActivation", 19: "DSAI",
+                       21: "ServiceLevelTraceInfo", 22: "IPAddressSecureBindingInformation",
+                       23: "ServicePriorityLevel", 24: "SMSRegistrationInfo", 25: "UEReachabilityForIP",
+                       26: "TADSinformation", 27: "STN-SR", 28: "UE-SRVCC-Capability", 29: "ExtendedPriority",
+                       30: "CSRN", 31: "ReferenceLocationInformation", 32: "IMSI", 33: "IMSPrivateUserIdentity",
+                       34: "IMEISV", 35: "UE-5G-SRVCC-Capability"},
+    "Requested-Domain": {0: "CS-Domain", 1: "PS-Domain"},
+    "Current-Location": {0: "DoNotNeedInitiateActiveLocationRetrieval", 1: "InitiateActiveLocationRetrieval"},
+    "Identity-Set": {0: "ALL_IDENTITIES", 1: "REGISTERED_IDENTITIES", 2: "IMPLICIT_IDENTITIES",
+                     3: "ALIAS_IDENTITIES"},
+    # S13 (TS 29.272 7.3.51)
+    "Equipment-Status": {0: "WHITELISTED", 1: "BLACKLISTED", 2: "GREYLISTED"},
 }
+
+# Authentication material: never returned, in any view. The AVP is kept with this marker so
+# its presence still shows (TS 29.272 7.3.18 vectors, TS 29.229 6.3.13 SIP-Auth-Data-Item).
+SECRET_AVPS = frozenset({"RAND", "XRES", "AUTN", "KASME", "SRES", "Kc", "CK", "IK", "SIP-Authenticate",
+                         "SIP-Authorization", "Confidentiality-Key", "Integrity-Key",
+                         # the same AVPs when the dictionary has no name for them
+                         "avp-609", "avp-610", "avp-625", "avp-626", "avp-1447", "avp-1448", "avp-1449",
+                         "avp-1450", "avp-1453", "avp-1454"})
+WITHHELD = "withheld (authentication material)"
+
+# AVPs some tshark dictionaries name with a "3GPP-" prefix or leave unnamed; the digests
+# read them by their spec name.
+AVP_CODES = {"avp-872": "Reporting-Reason", "avp-437": "Requested-Service-Unit", "avp-702": "Sh-User-Data", "avp-612": "SIP-Auth-Data-Item",
+             "avp-608": "SIP-Authentication-Scheme", "avp-607": "SIP-Number-Auth-Items", "avp-1445": "Equipment-Status"}
+
+
+def bare(name: str) -> str:
+    """An AVP name as the spec spells it: without a dictionary's "3GPP-" prefix."""
+    if name.startswith("3GPP-") and not name.startswith(("3GPP-SGSN", "3GPP-GGSN", "3GPP-IMSI", "3GPP-Charging",
+                                                          "3GPP-PDP", "3GPP-RAT", "3GPP-User-Location",
+                                                          "3GPP-MS-TimeZone", "3GPP-Selection", "3GPP-NSAPI",
+                                                          "3GPP-CG", "3GPP-GPRS", "3GPP-Session-Stop",
+                                                          "3GPP-Negotiated", "3GPP-Allocate", "3GPP-Packet",
+                                                          "3GPP-IPv6", "3GPP-Camel", "3GPP-IMEISV", "3GPP-QoS")):
+        return name[5:]
+    return AVP_CODES.get(name, name)
+
+
+def spec_names(tree: Any) -> Any:
+    """A copy of an AVP tree with :func:`bare` names, for the application digests."""
+    if isinstance(tree, dict):
+        return {bare(k): spec_names(v) for k, v in tree.items()}
+    if isinstance(tree, list):
+        return [spec_names(v) for v in tree]
+    return tree
 
 # Bit-string AVPs: bit number -> name (TS 29.272 section 7.3).
 FLAGS: dict[str, dict[int, str]] = {
@@ -132,7 +210,8 @@ STRING_AVPS = frozenset({
 
 # OctetString AVPs that carry text; tshark prints them as hex.
 TEXT_OCTETS = frozenset({"Charging-Rule-Name", "Charging-Rule-Base-Name", "TDF-Application-Identifier",
-                         "AF-Charging-Identifier", "Media-Component-Status", "Presence-Reporting-Area-Identifier"})
+                         "AF-Charging-Identifier", "AF-Application-Identifier", "Service-Indication",
+                         "Visited-Network-Identifier", "Media-Component-Status", "Presence-Reporting-Area-Identifier"})
 
 HARD_MAX_AVPS = 2000
 MAX_VALUE_CHARS = 200
@@ -205,6 +284,10 @@ def _one(avp: Json, budget: _Budget, depth: int) -> tuple[str | None, Any]:
         budget.dropped += 1
         return None, None
     budget.left -= 1
+    if bare(name) in SECRET_AVPS or name in SECRET_AVPS:
+        return name, WITHHELD
+    if bare(name) == "Sh-User-Data":
+        return name, sh_user_data(avp.get(key))
     return name, _leaf(name, avp.get(key), avp, key)
 
 
@@ -214,14 +297,15 @@ def _leaf(name: str, raw: Any, avp: Json, key: str) -> Any:
     if raw is None:
         return None
     text = str(raw)
-    number = to_int(text) if text.lstrip("-").isdigit() and name not in STRING_AVPS else None
-    if number is not None and name in ENUMS:
-        label = ENUMS[name].get(number)
+    spec = bare(name)
+    number = to_int(text) if text.lstrip("-").isdigit() and spec not in STRING_AVPS else None
+    if number is not None and spec in ENUMS:
+        label = ENUMS[spec].get(number)
         return f"{label} ({number})" if label else number
-    if number is not None and name in FLAGS:
-        bits = [FLAGS[name].get(b, f"bit{b}") for b in range(32) if number >> b & 1]
+    if number is not None and spec in FLAGS:
+        bits = [FLAGS[spec].get(b, f"bit{b}") for b in range(32) if number >> b & 1]
         return f"{number} [{', '.join(bits)}]" if bits else f"{number} [none]"
-    if name in TEXT_OCTETS:
+    if spec in TEXT_OCTETS:
         text = _hex_text(text)
     decoded = _decoded(name, avp, key)
     if decoded is not None:
@@ -304,9 +388,10 @@ KEY_AVPS = (
 )
 
 
-def key_view(tree: dict[str, Any]) -> dict[str, Any]:
+def key_view(tree: dict[str, Any], application_id: int | None = None) -> dict[str, Any]:
     """The AVPs read first: result codes, procedure flags and types, identities, Gx
-    request and rule outcomes, and a digest of any Subscription-Data."""
+    request and rule outcomes, a digest of any Subscription-Data and, for Gy/Ro, Rx, Cx,
+    Sh and S13, the application digest of :data:`DIGESTS` under its own key."""
     out: dict[str, Any] = {}
     rc = tree.get("Result-Code")
     if rc is not None:
@@ -335,6 +420,11 @@ def key_view(tree: dict[str, Any]) -> dict[str, Any]:
             out.setdefault("subscription", []).append(subscription_digest(sd))
     if "subscription" in out and len(out["subscription"]) == 1:
         out["subscription"] = out["subscription"][0]
+    if application_id in DIGESTS:
+        key, build = DIGESTS[application_id]
+        digest = build(spec_names(tree))
+        if digest:
+            out[key] = digest
     return out
 
 
@@ -390,3 +480,288 @@ def _apn(cfg: dict[str, Any]) -> dict[str, Any]:
                                         ("host", _one_of(mip6, "Destination-Host")),
                                         ("realm", _one_of(mip6, "Destination-Realm"))) if v is not None}
     return {k: v for k, v in row.items() if v is not None}
+
+
+# ----------------------------------------------------------------- application digests
+def _code(value: Any) -> int | None:
+    """The number of an AVP value, also from a named enum ("FOO (3)")."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        m = re.search(r"\((\d+)\)$", value) or re.fullmatch(r"(\d+)", value.strip())
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _named_result(code: Any, experimental: bool) -> dict[str, Any] | None:
+    from .diameter import EXPERIMENTAL_RESULT_CODES, RESULT_CODES
+    n = _code(code)
+    if n is None:
+        return None
+    name = (EXPERIMENTAL_RESULT_CODES if experimental else RESULT_CODES).get(n)
+    out: dict[str, Any] = {"code": n, "avp": "Experimental-Result-Code" if experimental else "Result-Code"}
+    if name:
+        out["name"] = name
+    return out
+
+
+def results(tree: dict[str, Any]) -> list[dict[str, Any]]:
+    """The message's own Result-Code and Experimental-Result-Code, named (not the ones
+    inside a Multiple-Services-Credit-Control, which the Gy digest reports per MSCC)."""
+    out = []
+    if tree.get("Result-Code") is not None:
+        r = _named_result(tree["Result-Code"], False)
+        if r:
+            out.append(r)
+    ers = tree.get("Experimental-Result")
+    for er in ers if isinstance(ers, list) else [ers]:
+        if isinstance(er, dict) and er.get("Experimental-Result-Code") is not None:
+            r = _named_result(er["Experimental-Result-Code"], True)
+            if r:
+                out.append(r)
+    return out
+
+
+def _listed(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else ([] if value is None else [value])
+
+
+def _first(tree: Any, name: str) -> Any:
+    values = find(tree, name)
+    return values[0] if values else None
+
+
+def _units(unit: Any) -> dict[str, Any] | None:
+    if not isinstance(unit, dict):
+        return None
+    out = {k: unit[name] for name, k in (("CC-Total-Octets", "total_octets"), ("CC-Input-Octets", "input_octets"),
+                                          ("CC-Output-Octets", "output_octets"), ("CC-Time", "time_s"),
+                                          ("CC-Service-Specific-Units", "service_units")) if name in unit}
+    reasons = _listed(unit.get("Reporting-Reason"))
+    if reasons:
+        out["reporting_reason"] = reasons if len(reasons) > 1 else reasons[0]
+    return out
+
+
+def _mscc(m: dict[str, Any]) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+    for name, key in (("Rating-Group", "rating_group"), ("Service-Identifier", "service_identifier"),
+                      ("Validity-Time", "validity_time_s"), ("Quota-Holding-Time", "quota_holding_time_s"),
+                      ("Volume-Quota-Threshold", "volume_quota_threshold"), ("Time-Quota-Threshold", "time_quota_threshold_s")):
+        if name in m:
+            row[key] = m[name]
+    if "Requested-Service-Unit" in m:
+        row["requested"] = _units(m["Requested-Service-Unit"]) or {}
+    if "Granted-Service-Unit" in m:
+        row["granted"] = _units(m["Granted-Service-Unit"]) or {}
+    used = [u for u in (_units(x) for x in _listed(m.get("Used-Service-Unit"))) if u is not None]
+    if used:
+        row["used"] = used if len(used) > 1 else used[0]
+    reasons = _listed(m.get("Reporting-Reason"))
+    if reasons:
+        row["reporting_reason"] = reasons if len(reasons) > 1 else reasons[0]
+    fui = m.get("Final-Unit-Indication")
+    if isinstance(fui, dict):
+        final = {"action": fui.get("Final-Unit-Action")}
+        server = fui.get("Redirect-Server")
+        if isinstance(server, dict):
+            final["redirect_address_type"] = server.get("Redirect-Address-Type")
+            final["redirect_server_address"] = server.get("Redirect-Server-Address")
+        filters = _listed(fui.get("Filter-Id")) + _listed(fui.get("Restriction-Filter-Rule"))
+        if filters:
+            final["restriction_filters"] = len(filters)
+        row["final_unit"] = {k: v for k, v in final.items() if v is not None}
+    if m.get("Result-Code") is not None:
+        row["result"] = _named_result(m["Result-Code"], False)
+    return row
+
+
+def gy_digest(tree: dict[str, Any]) -> dict[str, Any]:
+    """Gy/Ro (RFC 4006, TS 32.299): request type and number, Service-Context-Id, the
+    subscriber's Subscription-Id, and per Multiple-Services-Credit-Control the rating
+    group, service id, requested, granted and used units, validity and quota holding
+    time, thresholds, reporting reason, Final-Unit-Indication and the MSCC Result-Code."""
+    out: dict[str, Any] = {}
+    for name, key in (("CC-Request-Type", "request_type"), ("CC-Request-Number", "request_number"),
+                      ("Service-Context-Id", "service_context_id"), ("Termination-Cause", "termination_cause"),
+                      ("Multiple-Services-Indicator", "multiple_services_indicator")):
+        if tree.get(name) is not None:
+            out[key] = tree[name]
+    subs = [s for s in _listed(tree.get("Subscription-Id")) if isinstance(s, dict)]
+    if subs:
+        out["subscription_ids"] = [{"type": s.get("Subscription-Id-Type"), "data": s.get("Subscription-Id-Data")}
+                                   for s in subs]
+    msccs = [m for m in _listed(tree.get("Multiple-Services-Credit-Control")) if isinstance(m, dict)]
+    if msccs:
+        out["mscc"] = [_mscc(m) for m in msccs]
+    if out or results(tree):
+        out["results"] = results(tree) or None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _codec_first_line(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.replace("\\n", "\n").replace("\r", "")
+    return text.split("\n", 1)[0].strip()[:40] or None
+
+
+def rx_digest(tree: dict[str, Any]) -> dict[str, Any]:
+    """Rx (TS 29.214): Rx-Request-Type, UE address, AF identifiers, per
+    Media-Component-Description the media type, flow status, the first line of each
+    Codec-Data, bandwidths and the number of flows, Specific-Action and Abort-Cause."""
+    out: dict[str, Any] = {}
+    for name, key in (("Rx-Request-Type", "request_type"), ("Framed-IP-Address", "framed_ip_address"),
+                      ("Framed-IPv6-Prefix", "framed_ipv6_prefix"), ("AF-Charging-Identifier", "af_charging_identifier"),
+                      ("AF-Application-Identifier", "af_application_identifier"), ("Abort-Cause", "abort_cause"),
+                      ("Service-URN", "service_urn")):
+        if tree.get(name) is not None:
+            out[key] = tree[name]
+    media = []
+    for mcd in (m for m in _listed(tree.get("Media-Component-Description")) if isinstance(m, dict)):
+        row = {key: mcd[name] for name, key in (
+            ("Media-Component-Number", "number"), ("Media-Type", "media_type"), ("Flow-Status", "flow_status"),
+            ("Max-Requested-Bandwidth-UL", "max_requested_bandwidth_ul"),
+            ("Max-Requested-Bandwidth-DL", "max_requested_bandwidth_dl"),
+            ("RR-Bandwidth", "rr_bandwidth"), ("RS-Bandwidth", "rs_bandwidth")) if name in mcd}
+        codecs = [c for c in (_codec_first_line(v) for v in _listed(mcd.get("Codec-Data"))) if c]
+        if codecs:
+            row["codec_data"] = codecs
+        subs = [s for s in _listed(mcd.get("Media-Sub-Component")) if isinstance(s, dict)]
+        if subs:
+            row["sub_components"] = len(subs)
+            row["flow_descriptions"] = sum(len(_listed(s.get("Flow-Description"))) for s in subs)
+        media.append(row)
+    if media:
+        out["media_components"] = media
+    actions = find(tree, "Specific-Action")
+    if actions:
+        out["specific_actions"] = actions
+    if out or results(tree):
+        out["results"] = results(tree) or None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def cx_digest(tree: dict[str, Any]) -> dict[str, Any]:
+    """Cx/Dx (TS 29.229): authorization and assignment types, identities, the S-CSCF
+    name or capability counts, the authentication scheme and item count (never RAND,
+    AUTN, XRES, CK or IK), associated identities and the deregistration reason."""
+    out: dict[str, Any] = {}
+    for name, key in (("User-Authorization-Type", "user_authorization_type"),
+                      ("Server-Assignment-Type", "server_assignment_type"), ("User-Name", "impi"),
+                      ("Server-Name", "server_name"), ("SIP-Number-Auth-Items", "sip_number_auth_items"),
+                      ("Visited-Network-Identifier", "visited_network")):
+        if tree.get(name) is not None:
+            out[key] = tree[name]
+    publics = _listed(tree.get("Public-Identity"))
+    if publics:
+        out["public_identities"] = publics
+    caps = tree.get("Server-Capabilities")
+    if isinstance(caps, dict):
+        out["server_capabilities"] = {"mandatory": len(_listed(caps.get("Mandatory-Capability"))),
+                                      "optional": len(_listed(caps.get("Optional-Capability"))),
+                                      "server_names": len(_listed(caps.get("Server-Name")))}
+    items = [i for i in _listed(tree.get("SIP-Auth-Data-Item")) if isinstance(i, dict)]
+    if items:
+        schemes = sorted({str(i.get("SIP-Authentication-Scheme")) for i in items
+                          if i.get("SIP-Authentication-Scheme") is not None})
+        out["auth_items"] = {"count": len(items), "schemes": schemes}
+    assoc = tree.get("Associated-Identities")
+    if isinstance(assoc, dict):
+        out["associated_identities"] = len(_listed(assoc.get("User-Name")))
+    dereg = tree.get("Deregistration-Reason")
+    if isinstance(dereg, dict):
+        out["deregistration_reason"] = {k: v for k, v in (("code", dereg.get("Reason-Code")),
+                                                          ("info", dereg.get("Reason-Info"))) if v is not None}
+    if out or results(tree):
+        out["results"] = results(tree) or None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def sh_digest(tree: dict[str, Any]) -> dict[str, Any]:
+    """Sh (TS 29.329): the identities asked about, Data-Reference names, requested
+    domain, Current-Location, Identity-Set, Service-Indication count and Sh-User-Data
+    as size and element names only (the body is never returned)."""
+    out: dict[str, Any] = {}
+    identity = tree.get("User-Identity")
+    if isinstance(identity, dict):
+        out["user_identity"] = {k: v for k, v in (("public_identity", identity.get("Public-Identity")),
+                                                  ("msisdn", identity.get("MSISDN"))) if v is not None}
+    for name, key in (("Data-Reference", "data_reference"), ("Requested-Domain", "requested_domain"),
+                      ("Identity-Set", "identity_set")):
+        values = _listed(tree.get(name))
+        if values:
+            out[key] = values
+    if tree.get("Current-Location") is not None:
+        out["current_location"] = tree["Current-Location"]
+    indications = _listed(tree.get("Service-Indication"))
+    if indications:
+        out["service_indications"] = len(indications)
+    if tree.get("Sh-User-Data") is not None:
+        out["user_data"] = tree["Sh-User-Data"]
+    if out or results(tree):
+        out["results"] = results(tree) or None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def s13_digest(tree: dict[str, Any]) -> dict[str, Any]:
+    """S13 (TS 29.272 5.3): the IMEI and software version checked and the
+    Equipment-Status (WHITELISTED, BLACKLISTED, GREYLISTED)."""
+    out: dict[str, Any] = {}
+    term = tree.get("Terminal-Information")
+    if isinstance(term, dict):
+        out["imei"] = term.get("IMEI")
+        out["software_version"] = term.get("Software-Version")
+    if tree.get("Equipment-Status") is not None:
+        out["equipment_status"] = tree["Equipment-Status"]
+    if any(v is not None for v in out.values()) or results(tree):
+        out["results"] = results(tree) or None
+    return {k: v for k, v in out.items() if v is not None}
+
+
+DIGESTS: dict[int, tuple[str, Any]] = {
+    4: ("gy", gy_digest),
+    16777236: ("rx", rx_digest),
+    16777216: ("cx", cx_digest),
+    16777217: ("sh", sh_digest),
+    16777252: ("s13", s13_digest),
+}
+"""Application id -> (key in the key view, digest builder)."""
+
+_TAG = re.compile(r"<\s*(/?)\s*([A-Za-z_][\w.:-]*)[^>]*?(/?)>")
+MAX_SH_ELEMENTS = 30
+
+
+def sh_user_data(raw: Any) -> dict[str, Any]:
+    """Sh-User-Data reduced to its size and the names of the root's child elements: the
+    body (service data, IFCs, location) is never returned."""
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    text = "" if raw is None else str(raw)
+    try:
+        data = bytes.fromhex(text.replace(":", "")) if text and re.fullmatch(r"[0-9a-fA-F:]+", text) else text.encode()
+    except ValueError:
+        data = text.encode()
+    xml = data.decode("utf-8", "replace")
+    xml = re.sub(r"<\?.*?\?>|<!--.*?-->|<!\[CDATA\[.*?\]\]>", "", xml, flags=re.S)
+    depth = 0
+    root = None
+    children: list[str] = []
+    for m in _TAG.finditer(xml):
+        closing, name, empty = m.group(1), m.group(2), m.group(3)
+        if closing:
+            depth -= 1
+            continue
+        if depth == 0 and root is None:
+            root = name
+        elif depth == 1 and name not in children and len(children) < MAX_SH_ELEMENTS:
+            children.append(name)
+        if not empty:
+            depth += 1
+    out: dict[str, Any] = {"bytes": len(data)}
+    if root:
+        out["root"] = root
+    if children:
+        out["elements"] = children
+    return out

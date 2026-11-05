@@ -1317,11 +1317,109 @@ def write_ims_sms_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+GY = 4
+RX = 16777236
+CX = 16777216
+SH = 16777217
+S13 = 16777252
+OCS_IP = "192.0.2.80"
+PCRF_IP = "192.0.2.81"
+EIR_IP = "192.0.2.82"
+APPS_IMEI = "00123456000001"    # test TAC 00123456
+APPS_IMPI = f"{IMS_OK}@{IMS_DOMAIN}"
+APPS_IMPU = f"sip:{IMS_OK}@{IMS_DOMAIN}"
+APPS_SECRET = bytes.fromhex("5a5a5a5a0123456789abcdef5a5a5a5a")  # must never be returned
+APPS_SH_DATA = ('<?xml version="1.0" encoding="UTF-8"?><Sh-Data><RepositoryData><ServiceIndication>svc'
+                '</ServiceIndication><SequenceNumber>1</SequenceNumber><ServiceData>private-body-text</ServiceData>'
+                '</RepositoryData><Extension/></Sh-Data>')
+
+
+def write_diameter_apps_pcap(path: Path) -> Path:
+    """One transaction per application digest of diameter_avps. Gy: CCR-U reporting 1000
+    octets used on rating group 10 (QUOTA_EXHAUSTED), answered 2001 with the MSCC refused
+    4012 and a Final-Unit-Indication TERMINATE. Rx: AAR for one audio component (two
+    flows, Codec-Data), answered Experimental-Result 5065. Cx: UAR answered 2001
+    (Experimental), MAR answered with one SIP-Auth-Data-Item whose RAND/AUTN, XRES, CK and
+    IK are APPS_SECRET. Sh: UDR for RepositoryData and InitialFilterCriteria answered with
+    Sh-User-Data. S13: ECR for APPS_IMEI answered BLACKLISTED."""
+    t0 = 1_700_009_000.0
+    v = VENDOR_3GPP
+    frames: list[tuple[float, bytes]] = []
+    tsn = {"n": 0}
+
+    def u32(code: int, value: int, vendor: int | None = v) -> bytes:
+        return _avp(code, struct.pack("!I", value), vendor=vendor)
+
+    def u64(code: int, value: int, vendor: int | None = None) -> bytes:
+        return _avp(code, struct.pack("!Q", value), vendor=vendor)
+
+    def grp(code: int, members: list[bytes], vendor: int | None = v) -> bytes:
+        return _avp(code, b"".join(members), vendor=vendor)
+
+    def common(sid: str, origin: str, app: int) -> list[bytes]:
+        return [_avp(263, sid.encode()), _avp(264, origin.encode()), _avp(296, b"test.example"),
+                _avp(258, struct.pack("!I", app))]
+
+    def tx(dt: float, cmd: int, app: int, client: str, server: str, req: list[bytes], ans: list[bytes]) -> None:
+        sid = f"{client};{cmd};{app}"
+        hbh = 0x700 + cmd
+        for k, (request, extra) in enumerate(((True, req), (False, ans))):
+            tsn["n"] += 1
+            src, dst = (client, server) if request else (server, client)
+            body = common(sid, f"{src}.test.example", app) + ([_avp(283, b"test.example")] if request else []) + extra
+            frames.append((t0 + dt + 0.01 * k, _sctp_data(src, dst, 3868, 3868, 0x30, tsn["n"], 46,
+                                                         _diameter(cmd, app, hbh, hbh, request, body))))
+
+    # Gy CCR-U / CCA-U
+    tx(0.0, 272, GY, PGW_IP, OCS_IP,
+       [u32(416, 2, None), u32(415, 3, None), _avp(461, b"32251@3gpp.org", vendor=None),
+        grp(443, [u32(450, 0, None), _avp(444, MSISDN.encode(), vendor=None)], vendor=None),
+        grp(456, [u32(432, 10, None), grp(437, [], vendor=None),
+                  grp(446, [u64(421, 1000), u32(872, 3)], vendor=None)], vendor=None)],
+       [u32(268, 2001, None), u32(416, 2, None), u32(415, 3, None),
+        grp(456, [u32(432, 10, None), grp(431, [u64(421, 0)], vendor=None), u32(448, 600, None), u32(871, 30),
+                  grp(430, [u32(449, 0, None)], vendor=None), u32(268, 4012, None)], vendor=None)])
+    # Rx AAR / AAA
+    codec = b"uplink\noffer\nm=audio 49152 RTP/AVP 116\na=rtpmap:116 AMR-WB/16000"
+    tx(1.0, 265, RX, PCSCF_IP, PCRF_IP,
+       [u32(533, 0), _avp(8, _ipv4(UE_IP), vendor=None), _avp(505, b"icid-rx-1", vendor=v),
+        grp(517, [u32(518, 1), u32(520, 0), u32(511, 2), u32(516, 41000), u32(515, 41000),
+                  _avp(524, codec, vendor=v),
+                  grp(519, [u32(509, 1), _avp(507, b"permit out 17 from 192.0.2.1 to 198.51.100.9", vendor=v),
+                            _avp(507, b"permit in 17 from 198.51.100.9 to 192.0.2.1", vendor=v)])]),
+        u32(513, 2), u32(513, 4)],
+       [grp(297, [u32(266, v, None), u32(298, 5065, None)], vendor=None)])
+    # Cx UAR / UAA and MAR / MAA
+    tx(2.0, 300, CX, PCSCF_IP, HSS_IP,
+       [_avp(1, APPS_IMPI.encode(), vendor=None), _avp(601, APPS_IMPU.encode(), vendor=v), u32(623, 0),
+        _avp(600, IMS_DOMAIN.encode(), vendor=v)],
+       [grp(297, [u32(266, v, None), u32(298, 2001, None)], vendor=None),
+        grp(603, [u32(604, 1), u32(604, 2), u32(605, 3)])])
+    tx(3.0, 303, CX, SCSCF_IP, HSS_IP,
+       [_avp(1, APPS_IMPI.encode(), vendor=None), _avp(601, APPS_IMPU.encode(), vendor=v), u32(607, 1),
+        grp(612, [_avp(608, b"Digest-AKAv1-MD5", vendor=v)]), _avp(602, b"sip:scscf.test.example", vendor=v)],
+       [u32(268, 2001, None), u32(607, 1),
+        grp(612, [_avp(608, b"Digest-AKAv1-MD5", vendor=v), _avp(609, APPS_SECRET + APPS_SECRET, vendor=v),
+                  _avp(610, APPS_SECRET, vendor=v), _avp(625, APPS_SECRET, vendor=v),
+                  _avp(626, APPS_SECRET, vendor=v)])])
+    # Sh UDR / UDA
+    tx(4.0, 306, SH, AS_IP, HSS_IP,
+       [grp(700, [_avp(601, APPS_IMPU.encode(), vendor=v)]), u32(703, 0), u32(703, 13)],
+       [u32(268, 2001, None), _avp(702, APPS_SH_DATA.encode(), vendor=v)])
+    # S13 ECR / ECA
+    tx(5.0, 324, S13, MME_IP, EIR_IP,
+       [_avp(1, IMSI.encode(), vendor=None),
+        grp(1401, [_avp(1402, APPS_IMEI.encode(), vendor=v), _avp(1403, b"01", vendor=v)])],
+       [u32(268, 2001, None), u32(1445, 1)])
+    return _frames_to_pcap(path, frames)
+
+
 def write_ims_pcaps(directory: Path) -> dict[str, Path]:
     """The IMS captures, in their own directory like the voice ones."""
     directory.mkdir(parents=True, exist_ok=True)
     return {"ims_register": write_ims_register_pcap(directory / "ims_register.pcap"),
-            "ims_sms": write_ims_sms_pcap(directory / "ims_sms.pcap")}
+            "ims_sms": write_ims_sms_pcap(directory / "ims_sms.pcap"),
+            "diameter_apps": write_diameter_apps_pcap(directory / "diameter_apps.pcap")}
 
 
 SBC_IP = "192.0.2.90"

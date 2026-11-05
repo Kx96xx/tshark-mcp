@@ -51,6 +51,22 @@ the project uses [semantic versioning](https://semver.org/).
   confidence), a shared SDP media endpoint (medium) or the called number and time (low), with the
   link and its confidence per leg, the delay each element added, header changes, which element
   rewrote a status or Q.850 cause and the deepest failed leg explained with cause_lookup.
+- `diameter_avps(detail="key")` digests per application: `gy` (Gy/Ro: per MSCC rating group,
+  requested, granted and used units, reporting reason, validity and quota holding time,
+  Final-Unit-Indication, MSCC Result-Code), `rx` (media components, flow status, bandwidth, first
+  Codec-Data line, Specific-Action, Abort-Cause), `cx` (authorization and assignment types,
+  identities, capability counts, authentication scheme and item count, deregistration reason), `sh`
+  (Data-Reference names, Sh-User-Data size and element names) and `s13` (IMEI, Equipment-Status).
+  Failed Result-Codes and Experimental-Result-Codes carry `explained` from cause_lookup. Rx
+  Experimental-Result-Codes 4261 and 5061 to 5068 are named in every Diameter tool.
+
+### Changed
+
+- `diameter_avps` and every tool built on its AVP tree never return authentication material:
+  RAND, XRES, AUTN, KASME, SRES, Kc, CK, IK, SIP-Authenticate and SIP-Authorization read
+  `withheld (authentication material)` in both views, and Sh-User-Data is reduced to its size and
+  element names. Enumerations, flags and text values are also read when a tshark dictionary spells
+  the AVP with a `3GPP-` prefix.
 
 ### Fixed
 
