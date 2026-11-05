@@ -28,7 +28,7 @@ FIELDS = [
     "quic.supported_version", "quic.retry_token", "quic.spin_bit", "quic.cc.error_code", "quic.cc.reason_phrase",
     "tls.handshake.type", "tls.handshake.extensions_server_name",
 ]
-FILTER = "quic || (tcp && tls.handshake.type == 1)"
+FILTER = "quic || gquic || (tcp && tls.handshake.type == 1)"
 FALLBACK_WINDOW_S = 2.0
 
 QUIC_V1, QUIC_V2 = 0x00000001, 0x6B3343CF
@@ -78,7 +78,10 @@ def parse(stdout: str, names: list[str] | None = None) -> list[dict[str, Any]]:
         src, dst = (srcs[-1] if srcs else ""), (dsts[-1] if dsts else "")
         rec: dict[str, Any] = {"frame": to_int(_nth(get("frame.number"), 0)), "time": parse_time(_nth(get("frame.time_epoch"), 0)),
                                "src": src, "dst": dst}
-        if "quic" in layers:
+        if "gquic" in layers and "quic" not in layers:
+            # Google QUIC (Q0xx, before IETF QUIC) has other headers: counted, not analysed.
+            rec["kind"] = "gquic"
+        elif "quic" in layers:
             forms = get("quic.header_form")
             versions = [_hex(v) for v in get("quic.version")]
             types: list[str] = []
@@ -137,6 +140,8 @@ def build(recs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[s
         if rec["kind"] == "tcp_hello":
             hellos.append(rec)
             continue
+        if rec["kind"] != "quic":
+            continue
         dcid = _nth(rec["dcids"], 0)
         conn = by_cid.get(dcid) if dcid else None
         tup = _tuple(rec)
@@ -154,7 +159,7 @@ def build(recs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[s
             if cid:
                 conn["cids"].add(cid)
                 by_cid[cid] = conn
-        side = "client" if (rec["src"], rec["sport"]) == conn["client"] or rec["src"] == conn["client"][0] else "server"
+        side = _side(conn, rec)
         conn["last"], conn["last_frame"] = rec["time"], rec["frame"]
         if rec["sni"] and not conn["sni"]:
             conn["sni"] = rec["sni"]
@@ -185,6 +190,28 @@ def build(recs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[s
                                                                      else f"0x{code:x}")),
                                  "reason": reason or None}
     return conns, hellos
+
+
+def _side(conn: dict[str, Any], rec: dict[str, Any]) -> str:
+    """Which end sent ``rec``: by address and port first, so that a client and a server on one address
+    (loopback, a host talking to itself) are told apart; by address only when the port matches neither
+    end (a NAT rebinding or migration changed it)."""
+    me = (rec["src"], rec["sport"])
+    if me == conn["client"]:
+        return "client"
+    if me == conn["server"]:
+        return "server"
+    if rec["src"] == conn["client"][0] and rec["src"] != conn["server"][0]:
+        return "client"
+    if rec["src"] == conn["server"][0] and rec["src"] != conn["client"][0]:
+        return "server"
+    # Same address on both ends and a port matching neither: the end whose port the packet goes to is the other one.
+    return "server" if (rec["dst"], rec["dport"]) == conn["client"] else "client"
+
+
+def gquic_packets(recs: list[dict[str, Any]]) -> int:
+    """Google QUIC packets, which this tool does not analyse."""
+    return sum(1 for r in recs if r.get("kind") == "gquic")
 
 
 def _spin_rtt(samples: list[tuple[float, bool]]) -> float | None:
@@ -263,7 +290,8 @@ def _issues(row: dict[str, Any], conn: dict[str, Any]) -> list[str]:
     out = []
     o = row["outcome"]
     if o == "no_response":
-        out.append(f"{who}: {row['initial_sent']} QUIC Initial(s) from {row['client']} and no answer: UDP 443 blocked "
+        port = row["server"].rsplit(":", 1)[-1]
+        out.append(f"{who}: {row['initial_sent']} QUIC Initial(s) from {row['client']} and no answer: UDP {port} blocked "
                    "or the server does not speak QUIC")
     elif o == "version_negotiation":
         vn = row["version_negotiation"]
