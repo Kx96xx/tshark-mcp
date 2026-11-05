@@ -302,3 +302,18 @@ def test_every_next_call_runs(inc, caps: Path):
             assert "error" not in result, (name, step, result.get("error"))
     restart = incident.from_pfcp({"summary": {"peer_restarts": 1}}, {"path": "/x", "view": "transactions"})
     assert restart[0]["next_call"]["args"]["view"] == "sessions"
+
+
+def test_next_call_names_the_toolset_of_an_unlisted_tool(inc, caps: Path):
+    """With the default toolsets, a next_call to a mobile tool says --toolsets mobile lists it."""
+    from tshark_mcp import toolsets
+    p = str(caps / "cov" / "sctp_map.pcap")
+    try:
+        toolsets.set_active(toolsets.parse("default"))
+        out = inc.incident_summary(p)
+    finally:
+        toolsets.set_active(toolsets.parse("all"))
+    steps = {f["kind"]: f["next_call"] for f in out["findings"]}
+    assert steps["sctp_init_rejected"]["tool"] == "sctp_associations" and steps["sctp_init_rejected"]["toolset"] == "mobile"
+    assert steps["map_errors"]["toolset"] == "mobile"
+    assert all("toolset" not in f["next_call"] for f in inc.incident_summary(p)["findings"])  # every toolset listed

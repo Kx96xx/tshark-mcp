@@ -31,6 +31,6 @@ payloads, a window), `top_talkers` (5 IP conversations), `timeline` (first packe
 first high finding, last problem, last packet), `not_checked` (pass and reason: protocol absent,
 focus, budget, error), `not_analysed` (protocols in the capture that no pass reads, such as DHCP,
 MQTT, CoAP, Kerberos or ISUP: protocol, frames and a `next_call`, a specialist tool when one exists
-or `filter_packets`; the `summary` sentence ends with "no checks exist for: ...") and `passes` (ms and
+or `filter_packets`; a `next_call` to a tool the active `--toolsets` do not list carries `toolset`, the name that lists it; the `summary` sentence ends with "no checks exist for: ...") and `passes` (ms and
 status per pass). With `start`/`end` every pass reads only the window and every `next_call` carries
 it
