@@ -363,6 +363,17 @@ def sdp_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def dialog_end(messages: list[dict[str, Any]]) -> float | None:
+    """When one call's messages (from :func:`parse_messages`) say the dialog ended: the first
+    BYE or CANCEL, else None (the call is open at the end of the capture)."""
+    for rec in messages:
+        if rec.get("sip.Method") in ("BYE", "CANCEL"):
+            t = parse_time(rec.get("frame.time_epoch") or "")
+            if t is not None:
+                return t
+    return None
+
+
 def media_endpoints(sdps: list[dict[str, Any]]) -> dict[tuple[str, int], list[dict[str, Any]]]:
     """(address, port) -> the SDP media sections that advertised it as a receive address,
     for RTP and (on the RTCP port) RTCP, oldest first."""

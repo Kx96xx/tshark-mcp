@@ -3109,13 +3109,34 @@ def sip_call_detail(path: str, call_id: str) -> models.SipCallDetailResult:
 def _sip_media(capture: Path, cid: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Scan]:
     """SIP messages carrying a body, for one Call-ID or every message with SDP, and the
     SDP of each in offer/answer order."""
+    messages, sdps, scan, _ = _sip_media_linking(capture, cid)
+    return messages, sdps, scan
+
+
+def _sip_media_linking(capture: Path, cid: str | None
+                       ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Scan, list[dict[str, Any]]]:
+    """As :func:`_sip_media`, plus every SDP in the capture for linking RTP to calls.
+
+    With a Call-ID the RTP pass reads everything to or from that call's media addresses, which
+    includes later calls that reuse an address and port. Linking those streams against the SDP
+    of every call (the most recent advertisement before a stream starts wins) and dropping a
+    stream that starts after the call's BYE keeps them off this call (public-validation D7)."""
     st = state()
-    flt = f'sip.Call-ID == "{cid}"' if cid else "sip && sdp"
+    flt = f'sip.Call-ID == "{cid}" || (sip && sdp)' if cid else "sip && sdp"
     stdout, scan = _fields_run(capture, flt, sip.MEDIA_FIELDS, st.limits.max_scan_packets, aggregator=sip.AGGREGATOR)
-    messages = sip.parse_messages(stdout, sip.MEDIA_FIELDS)
-    if cid:
-        messages = [m for m in messages if m["sip.Call-ID"] == cid]
-    return messages, sip.sdp_messages(messages), scan
+    every = sip.parse_messages(stdout, sip.MEDIA_FIELDS)
+    if not cid:
+        sdps = sip.sdp_messages(every)
+        return every, sdps, scan, sdps
+    messages = [m for m in every if m["sip.Call-ID"] == cid]
+    sdps = sip.sdp_messages(messages)
+    all_sdps = sip.sdp_messages(every)
+    ended = sip.dialog_end(messages)
+    if ended is not None:
+        for entry in all_sdps:
+            if entry["call_id"] == cid:
+                entry["dialog_end"] = ended
+    return messages, sdps, scan, all_sdps
 
 
 def _media_addresses(sdps: list[dict[str, Any]]) -> set[str]:
@@ -3148,7 +3169,7 @@ def _rtp_pass(capture: Path, sdps: list[dict[str, Any]], cid: str | None, heuris
         base = rtp.DISPLAY_FILTER
     flt = _filter(user_filter, base=base)
     stdout, scan = _fields_run(capture, flt, rtp.FIELDS, st.limits.max_scan_packets, aggregator=rtp.AGGREGATOR,
-                               extra_args=rtp.HEURISTIC_ARGS if heuristic else ())
+                               extra_args=rtp.heuristic_args(field_catalogue(st.runner)) if heuristic else ())
     packets, reports = rtp.parse(stdout)
     return packets, reports, scan, flt
 
@@ -3171,9 +3192,9 @@ def media_path_check(path: str, call_id: str, heuristic: bool = False) -> models
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         cid = lint_quoted_value(call_id, "call_id")
-        _, sdps, sip_scan = _sip_media(capture, cid)
+        _, sdps, sip_scan, link_sdps = _sip_media_linking(capture, cid)
         packets, reports, scan, flt = _rtp_pass(capture, sdps, cid, bool(heuristic), None)
-        streams = [s for s in rtp.build_streams(packets, reports, sdps, sip.media_endpoints(sdps))
+        streams = [s for s in rtp.build_streams(packets, reports, link_sdps, sip.media_endpoints(link_sdps))
                    if s.get("call_id") == cid]
         out = media.check(cid, sdps, streams)
         out["found"] = bool(sdps) or bool(streams)
@@ -3217,7 +3238,7 @@ def dtmf_events(path: str, call_id: str | None = None, heuristic: bool = False, 
         if not cid or sdps:
             addresses = _media_addresses(sdps) if cid else set()
             stdout, rtp_scan = _fields_run(capture, dtmf.rtp_filter(addresses), rtp.FIELDS, st.limits.max_scan_packets,
-                                           aggregator=rtp.AGGREGATOR, extra_args=rtp.HEURISTIC_ARGS if heuristic else ())
+                                           aggregator=rtp.AGGREGATOR, extra_args=rtp.heuristic_args(field_catalogue(st.runner)) if heuristic else ())
             packets, _ = rtp.parse(stdout)
             events = dtmf.rtp_events(packets, sdps, sip.media_endpoints(sdps))
             if cid:
@@ -3434,10 +3455,10 @@ def rtp_streams(path: str, call_id: str | None = None, ssrc: str | int | None = 
         cid = lint_quoted_value(call_id, "call_id") if call_id else None
         want_ssrc = _lint_ssrc(ssrc) if ssrc is not None and str(ssrc).strip() != "" else None
         cap = clamp_limit(limit, st.limits.max_packets, 100)
-        _, sdps, sip_scan = _sip_media(capture, cid)
+        _, sdps, sip_scan, link_sdps = _sip_media_linking(capture, cid)
         packets, reports, scan, flt = _rtp_pass(capture, sdps, cid, bool(heuristic), filter)
         notes = []
-        rows = rtp.build_streams(packets, reports, sdps, sip.media_endpoints(sdps))
+        rows = rtp.build_streams(packets, reports, link_sdps, sip.media_endpoints(link_sdps))
         if cid:
             rows = [r for r in rows if r.get("call_id") == cid]
             if not sdps:
