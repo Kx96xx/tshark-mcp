@@ -111,6 +111,7 @@ the project uses [semantic versioning](https://semver.org/).
   `udp_443_blocked_likely` summary flag.
 
 ### Fixed
+- PyPI page: README links are absolute, so they work on pypi.org as well as GitHub; a test keeps them absolute and pointing at real files. More project links (documentation, changelog, releases).
 
 - Errors no longer quote an over-long argument back in full: `gtp_ies(message=...)`, the shared
   IMSI/MSISDN check and every other message that names a bad value show its first 80 characters

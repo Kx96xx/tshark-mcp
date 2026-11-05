@@ -38,7 +38,11 @@ tshark-mcp = "tshark_mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/Kx96xx/tshark-mcp"
+Documentation = "https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md"
+Changelog = "https://github.com/Kx96xx/tshark-mcp/blob/main/CHANGELOG.md"
+Source = "https://github.com/Kx96xx/tshark-mcp"
 Issues = "https://github.com/Kx96xx/tshark-mcp/issues"
+Releases = "https://github.com/Kx96xx/tshark-mcp/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]

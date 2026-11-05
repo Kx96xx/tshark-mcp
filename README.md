@@ -65,7 +65,7 @@ questions about the calls, sessions and subscribers in them.
 
    To run it by hand: `tshark-mcp --allow-dir /path/to/pcaps [--allow-dir /more] [--log-file ~/tshark-mcp.jsonl]`.
    `TSHARK_MCP_ALLOW_DIRS` (colon-separated) works instead of the flag. Three small synthetic
-   captures to start with are in [examples/](examples/).
+   captures to start with are in [examples/](https://github.com/Kx96xx/tshark-mcp/tree/main/examples/).
 
 ## What you can ask it
 
@@ -84,7 +84,7 @@ questions about the calls, sessions and subscribers in them.
 - "What does Experimental-Result 5420 mean, and which spec section do I quote?"
 
 One real answer, trimmed. The capture is
-[`examples/sip_one_way_audio.pcap`](examples/sip_one_way_audio.pcap): a SIP call where the
+[`examples/sip_one_way_audio.pcap`](https://github.com/Kx96xx/tshark-mcp/blob/main/examples/sip_one_way_audio.pcap): a SIP call where the
 called side never sends media. The agent finds the Call-ID with `sip_dialogs`, then calls:
 
 ```
@@ -108,8 +108,8 @@ media_path_check(path="/captures/sip_one_way_audio.pcap", call_id="one-way-audio
 The caller's RTP arrived exactly where the SDP answer asked for it and nothing came back,
 so the fault is behind the media gateway, not the caller's NAT or codec. Every row carries
 frame numbers (`first_frame: 6`), so `packet_detail` can show the packet behind any claim.
-More worked examples, one per tool, are in [docs/TOOLS.md](docs/TOOLS.md#examples); a full
-investigation of a failed attach is in [docs/EXAMPLE.md](docs/EXAMPLE.md).
+More worked examples, one per tool, are in [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md#examples); a full
+investigation of a failed attach is in [docs/EXAMPLE.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/EXAMPLE.md).
 
 ## Safety model
 
@@ -130,15 +130,15 @@ investigation of a failed attach is in [docs/EXAMPLE.md](docs/EXAMPLE.md).
   server.
 
 Transport is stdio only; `--transport streamable-http` is for local experiments and has no
-authentication. Details, the full caps table and the redaction rules: [docs/SAFETY.md](docs/SAFETY.md).
-How to report a vulnerability: [SECURITY.md](SECURITY.md).
+authentication. Details, the full caps table and the redaction rules: [docs/SAFETY.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/SAFETY.md).
+How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mcp/blob/main/SECURITY.md).
 
 ## Tools
 
 Fifty tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (131 KB instead of 330 KB at 46 tools); each tool's full schema is the resource `schema://tools/<name>`, and
-`--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](docs/TOOLS.md).
+`--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
 Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
 what it cost in `tokens_estimate`.
@@ -219,7 +219,7 @@ with `--redact ids` (or `TSHARK_MCP_REDACT=ids`), or pass `redact="ids"` on a ca
 values come back as stable keyed tokens such as `imsi:3f2a9c1b0d` that still join across
 tools and work as arguments in later calls. `ids+ips` hides every IP address too. A call can
 raise the server's level, never lower it. What is found, what is not, and how the pre-scan
-works: [docs/SAFETY.md](docs/SAFETY.md#redaction).
+works: [docs/SAFETY.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/SAFETY.md#redaction).
 
 ## Limitations
 
@@ -232,7 +232,7 @@ works: [docs/SAFETY.md](docs/SAFETY.md#redaction).
 * Pairing follows what is in the file. A request whose answer was captured on another
   interface is `unanswered`; one the capture stopped too soon to answer is also
   `near_capture_end`. How GTP responses are matched across NATs and proxies is in
-  [docs/TOOLS.md](docs/TOOLS.md).
+  [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
 * MAP decoding relies on tshark's dissectors; a segmented XUDT whose other segments are
   missing is reported as segmented, not guessed.
 
@@ -255,10 +255,10 @@ The suite is 1000 tests and runs in about a minute; CI runs it on Python 3.10 to
 the tshark that Ubuntu 24.04 ships (4.2). Every capture the tests use is synthetic, built by
 `tests/pcapgen.py` at run time with documentation addresses and test identities, and the three
 captures under `examples/` come from the same generator, so nothing in the repository contains
-traffic from a real network (the list of scenarios is in [docs/TOOLS.md](docs/TOOLS.md#how-the-tools-are-tested)).
-Sixteen task-success scenarios ([docs/EVALS.md](docs/EVALS.md)) check that the right tool answers an
+traffic from a real network (the list of scenarios is in [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md#how-the-tools-are-tested)).
+Sixteen task-success scenarios ([docs/EVALS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/EVALS.md)) check that the right tool answers an
 operator's question with the right facts; a model-driven mode is there and off by default.
-Conventions for contributors and for agents: [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md).
+Conventions for contributors and for agents: [CONTRIBUTING.md](https://github.com/Kx96xx/tshark-mcp/blob/main/CONTRIBUTING.md), [AGENTS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/AGENTS.md).
 
 ## Licence
 
