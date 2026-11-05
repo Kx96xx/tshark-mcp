@@ -3989,7 +3989,8 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
     (passes skipped and why) and `not_analysed` (protocols present that no pass reads, each
     with its `next_call`). `focus`: auto (default), web, dns, tls, voip or mobile;
     `budget_s` caps the whole call (default and maximum: the server's run timeout).
-    Details: Passes after the first three: tcp_connections, tcp_health, dns_transactions,
+    Details: A `next_call` whose tool the active toolsets do not list carries `toolset` (the
+    `--toolsets` name that lists it); the tool still answers a call by name. Passes after the first three: tcp_connections, tcp_health, dns_transactions,
     tls_handshakes, quic_connections, http_transactions, icmp_errors, tunnels_overview
     (web, dns, tls), call_kpis, rtp_streams, ims_registration (voip), diameter_transactions,
     gtp_sessions, gtpv1_sessions, pfcp_sessions, sctp_associations, sigtran_messages,
@@ -4130,6 +4131,10 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
                 u["next_call"]["args"].update(_window_args())
         if unread:
             summary += "; no checks exist for: " + ", ".join(u["protocol"] for u in unread)
+        for step in [f["next_call"] for f in findings] + [u["next_call"] for u in unread]:
+            if not _listed(step["tool"]):
+                # Not in tools/list under the active toolsets (it still answers by name): say which one lists it.
+                step["toolset"] = toolsets.of(step["tool"], TOOLS.get(step["tool"]))
         return {"path": p, "focus": focus, "summary": summary, "findings": findings, "capture": cap, "top_talkers": top,
                 "timeline": timeline, "not_checked": not_checked, "not_analysed": unread, "passes": passes,
                 "budget_s": round(budget, 3), "thresholds": dict(incident.THRESHOLDS)}
