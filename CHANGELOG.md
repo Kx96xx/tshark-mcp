@@ -5,6 +5,8 @@ the project uses [semantic versioning](https://semver.org/).
 
 ## Unreleased
 
+Changes merged since the last release are fragments in [changelog.d/](https://github.com/Kx96xx/tshark-mcp/tree/main/changelog.d); `python scripts/changelog.py --release X.Y.Z` moves them here.
+
 ## 0.2.0 - 2026-11-05
 
 ### Added

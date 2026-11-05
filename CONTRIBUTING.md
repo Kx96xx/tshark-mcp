@@ -34,7 +34,7 @@ oldest supported `mcp` and `pydantic`.
 - **Keep the output contract.** Paged tools take `limit` and `offset` and return
   `total_matched`, `returned`, `dropped` and `next_offset`; truncation always comes with a
   `truncated_reason`; packet text goes through `untrusted.apply`. Update the tool tables in the README and `docs/TOOLS.md`,
-  `llms.txt`, `AGENTS.md` and the test count when a tool is added or its arguments change.
+  `llms.txt` and `AGENTS.md` when a tool is added or its arguments change, and add a changelog fragment.
 - `ruff check --select F,E9` must be clean; CI must be green on the exact commit before merge.
 
 ## Reporting a bug
@@ -44,9 +44,15 @@ what you expected. Include a way to reproduce that does not involve real traffic
 added to `tests/pcapgen.py`, or a capture built with scapy or `text2pcap` from hand-written
 packets.
 
+## Changelog
+
+Do not edit `CHANGELOG.md`. Add one file per pull request, `changelog.d/<topic>.<section>.md`
+(section: added, changed, deprecated, removed, fixed or security), holding Markdown bullets for
+users; [changelog.d/README.md](https://github.com/Kx96xx/tshark-mcp/blob/main/changelog.d/README.md) has the format. CI fails a pull request that changes `src/`
+without one, unless it is labelled `no-changelog`.
+
 ## Releases
 
-Bump the version in `pyproject.toml`, `server.json` (`version` and `packages[0].version`) and
-`src/tshark_mcp/__init__.py`, then publish a GitHub release tagged `v<version>`.
-publish.yml uploads to PyPI and then publishes server.json to the MCP Registry; it refuses a tag
-that does not match all of them.
+[RELEASING.md](https://github.com/Kx96xx/tshark-mcp/blob/main/RELEASING.md): the files that carry the version, assembling the fragments with
+`python scripts/changelog.py --release X.Y.Z`, the release pull request and the GitHub release
+that publishes to PyPI and the MCP Registry.
