@@ -3527,6 +3527,154 @@ def write_gy_mscc_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# ----------------------------------------------------------------- IoT: MQTT, CoAP, LwM2M (iot_sessions)
+IOT_BROKER = "192.0.2.150"
+IOT_LWM2M = "192.0.2.151"
+IOT_DEV_A = "10.20.0.11"       # MQTT 3.1.1, refused with 5 (not authorised)
+IOT_DEV_B = "10.20.0.12"       # MQTT 3.1.1, keepalive 60 but pings every 120 s
+IOT_DEV_C = "10.20.0.13"       # MQTT 5.0 refused 0x87, then a reconnect loop of 5
+IOT_DEV_D = "10.20.0.14"       # CoAP CON retransmitted 4 times, never acknowledged
+IOT_DEV_E = "10.20.0.15"       # LwM2M Register lt=300, no Update
+IOT_DEV_F = "10.20.0.16"       # MQTT inside GTP-U
+IOT_TEID = 0x00A0B0C0
+IOT_PAYLOAD = b"SECRET-TELEMETRY-42"   # must never appear in a result
+
+
+def _mqtt_str(text: str) -> bytes:
+    return struct.pack("!H", len(text)) + text.encode()
+
+
+def _mqtt_len(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, n = n % 128, n // 128
+        out.append(byte | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def mqtt_packet(ptype: int, flags: int, body: bytes) -> bytes:
+    return bytes([(ptype << 4) | flags]) + _mqtt_len(len(body)) + body
+
+
+def mqtt_connect(client_id: str, keepalive: int, level: int = 4, user: bool = False) -> bytes:
+    flags = 0x02 | (0x80 | 0x40 if user else 0)
+    body = _mqtt_str("MQTT") + bytes([level, flags]) + struct.pack("!H", keepalive)
+    if level == 5:
+        body += b"\x00"                      # no properties
+    body += _mqtt_str(client_id)
+    if user:
+        body += _mqtt_str("dev-user") + _mqtt_str("dev-password")
+    return mqtt_packet(1, 0, body)
+
+
+def mqtt_connack(code: int, level: int = 4, session_present: bool = False) -> bytes:
+    body = bytes([1 if session_present else 0, code]) + (b"\x00" if level == 5 else b"")
+    return mqtt_packet(2, 0, body)
+
+
+def mqtt_publish(topic: str, payload: bytes, qos: int = 0, msgid: int = 1) -> bytes:
+    body = _mqtt_str(topic) + (struct.pack("!H", msgid) if qos else b"") + payload
+    return mqtt_packet(3, qos << 1, body)
+
+
+def coap_msg(mtype: int, code: int, mid: int, token: bytes = b"\x01", path: list[str] | None = None,
+             query: list[str] | None = None, location: list[str] | None = None, payload: bytes = b"") -> bytes:
+    out = bytes([0x40 | (mtype << 4) | len(token), code]) + struct.pack("!H", mid) + token
+    last = 0
+    options = [(8, x) for x in (location or [])] + [(11, x) for x in (path or [])] + [(15, x) for x in (query or [])]
+    for number, value in sorted(options, key=lambda o: o[0]):
+        delta, v = number - last, value.encode()
+        last = number
+        assert delta < 13 and len(v) < 269
+        if len(v) < 13:
+            out += bytes([(delta << 4) | len(v)]) + v
+        else:
+            out += bytes([(delta << 4) | 13, len(v) - 13]) + v
+    if payload:
+        out += b"\xff" + payload
+    return out
+
+
+class _Tcp:
+    def __init__(self, frames: list[tuple[float, bytes]], client: str, server: str, cport: int, sport: int,
+                 wrap_teid: int | None = None):
+        self.frames, self.client, self.server, self.cport, self.sport = frames, client, server, cport, sport
+        self.seq = {"c": 1000, "s": 9000}
+        self.wrap = wrap_teid
+
+    def send(self, t: float, side: str, payload: bytes = b"", flags: str = "PA") -> None:
+        from scapy.all import TCP  # type: ignore
+        other = "s" if side == "c" else "c"
+        src, dst, sp, dp = ((self.client, self.server, self.cport, self.sport) if side == "c"
+                            else (self.server, self.client, self.sport, self.cport))
+        seg = IP(src=src, dst=dst) / TCP(sport=sp, dport=dp, flags=flags, seq=self.seq[side], ack=self.seq[other]) / (
+            Raw(payload) if payload else b"")
+        if self.wrap is None:
+            self.frames.append((t, bytes(Ether(src=MAC_A, dst=MAC_B) / seg)))
+        else:
+            self.frames.append((t, _udp_frame("192.0.2.160" if side == "c" else "192.0.2.161",
+                                              "192.0.2.161" if side == "c" else "192.0.2.160", 2152, 2152,
+                                              _gtpu(self.wrap, bytes(seg)))))
+        self.seq[side] += len(payload) + (1 if "S" in flags or "F" in flags else 0)
+
+    def open(self, t: float) -> "_Tcp":
+        self.send(t, "c", flags="S")
+        self.send(t + 0.02, "s", flags="SA")
+        self.send(t + 0.021, "c", flags="A")
+        return self
+
+
+def write_iot_pcap(path: Path) -> Path:
+    """IoT device traffic (about 15 minutes): MQTT 3.1.1 CONNECT refused with 5; MQTT 3.1.1 with
+    keepalive 60 s, PINGREQs every 120 s and a QoS 1 PUBLISH acknowledged after 40 ms; MQTT 5.0
+    refused with 0x87, then five reconnects 30 s apart each closed by the broker with RST; a CoAP
+    confirmable POST sent five times (four retransmissions) without an ACK; an LwM2M Register with
+    lt=300 answered 2.01 and never updated; and an MQTT session carried inside GTP-U. Every PUBLISH
+    payload is ``IOT_PAYLOAD``."""
+    t0 = 1_700_090_000.0
+    frames: list[tuple[float, bytes]] = []
+    a = _Tcp(frames, IOT_DEV_A, IOT_BROKER, 41001, 1883).open(t0)
+    a.send(t0 + 0.03, "c", mqtt_connect("dev-a", 60, user=True))
+    a.send(t0 + 0.05, "s", mqtt_connack(5))
+    a.send(t0 + 0.06, "s", flags="FA")
+    b = _Tcp(frames, IOT_DEV_B, IOT_BROKER, 41002, 1883).open(t0 + 1)
+    b.send(t0 + 1.03, "c", mqtt_connect("dev-b", 60))
+    b.send(t0 + 1.05, "s", mqtt_connack(0, session_present=True))
+    b.send(t0 + 2.00, "c", mqtt_publish("fleet/dev-b/telemetry", IOT_PAYLOAD, qos=1, msgid=7))
+    b.send(t0 + 2.04, "s", mqtt_packet(4, 0, struct.pack("!H", 7)))
+    for i in range(1, 6):
+        b.send(t0 + 2.0 + i * 120, "c", mqtt_packet(12, 0, b""))
+        b.send(t0 + 2.02 + i * 120, "s", mqtt_packet(13, 0, b""))
+    b.send(t0 + 700, "c", mqtt_packet(14, 0, b""))
+    b.send(t0 + 700.01, "c", flags="FA")
+    for i in range(6):
+        c = _Tcp(frames, IOT_DEV_C, IOT_BROKER, 42000 + i, 1883).open(t0 + 10 + i * 30)
+        c.send(t0 + 10.03 + i * 30, "c", mqtt_connect("dev-c", 30, level=5))
+        if i == 0:
+            c.send(t0 + 10.05, "s", mqtt_connack(0x87, level=5))
+        else:
+            c.send(t0 + 10.05 + i * 30, "s", mqtt_connack(0, level=5))
+        c.send(t0 + 10.5 + i * 30, "s", flags="RA")
+    for i in range(5):
+        frames.append((t0 + 50 + 2 ** i * 2, _udp_frame(IOT_DEV_D, IOT_LWM2M, 5683, 5683,
+                                                        coap_msg(0, 2, 0x1234, b"\x0d", path=["sensors", "temp"],
+                                                                 payload=IOT_PAYLOAD))))
+    frames.append((t0 + 60, _udp_frame(IOT_DEV_E, IOT_LWM2M, 5683, 5683,
+                                       coap_msg(0, 2, 0x2000, b"\x0e", path=["rd"],
+                                                query=["ep=urn:dev:e-0001", "lt=300", "lwm2m=1.1", "b=U"]))))
+    frames.append((t0 + 60.05, _udp_frame(IOT_LWM2M, IOT_DEV_E, 5683, 5683,
+                                          coap_msg(2, 65, 0x2000, b"\x0e", location=["rd", "5a3f"]))))
+    f = _Tcp(frames, IOT_DEV_F, IOT_BROKER, 43000, 1883, wrap_teid=IOT_TEID).open(t0 + 100)
+    f.send(t0 + 100.03, "c", mqtt_connect("dev-f", 120))
+    f.send(t0 + 100.05, "s", mqtt_connack(0))
+    f.send(t0 + 101, "c", mqtt_publish("fleet/dev-f/telemetry", IOT_PAYLOAD))
+    frames.append((t0 + 900, _udp_frame(IOT_DEV_E, "192.0.2.53", 40000, 53, b"\x00" * 12)))  # the capture goes on
+    frames.sort(key=lambda fr: fr[0])
+    return _frames_to_pcap(path, frames)
+
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 
