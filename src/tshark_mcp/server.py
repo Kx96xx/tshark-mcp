@@ -47,7 +47,7 @@ from . import redact as redaction
 from . import pfcp
 from . import output as shaping
 from . import capdiff
-from . import incident
+from . import argdocs, incident
 from . import throughput
 from . import certs
 from . import quicconn
@@ -238,7 +238,7 @@ _CALL_MODE: contextvars.ContextVar[str] = contextvars.ContextVar("redact_mode", 
 # Per-call output shaping on row tools (see output.py); descriptions kept short for the tool list.
 Columns = Annotated[list[str] | None, Field(description="Row keys to keep (frame keys stay)")]
 OutputMode = Annotated[Literal["rows", "summary"], Field(
-    description="summary: all but rows, plus 3 rows (<4 KB)")]
+    description="summary: all but rows, plus 3 rows (<8 KB)")]
 MaxOutputKb = Annotated[float | None, Field(description="Lower output cap, KB")]
 _SHAPING_ARGS = ("columns", "output", "max_output_kb")
 
@@ -250,6 +250,36 @@ _CALL_OUTPUT: contextvars.ContextVar[shaping.OutputOptions] = contextvars.Contex
 WindowStart = Annotated[str | float | None, Field(description="ISO 8601, epoch s, +Ns from start, -Ns from end")]
 WindowEnd = Annotated[str | float | None, Field(description="Same forms as start")]
 WINDOWLESS_TOOLS = frozenset({"packet_detail", "capture_metadata", "capture_index"})
+
+
+def _has_description(annotation: Any) -> bool:
+    return any(getattr(meta, "description", None) for meta in getattr(annotation, "__metadata__", ()))
+
+
+def _describe_arguments(tool: str, sig: inspect.Signature) -> inspect.Signature:
+    """Every argument of ``tool`` with a schema description from :mod:`argdocs` (mcp-builder G1),
+    unless its annotation already carries one."""
+    params = []
+    for p in sig.parameters.values():
+        text = None if _has_description(p.annotation) else argdocs.describe(tool, p.name)
+        params.append(p.replace(annotation=Annotated[p.annotation, Field(description=text)]) if text else p)
+    return sig.replace(parameters=params)
+
+
+def _columns_annotation(known: frozenset[str] | None) -> Any:
+    """``columns`` with its valid row keys as ``items.enum`` in the full input schema (mcp-builder G7). The
+    value stays a list of strings for validation, so an unknown name still gets the server's own error with
+    the valid names and a fix; the compact profile drops the enum (see :mod:`schemas`)."""
+    if not known:
+        return Columns
+    names = sorted(known)
+
+    def add_enum(schema: dict[str, Any]) -> None:
+        for variant in schema.get("anyOf", [schema]):
+            if isinstance(variant, dict) and variant.get("type") == "array":
+                variant["items"] = {"type": "string", "enum": names}
+
+    return Annotated[list[str] | None, Field(description="Row keys to keep (frame keys stay)", json_schema_extra=add_enum)]
 
 
 def _takes_window(name: str, sig: inspect.Signature) -> bool:
@@ -274,12 +304,13 @@ def _tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
         if fn.__name__ in TOOLS:  # before anything reaches the app: a duplicate would replace the first
             raise RuntimeError(f"tool {fn.__name__} registered twice")
-        sig = inspect.signature(fn, eval_str=True)
+        sig = _describe_arguments(fn.__name__, inspect.signature(fn, eval_str=True))
         extra = [inspect.Parameter("redact", inspect.Parameter.KEYWORD_ONLY, default="off", annotation=Redact)]
         shaped = "limit" in sig.parameters  # row tools: columns, output and max_output_kb
         known_columns = shaping.row_keys(sig.return_annotation) if shaped else None
         if shaped:
-            extra = [inspect.Parameter("columns", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Columns),
+            extra = [inspect.Parameter("columns", inspect.Parameter.KEYWORD_ONLY, default=None,
+                                       annotation=_columns_annotation(known_columns)),
                      inspect.Parameter("output", inspect.Parameter.KEYWORD_ONLY, default="rows", annotation=OutputMode),
                      inspect.Parameter("max_output_kb", inspect.Parameter.KEYWORD_ONLY, default=None,
                                        annotation=MaxOutputKb), *extra]
@@ -364,9 +395,13 @@ def as_call_result(result: Any) -> Any:
     structured ``{"error": {...}}`` and the same JSON as text; anything else is unchanged.
     The SDK passes a returned ``CallToolResult`` through and does not validate an error
     against the tool's output schema."""
-    if isinstance(result, dict) and isinstance(result.get("error"), dict):
-        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
-        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=result, is_error=True)
+    if isinstance(result, dict):
+        # Compact JSON text (mcp-builder G2): no indentation and no spaces after separators, about 30%
+        # fewer bytes than the SDK's indent=2. structuredContent is the same document parsed back.
+        text = json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
+        error = isinstance(result.get("error"), dict)
+        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=json.loads(text),
+                              is_error=error)
     return result
 
 
@@ -542,6 +577,9 @@ def _guarded_call(tool: str, args: dict[str, Any], fn: Callable[[], dict[str, An
         result = _fit(result, shaping.cap_bytes(limits.max_output_bytes, options), rows_key)
     except ToolError:
         pass
+    if "error" not in result and ("next_offset" in result or "total_matched" in result):
+        # One boolean next to next_offset on every paged result (mcp-builder G4).
+        result["has_more"] = "next_offset" in result
     duration_ms = int((time.monotonic() - started) * 1000)
     payload_bytes = len(json.dumps(result, separators=(",", ":")).encode())
     if "error" not in result:
@@ -2218,10 +2256,10 @@ def pfcp_sessions(path: str, seid: str | int | None = None, ue_ip: str | None = 
     counts, FAR apply actions, report types and usage reports. `nodes` always gives,
     per peer pair, Association Setup result, heartbeats (and unanswered ones) and every
     Recovery Time Stamp change (the peer restarted and lost its sessions). Narrow with
-    `seid` (decimal or 0x hex, either side's) or `ue_ip`: the matching messages give
-    the session's SEIDs, then every message carrying them is fetched. `filter` is ANDed
-    with `pfcp`.
-    Details: An unanswered request the capture stopped too soon after to tell (as in
+    `seid` (either side's) or `ue_ip`.
+    Details: `seid` or `ue_ip` select the matching messages, which give the session's
+    SEIDs; then every message carrying them is fetched. `filter` is ANDed with `pfcp`.
+    An unanswered request the capture stopped too soon after to tell (as in
     gtp_sessions) gets `near_capture_end` in the transactions view, counted in
     `summary.unanswered_near_capture_end`."""
     def run() -> dict[str, Any]:

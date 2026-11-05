@@ -197,7 +197,7 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Full arguments, fields and examples: [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md).
-Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 4 KB),
+Every tool with `limit` also takes `output="summary"` (the summary plus three rows, under 8 KB),
 `columns` (row keys to keep) and `max_output_kb` (a lower cap for one call); every result says
 what it cost in `tokens_estimate`.
 
