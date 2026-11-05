@@ -441,6 +441,8 @@ class HttpRequestRow(TypedDict, total=False):
     response_bytes: int
     response_ms: float
     ttfb_ms: float
+    response_decoded_from: str
+    paired_by: str
     grpc: bool
     grpc_status: int
     grpc_status_name: str
@@ -459,6 +461,7 @@ class HttpEndpointRow(TypedDict, total=False):
     status: dict[str, int]
     unanswered: int
     response_ms: dict[str, float]
+    ttfb_ms: dict[str, float]
     response_bytes: dict[str, float]
     grpc_status: dict[str, int]
     servers: list[str]

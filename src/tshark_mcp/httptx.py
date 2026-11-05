@@ -5,7 +5,12 @@ request frame), so pipelining and several messages per segment are handled the w
 Wireshark does. Each pair gets the method, host, path (the query string is cut off
 and kept apart, capped), status and reason, Content-Type and Content-Length, and
 ``response_ms``: tshark's ``http.time``, from the request to the frame that completed
-the response (the last segment of a reassembled body).
+the response (the last segment of a reassembled body). A response tshark links to no
+request answers the oldest open request on its connection (HTTP/1.x answers in order).
+A second pass with TCP reassembly off reads the status line from a response's first
+segment, on connections with unanswered or slow requests: it pairs responses tshark
+could not reassemble in one pass and gives ``ttfb_ms`` (time to first byte) for
+multi-segment ones, so a slow transfer is not reported as a slow server.
 
 HTTP/2 (cleartext h2c, or TLS with keys) is followed per stream from the frames
 tshark dissects: the request HEADERS (:method, :path, :authority), the response
@@ -43,7 +48,7 @@ FIELDS = [
     "tcp.stream", "tcp.srcport", "tcp.dstport", "tcp.seq_raw", "tcp.ack_raw", "tcp.len", "tcp.flags", "tcp.checksum",
     "http.request.method", "http.request.uri", "http.request.version", "http.host", "http.response.code",
     "http.response.phrase", "http.response.version", "http.time", "http.request_in", "http.content_length",
-    "http.content_type",
+    "http.content_type", "tcp.segment.count",
     "http2.streamid", "http2.type", "http2.length", "http2.flags.end_stream", "http2.header.count",
     "http2.header.name", "http2.header.value", "http2.rst_stream.error",
 ]
@@ -132,6 +137,7 @@ def analyse(packets: list[tuple[dict[str, Any], dict[str, list[str]]]]) -> tuple
     tracker = CopyTracker(id_window=COPY_WINDOW_S)
     requests: list[dict[str, Any]] = []
     by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    open_by_stream: dict[Any, list[dict[str, Any]]] = defaultdict(list)
     h2: dict[tuple, _H2] = {}
     h2_order: list[_H2] = []
     h2_conns: set = set()
@@ -145,7 +151,7 @@ def analyse(packets: list[tuple[dict[str, Any], dict[str, list[str]]]]) -> tuple
             copies += 1
             continue
         src, dst = (rec["src"], tcp["sport"]), (rec["dst"], tcp["dport"])
-        _http1(rec, raw, src, dst, requests, by_frame)
+        _http1(rec, raw, src, dst, requests, by_frame, open_by_stream)
         frames = _h2_frames(raw)
         if frames:
             h2_conns.add(tcp.get("stream"))
@@ -157,8 +163,18 @@ def analyse(packets: list[tuple[dict[str, Any], dict[str, list[str]]]]) -> tuple
     return rows, stats
 
 
+def _oldest_open(open_reqs: list[dict[str, Any]], server: str, time: float | None) -> dict[str, Any] | None:
+    """The oldest request on a TCP stream still waiting for its response, sent to ``server`` before ``time``.
+    HTTP/1.x answers in order on one connection, so that is the request an unlinked response answers."""
+    for req in open_reqs:
+        if req["server"] == server and (time is None or req["time"] is None or req["time"] <= time):
+            return req
+    return None
+
+
 def _http1(rec: dict[str, Any], raw: dict[str, list[str]], src: tuple, dst: tuple,
-           requests: list[dict[str, Any]], by_frame: dict[int, list[dict[str, Any]]]) -> None:
+           requests: list[dict[str, Any]], by_frame: dict[int, list[dict[str, Any]]],
+           open_by_stream: dict[Any, list[dict[str, Any]]]) -> None:
     methods = raw.get("http.request.method") or []
     uris = raw.get("http.request.uri") or []
     hosts = raw.get("http.host") or []
@@ -175,19 +191,29 @@ def _http1(rec: dict[str, Any], raw: dict[str, list[str]], src: tuple, dst: tupl
                "request_bytes": to_int(_nth(lengths, i)) if not codes and len(lengths) == len(methods) else None}
         requests.append(req)
         by_frame[rec["frame"]].append(req)
+        open_by_stream[req["stream"]].append(req)
     if not codes:
         return
     req_in = raw.get("http.request_in") or []
     phrases = raw.get("http.response.phrase") or []
     times = raw.get("http.time") or []
     rversions = raw.get("http.response.version") or []
+    segments = raw.get("tcp.segment.count") or []
+    open_reqs = open_by_stream[rec["tcp"].get("stream")]
     for i, code in enumerate(codes):
         target = to_int(_nth(req_in, i)) if len(req_in) == len(codes) else (to_int(req_in[0]) if len(req_in) == 1 else None)
-        if target is None:
-            continue
-        req = next((r for r in by_frame.get(target, []) if "status" not in r), None)
+        if target is not None:
+            req = next((r for r in by_frame.get(target, []) if "status" not in r), None)
+        else:
+            # tshark links no request (a malformed header, a request it did not see whole): the response
+            # answers the oldest open request on this connection.
+            req = _oldest_open(open_reqs, _side(*src), rec["time"])
+            if req is not None:
+                req["paired_by"] = "stream_order"
         if req is None:
             continue
+        if req in open_reqs:
+            open_reqs.remove(req)
         req["status"] = to_int(code)
         req["reason"] = _nth(phrases, i) if len(phrases) == len(codes) else None
         req["response_frame"] = rec["frame"]
@@ -195,6 +221,8 @@ def _http1(rec: dict[str, Any], raw: dict[str, list[str]], src: tuple, dst: tupl
         if t is None and rec["time"] is not None and req["time"] is not None:
             t = rec["time"] - req["time"]
         req["response_ms"] = round(t * 1000, 3) if t is not None else None
+        if not segments and len(codes) == 1:
+            req["ttfb_ms"] = req["response_ms"]  # one segment: the first byte is the whole response
         if len(lengths) == len(codes):
             req["response_bytes"] = to_int(lengths[i])
         if len(ctypes) == len(codes):
@@ -256,7 +284,8 @@ def _h1_row(r: dict[str, Any]) -> dict[str, Any]:
         "client": r["client"], "server": r["server"], "version": r.get("version"), "method": r["method"],
         "host": r.get("host"), "uri": path, "query": query, "status": r.get("status"), "reason": r.get("reason"),
         "content_type": r.get("content_type"), "request_bytes": r.get("request_bytes"),
-        "response_bytes": r.get("response_bytes"), "response_ms": r.get("response_ms"),
+        "response_bytes": r.get("response_bytes"), "response_ms": r.get("response_ms"), "ttfb_ms": r.get("ttfb_ms"),
+        "response_decoded_from": r.get("response_decoded_from"), "paired_by": r.get("paired_by"),
         "unanswered": True if "status" not in r else None, "_time": r["time"],
     }
     return row
@@ -279,6 +308,74 @@ def _h2_row(s: _H2) -> dict[str, Any]:
         "unanswered": True if s.status is None and s.rst_by is None else None, "_time": s.start,
     }
     return row
+
+
+# ---------------------------------------------------------------- second pass: first segments
+# A response tshark could not reassemble in one pass (segments out of order, a header split over many
+# segments) never gets an http.response, and a reassembled one has http.time to its LAST segment. With
+# TCP reassembly off tshark reads the status line from the response's first segment: that pairs the
+# first kind and gives the time to first byte (TTFB) of the second.
+FIRST_SEGMENT_ARGS = ("-o", "tcp.desegment_tcp_streams:FALSE")
+FIRST_SEGMENT_FIELDS = ["frame.number", "frame.time_epoch", "tcp.stream", "ip.src", "ipv6.src", "tcp.srcport",
+                        "http.response.code", "http.response.phrase", "http.request_in"]
+FOLLOWUP_STREAMS_MAX = 2000
+
+
+def followup_streams(rows: list[dict[str, Any]]) -> list[int]:
+    """TCP streams worth the second pass: HTTP/1.x requests left unanswered, and answered ones whose
+    response took at least ``SLOW_P99_MS`` and has no TTFB yet (it spanned several segments)."""
+    out: set[int] = set()
+    for r in rows:
+        if r.get("version") == "HTTP/2" or not isinstance(r.get("stream"), int):
+            continue
+        if r.get("unanswered") or (r.get("ttfb_ms") is None and (r.get("response_ms") or 0) >= SLOW_P99_MS):
+            out.add(r["stream"])
+    return sorted(out)[:FOLLOWUP_STREAMS_MAX]
+
+
+def first_segment_filter(streams: list[int]) -> str:
+    # "http", not "http.response": with reassembly off, tshark 4.x does not match http.response on a
+    # response's first segment in a one-pass filter, although it fills http.response.code there.
+    return f"http && tcp.stream in {{{', '.join(str(s) for s in streams)}}}"
+
+
+def apply_first_segments(rows: list[dict[str, Any]], stdout: str) -> int:
+    """Pair first-segment responses with the rows (before :func:`finish`): an unanswered request gets its
+    status, reason and ``response_decoded_from: "first_segment"``; an answered one its ``ttfb_ms``.
+    Returns how many unanswered requests were paired."""
+    by_frame = {r["frame"]: r for r in rows if r.get("version") != "HTTP/2"}
+    by_stream: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        if r.get("version") != "HTTP/2":
+            by_stream[r.get("stream")].append(r)
+    done: set[int] = set()
+    paired = 0
+    for line in stdout.splitlines():
+        cols = split_fields_line(line) + [""] * len(FIRST_SEGMENT_FIELDS)
+        raw = {k: (v.split(AGGREGATOR) if v else []) for k, v in zip(FIRST_SEGMENT_FIELDS, cols)}
+        frame, t = to_int(_nth(raw["frame.number"], 0)), to_float(_nth(raw["frame.time_epoch"], 0))
+        stream = to_int(raw["tcp.stream"][-1]) if raw["tcp.stream"] else None
+        src = _side((raw["ipv6.src"] or raw["ip.src"] or [""])[-1], _nth(raw["tcp.srcport"], len(raw["tcp.srcport"]) - 1))
+        codes, phrases, req_in = raw["http.response.code"], raw["http.response.phrase"], raw["http.request_in"]
+        for i, code in enumerate(codes):
+            target = to_int(_nth(req_in, i)) if len(req_in) == len(codes) else None
+            row = by_frame.get(target) if target is not None else None
+            if row is None or id(row) in done:
+                row = next((r for r in by_stream.get(stream, []) if id(r) not in done and r.get("server") == src
+                            and (r.get("ttfb_ms") is None or r.get("unanswered"))
+                            and (t is None or r.get("_time") is None or r["_time"] <= t)), None)
+            if row is None:
+                continue
+            done.add(id(row))
+            ttfb = round((t - row["_time"]) * 1000, 3) if t is not None and row.get("_time") is not None else None
+            if row.get("unanswered"):
+                row.update({"status": to_int(code), "reason": _nth(phrases, i) if len(phrases) == len(codes) else None,
+                            "response_frame": frame, "ttfb_ms": ttfb, "response_decoded_from": "first_segment",
+                            "unanswered": None})
+                paired += 1
+            elif row.get("ttfb_ms") is None:
+                row["ttfb_ms"] = ttfb
+    return paired
 
 
 def finish(rows: list[dict[str, Any]], capture_end: Callable[[], float | None]) -> list[dict[str, Any]]:
@@ -315,6 +412,8 @@ def endpoints(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for (host, method, path), rs in groups.items():
         times = sorted(r["response_ms"] for r in rs if r.get("response_ms") is not None)
+        ttfb = sorted(r["ttfb_ms"] if r.get("ttfb_ms") is not None else r["response_ms"]
+                      for r in rs if r.get("response_ms") is not None or r.get("ttfb_ms") is not None)
         sizes = sorted(r["response_bytes"] for r in rs if r.get("response_bytes") is not None)
         classes = Counter(status_class(r.get("status")) for r in rs if not r.get("unanswered"))
         slowest = max((r for r in rs if r.get("response_ms") is not None), key=lambda r: r["response_ms"], default=None)
@@ -326,6 +425,7 @@ def endpoints(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "unanswered": sum(1 for r in rs if r.get("unanswered")) or None,
             "response_ms": compact({"p50": _pct(times, 50), "p90": _pct(times, 90), "p99": _pct(times, 99),
                                     "max": round(times[-1], 3) if times else None}) or None,
+            "ttfb_ms": compact({"p50": _pct(ttfb, 50), "p99": _pct(ttfb, 99)}) or None,
             "response_bytes": compact({"p50": _pct([float(s) for s in sizes], 50), "max": sizes[-1] if sizes else None})
             or None,
             "grpc_status": dict(grpc.most_common()) or None,
@@ -347,8 +447,15 @@ def summary(rows: list[dict[str, Any]], eps: list[dict[str, Any]], undissected: 
             by = ", ".join(e.get("servers") or [])
             issues.append(f"{round(100 * bad / answered)}% of {label} answered 5xx ({bad} of {answered}) by {by}")
         p99 = (e.get("response_ms") or {}).get("p99")
-        if p99 is not None and p99 >= SLOW_P99_MS:
-            issues.append(f"p99 response {round(p99 / 1000, 2)} s on {label} (slowest frame {e.get('slowest_frame')})")
+        first = (e.get("ttfb_ms") or {}).get("p99")
+        if first is not None and first >= SLOW_P99_MS:
+            # The server itself is slow: time to the first response byte.
+            issues.append(f"p99 response {round(first / 1000, 2)} s to the first byte on {label} "
+                          f"(slowest frame {e.get('slowest_frame')})")
+        elif p99 is not None and p99 >= SLOW_P99_MS:
+            issues.append(f"p99 transfer {round(p99 / 1000, 2)} s on {label}, but the first byte came within "
+                          f"{round(first or 0)} ms: the time goes to moving the body (size, a small window, loss or "
+                          f"a slow reader), not to the server (slowest frame {e.get('slowest_frame')})")
         if e.get("unanswered"):
             issues.append(f"{e['unanswered']} {label} request{'s' if e['unanswered'] != 1 else ''} got no response "
                           "in the capture")
