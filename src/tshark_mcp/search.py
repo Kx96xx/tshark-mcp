@@ -113,6 +113,23 @@ def list_captures(directory: Path) -> list[Path]:
     return out
 
 
+def subdirectories_with_captures(directory: Path, limit: int = 20) -> list[str]:
+    """Names of the subdirectories directly inside ``directory`` that hold capture files themselves
+    (one level, hidden ones skipped), sorted, at most ``limit``: find_identifier does not recurse."""
+    out = []
+    for entry in sorted(directory.iterdir(), key=lambda p: p.name):
+        if entry.name.startswith(".") or not entry.is_dir() or entry.is_symlink():
+            continue
+        try:
+            if list_captures(entry):
+                out.append(entry.name)
+        except OSError:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
 def summarise_hits(stdout: str, protocol_col: bool) -> dict[str, Any]:
     """Aggregate ``-T fields`` lines (time, frame[, protocol]) into one file row."""
     hits = 0
