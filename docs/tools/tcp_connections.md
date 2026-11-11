@@ -20,6 +20,8 @@ rst seen), ICMP errors with sender and frame; failed attempts first. `view="dest
 server address and port the attempts, success rate, counts per outcome, SYN retries, connect time
 p50/max, median duration, distinct clients, peak concurrent connections and `issues` (one client
 dropped while other clients connect, refusals, ICMP rejects with the sender, SYN-ACKs never
-acknowledged, SYN retries, a client opening 50 or more short connections: no keep-alive). `server`
+acknowledged, SYN retries, a client opening 50 or more short connections: no keep-alive, and
+`failed_then_connected_elsewhere`: failures followed within 1 s by the same client, or its address of
+the other family, connecting to another address on the same port: happy eyeballs). `server`
 and `client` take IP addresses, `port` the server port; the ICMP errors about a selected connection
 are kept

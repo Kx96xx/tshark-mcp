@@ -362,6 +362,7 @@ class TcpDestinationRow(TypedDict, total=False):
     handshake_incomplete: int
     one_sided: int
     seen_midway: int
+    failed_then_connected_elsewhere: int
     success_rate: float
     syn_retries: int
     connect_ms_p50: float

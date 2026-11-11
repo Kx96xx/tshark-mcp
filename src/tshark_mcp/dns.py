@@ -50,6 +50,7 @@ COPY_WINDOW = 0.05     # seconds: the same packet seen again this soon is a capt
 RETRY_WINDOW = 10.0    # seconds: a new query for the same name this soon after a failed one is a retry
 PARALLEL_WINDOW = 0.2  # seconds: queries this close together went out in parallel (to several resolvers), not as a retry
 SLOW_MS = 1000.0       # an answer slower than this is called slow
+MIN_PERCENTILE_ANSWERS = 10  # fewer answers say nothing about a server's 90th percentile
 END_GRACE = ANSWER_WINDOW_S  # seconds: a query this close to the end of the capture may simply have been cut off
 ISSUE_SHARE = 0.05     # unanswered or failed share that is worth an issue
 
@@ -269,6 +270,10 @@ def summarise(messages: list[dict[str, Any]], icmp: list[dict[str, Any]], name: 
             "addresses": tx.get("addresses")[:8] if answered and tx.get("addresses") else None,
             "cnames": tx.get("cnames")[:4] if answered and tx.get("cnames") else None,
             "rtt_ms": rtt,
+            # Sent again before the answer: the time from the last copy of the query is the server's own.
+            "rtt_after_resend_ms": (round((tx["response_time"] - tx["last_query_time"]) * 1000, 3)
+                                    if answered and tx["retransmissions"] and tx.get("last_query_time") is not None
+                                    else None),
             "retransmissions": tx["retransmissions"] or None,
             "retry_of": tx.get("retry_of"),
             "truncated_tc": True if tx.get("tc") else None,
@@ -303,13 +308,21 @@ def summarise(messages: list[dict[str, Any]], icmp: list[dict[str, Any]], name: 
         "duplicate_copies": copies,
         "icmp_errors": len(icmp),
     }
-    rtts = sorted((t["response_time"] - t["time"]) * 1000 for t in txs
-                  if t.get("response_time") is not None and t["time"] is not None)
+    rtts = sorted(_server_ms(t) for t in txs if _server_ms(t) is not None)
     if rtts:
         summary["rtt_ms"] = {"p50": _percentile(rtts, 50), "p90": _percentile(rtts, 90), "p99": _percentile(rtts, 99),
                              "max": round(rtts[-1], 3)}
     issues = _issues(summary, servers, names, txs, slow_ms)
     return {"transactions": rows, "servers": servers, "names": names, "summary": compact(summary), "issues": issues}
+
+
+def _server_ms(tx: dict[str, Any]) -> float | None:
+    """The server's answer time: from the last copy of the query (a query sent again after a loss
+    measures the loss, not the server, from its first copy)."""
+    if tx.get("response_time") is None:
+        return None
+    start = tx.get("last_query_time") if tx.get("last_query_time") is not None else tx["time"]
+    return (tx["response_time"] - start) * 1000 if start is not None else None
 
 
 def _per_server(txs: list[dict[str, Any]], icmp: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -319,8 +332,7 @@ def _per_server(txs: list[dict[str, Any]], icmp: list[dict[str, Any]]) -> list[d
     icmp_by_server = Counter(e["server"] for e in icmp if e.get("server"))
     out = []
     for server, group in groups.items():
-        rtts = sorted((t["response_time"] - t["time"]) * 1000 for t in group
-                      if t.get("response_time") is not None and t["time"] is not None)
+        rtts = sorted(_server_ms(t) for t in group if _server_ms(t) is not None)
         answered = sum(1 for t in group if t.get("response_time") is not None)
         row = {
             "server": server, "queries": len(group), "answered": answered, "unanswered": len(group) - answered,
@@ -377,8 +389,21 @@ def _issues(summary: dict[str, Any], servers: list[dict[str, Any]], names: list[
         if s.get("icmp_errors"):
             issues.append(f"{s['icmp_errors']} ICMP errors came back for queries to {s['server']} (port unreachable or filtered)")
         p90 = (s.get("rtt_ms") or {}).get("p90")
-        if p90 is not None and p90 > slow_ms:
+        if p90 is not None and p90 > slow_ms and s.get("answered", 0) >= MIN_PERCENTILE_ANSWERS:
             issues.append(f"{s['server']} is slow: 90% of answers within {p90} ms")
+        elif s.get("answered", 0) < MIN_PERCENTILE_ANSWERS:
+            slow = [t for t in txs if t["server"] == s["server"] and (_server_ms(t) or 0) > slow_ms]
+            if slow:
+                issues.append(f"{s['server']} took more than {round(slow_ms)} ms on {len(slow)} of {s['answered']} "
+                              f"answers (frame {slow[0]['frame']}); too few answers for a percentile")
+    for t in txs:
+        if t.get("retransmissions") and t.get("response_time") is not None and t["time"] is not None:
+            lost_s = (t["last_query_time"] - t["time"])
+            after = _server_ms(t)
+            if lost_s * 1000 > slow_ms and after is not None and after <= slow_ms:
+                issues.append(f"the query at frame {t['frame']} ({t['name']}) was sent again {round(lost_s, 3)} s later "
+                              f"and answered {round(after, 3)} ms after the resend: the first query or its answer was "
+                              "lost, the server is not slow")
     failed = Counter(rcode_name(t["rcode"]) for t in txs if t.get("rcode") not in (None, 0))
     for rc, n in failed.most_common():
         sample = sorted({t["name"] for t in txs if rcode_name(t.get("rcode")) == rc})[:3]

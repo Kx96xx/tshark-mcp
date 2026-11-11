@@ -2956,6 +2956,38 @@ def write_sbi_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# --------------------------------------------------------------------------- small samples
+RESOLVER = "192.0.2.53"
+
+
+def write_dns_lost_query_pcap(path: Path, slow_answers: int = 0, answers: int = 5) -> Path:
+    """``answers`` DNS queries from 198.51.100.53 to RESOLVER. The first is lost and sent again unchanged 5 s
+    later, then answered 6 ms after the resend; the others are answered in 70 to 400 ms, except the last
+    ``slow_answers``, answered after 1.5 s."""
+    from scapy.all import DNS, DNSQR  # type: ignore
+
+    t0 = 1_700_003_600.0
+    client = "198.51.100.53"
+    frames: list[tuple[float, bytes]] = []
+
+    def q(t: float, qid: int, name: str, port: int) -> None:
+        frames.append((t, _udp_frame(client, RESOLVER, port, 53, bytes(DNS(id=qid, rd=1, qd=DNSQR(qname=name))))))
+
+    def a(t: float, qid: int, name: str, port: int) -> None:
+        frames.append((t, _udp_frame(RESOLVER, client, 53, port, bytes(DNS(id=qid, qr=1, ra=1, qd=DNSQR(qname=name))))))
+
+    q(t0, 1, "lost.example.com", 40001)
+    q(t0 + 5.0, 1, "lost.example.com", 40001)
+    a(t0 + 5.006, 1, "lost.example.com", 40001)
+    for i in range(1, answers):
+        t = t0 + 6.0 + i
+        q(t, 100 + i, f"n{i}.example.com", 40001 + i)
+        delay = 1.5 if i >= answers - slow_answers else 0.07 + 0.08 * (i % 5)
+        a(t + delay, 100 + i, f"n{i}.example.com", 40001 + i)
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 # ----------------------------------------------------------------- 5G SA: NGAP, NAS-5GS, PFCP, N3 (fiveg_session)
 class PerBits:
     """A tiny ALIGNED PER (X.691) writer for the handful of NGAP IEs the 5G tests need."""
@@ -3317,6 +3349,35 @@ def write_sctp_init_collision_pcap(path: Path) -> Path:
     a2b(t + 0.0011, init_ack(a_tag), b_tag)
     a2b(t + 0.002, SCTPChunkCookieEcho(cookie=b"\x02" * 16), b_tag)
     b2a(t + 0.003, SCTPChunkCookieAck(), a_tag)
+    return _frames_to_pcap(path, frames)
+
+
+def write_happy_eyeballs_pcap(path: Path) -> Path:
+    """A dual-stack client: its IPv6 SYN to [2001:db8::443]:443 is refused with a reset, and 0.3 ms later its
+    IPv4 connection to 198.51.100.43:443 completes. Then a port scan: SYNs to two closed ports refused."""
+    from scapy.all import TCP, IPv6  # type: ignore
+
+    t0 = 1_700_003_700.0
+    c6, s6, c4, s4 = "2001:db8::10", "2001:db8::443", "192.0.2.10", "198.51.100.43"
+    frames: list[tuple[float, bytes]] = []
+
+    def v6(t: float, src: str, dst: str, sport: int, dport: int, flags: str, seq: int, ack: int = 0) -> None:
+        frames.append((t, bytes(Ether(src=MAC_A, dst=MAC_B) / IPv6(src=src, dst=dst)
+                                / TCP(sport=sport, dport=dport, flags=flags, seq=seq, ack=ack))))
+
+    def v4(t: float, src: str, dst: str, sport: int, dport: int, flags: str, seq: int, ack: int = 0, ident: int = 1) -> None:
+        frames.append((t, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=src, dst=dst, id=ident, flags="DF")
+                                / TCP(sport=sport, dport=dport, flags=flags, seq=seq, ack=ack))))
+
+    v6(t0, c6, s6, 50001, 443, "S", 100)
+    v6(t0 + 0.0001, s6, c6, 443, 50001, "RA", 0, 101)
+    v4(t0 + 0.0004, c4, s4, 50002, 443, "S", 500, ident=11)
+    v4(t0 + 0.0010, s4, c4, 443, 50002, "SA", 900, 501, ident=21)
+    v4(t0 + 0.0011, c4, s4, 50002, 443, "A", 501, 901, ident=12)
+    for i, port in enumerate((445, 3389)):
+        v4(t0 + 1 + i, c4, "198.51.100.44", 50100 + i, port, "S", 1000 + i, ident=30 + i)
+        v4(t0 + 1 + i + 0.0002, "198.51.100.44", c4, port, 50100 + i, "RA", 0, 1001 + i, ident=40 + i)
+    v4(t0 + 10, c4, s4, 50002, 443, "A", 501, 901, ident=13)
     return _frames_to_pcap(path, frames)
 
 
