@@ -1863,6 +1863,9 @@ class SctpAssociationRow(TypedDict, total=False):
     abort_seen: bool
     shutdown_seen: bool
     chunk_counts: dict[str, int]
+    inits_aborted: int
+    init_collision: bool
+    issues: list[str]
     first: str
     last: str
     first_frame: int
@@ -1876,6 +1879,7 @@ class SctpAssociationsResult(RowsResult, total=False):
 
 class MapComponent(TypedDict, total=False):
     __pydantic_config__ = _EXTRA_OK
+    application: str
     type: str
     invoke_id: int
     opcode: int

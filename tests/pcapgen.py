@@ -2743,7 +2743,6 @@ def write_gm_esp_null_pcap(path: Path, clear_challenge: bool = True) -> Path:
     return _frames_to_pcap(path, frames)
 
 
-
 # --------------------------------------------------------------------------- IKEv2 and Teredo
 def _ikev2_notify(ispi: bytes, rspi: bytes, exchange: int, response: bool, msgid: int, notify: int | None = None) -> bytes:
     """An IKEv2 message (RFC 7296 3.1): the header and, with ``notify``, one Notify payload (3.10)."""
@@ -3119,7 +3118,6 @@ def nas5g_pdu_accept(psi: int, dnn: str) -> bytes:
     return nas5g_sm(0xC2, psi, body + bytes([0x25, len(labels)]) + labels)
 
 
-
 def pfcp_msg(msg_type: int, seid: int, seq: int, ies: list[bytes]) -> bytes:
     """A PFCP message with a SEID (TS 29.244 7.2.2.4.1): version 1, S flag set."""
     body = struct.pack("!Q", seid) + struct.pack("!I", seq << 8) + b"".join(ies)
@@ -3254,6 +3252,71 @@ def write_ussd_pcap(path: Path) -> Path:
     begin = _tcap_begin(b"\x00\x00\x00\x09", _invoke(1, 59, arg))
     frames = [(t0, _sctp_data(STP_A, STP_B, 2905, 2905, 0x3333, 900, 3,
                               _m3ua_data(100, 200, _sccp_udt(_sccp_gt(hlr_gt, 6), _sccp_gt(vlr_gt, 7), begin))))]
+    return _frames_to_pcap(path, frames)
+
+
+# --------------------------------------------------------------------------- CAMEL and SCTP INIT
+def write_camel_pcap(path: Path) -> Path:
+    """A CAP call from an MSC/gsmSSF to a gsmSCF (SSN 146, TS 29.078): Begin with initialDP (opcode 0),
+    Continue with requestReportBCSMEvent (23) + continue (31), Continue with eventReportBCSM (24), End
+    with releaseCall (22)."""
+    t0 = 1_700_003_400.0
+    ssf, scf = "15550109021", "15550109022"
+    frames: list[tuple[float, bytes]] = []
+    tsn = 1000
+
+    def send(ts: float, src: str, dst: str, called: str, calling: str, tcap: bytes) -> None:
+        nonlocal tsn
+        frames.append((ts, _sctp_data(src, dst, 2905, 2905, 0x5555, tsn, 3,
+                                      _m3ua_data(100, 400, _sccp_udt(_sccp_gt(called, 146), _sccp_gt(calling, 146), tcap)))))
+        tsn += 1
+
+    def cont(otid: bytes, dtid: bytes, comps: bytes) -> bytes:
+        return _ber(0x65, _ber(0x48, otid) + _ber(0x49, dtid) + _ber(0x6C, comps))
+
+    idp = _ber(0x30, _ber(0x80, b"\x64"))  # InitialDPArg: serviceKey 100
+    rrb = _ber(0x30, _ber(0xA0, _ber(0x30, _ber(0x80, b"\x07") + _ber(0x81, b"\x00"))))  # oAnswer, interrupted
+    erb = _ber(0x30, _ber(0x80, b"\x07"))  # eventTypeBCSM oAnswer
+    rel = _ber(0x04, b"\x80\x90")  # releaseCall: Cause normal call clearing
+    ssf_tid, scf_tid = b"\x00\x00\x01\x01", b"\x00\x00\x02\x02"
+    send(t0, STP_A, STP_B, scf, ssf, _tcap_begin(ssf_tid, _invoke(1, 0, idp)))
+    send(t0 + 0.05, STP_B, STP_A, ssf, scf, cont(scf_tid, ssf_tid, _invoke(1, 23, rrb) + _ber(0xA1, _ber(0x02, b"\x02")
+                                                                                      + _ber(0x02, b"\x1f"))))
+    send(t0 + 5.0, STP_A, STP_B, scf, ssf, cont(ssf_tid, scf_tid, _invoke(2, 24, erb)))
+    send(t0 + 5.05, STP_B, STP_A, ssf, scf, _tcap_end(ssf_tid, _invoke(3, 22, rel)))
+    return _frames_to_pcap(path, frames)
+
+
+def write_sctp_init_collision_pcap(path: Path) -> Path:
+    """An endpoint sends INIT three times and each is answered with ABORT, then both ends send INIT at once
+    (an INIT collision) and the association comes up: INIT_ACK both ways, COOKIE_ECHO, COOKIE_ACK."""
+    t0 = 1_700_003_500.0
+    frames: list[tuple[float, bytes]] = []
+    a_tag, b_tag = 0xAAAA0101, 0xBBBB0202
+
+    def a2b(ts: float, chunk, tag: int) -> None:
+        frames.append((ts, bytes(Ether(src=MAC_A, dst=MAC_B) / IP(src=STP_A, dst=STP_B) / SCTP(sport=2905, dport=2905, tag=tag) / chunk)))
+
+    def b2a(ts: float, chunk, tag: int) -> None:
+        frames.append((ts, bytes(Ether(src=MAC_B, dst=MAC_A) / IP(src=STP_B, dst=STP_A) / SCTP(sport=2905, dport=2905, tag=tag) / chunk)))
+
+    def init(tag: int):
+        return SCTPChunkInit(init_tag=tag, a_rwnd=65535, n_out_streams=2, n_in_streams=2, init_tsn=1)
+
+    def init_ack(tag: int):
+        return SCTPChunkInitAck(init_tag=tag, a_rwnd=65535, n_out_streams=2, n_in_streams=2, init_tsn=1,
+                                params=[SCTPChunkParamStateCookie(cookie=b"\x02" * 16)])
+
+    for i in range(3):
+        a2b(t0 + i * 0.5, init(a_tag + i), 0)
+        b2a(t0 + i * 0.5 + 0.001, SCTPChunkAbort(), a_tag + i)
+    t = t0 + 2.0
+    a2b(t, init(a_tag), 0)
+    b2a(t + 0.0001, init(b_tag), 0)
+    b2a(t + 0.001, init_ack(b_tag), a_tag)
+    a2b(t + 0.0011, init_ack(a_tag), b_tag)
+    a2b(t + 0.002, SCTPChunkCookieEcho(cookie=b"\x02" * 16), b_tag)
+    b2a(t + 0.003, SCTPChunkCookieAck(), a_tag)
     return _frames_to_pcap(path, frames)
 
 
