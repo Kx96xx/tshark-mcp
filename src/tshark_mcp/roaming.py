@@ -33,6 +33,7 @@ REFS = {
     "diameter": causes.TABLES["diameter"].ref,
     "s6a": f'{causes.APPLICATIONS["s6a"]} (S6a/S6d result codes)',
     "gx": f'{causes.APPLICATIONS["gx"]} (Gx result codes)',
+    "gy": f'{causes.APPLICATIONS["gy"]} (Gy/Ro result codes)',
     "gtpv2": causes.TABLES["gtpv2"].ref,
     "pfcp": causes.TABLES["pfcp"].ref,
     "map": causes.TABLES["map"].ref,
