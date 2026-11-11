@@ -1050,6 +1050,158 @@ def write_ims_register_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# Reg event (RFC 3680): SUBSCRIBE/NOTIFY with Event: reg and application/reginfo+xml.
+REG_NET_DEREG = "001010000000111"   # registered, then NOTIFY terminated/deactivated
+REG_SHORTENED = "001010000000112"   # registered for 3600 s, NOTIFY shortened to 30 s, never refreshed
+REG_REJECTED = "001010000000113"    # NOTIFY terminated/rejected, answered 481 by the UE
+REG_NET_EXPIRED = "001010000000114"  # NOTIFY terminated/expired
+REG_NOTIFY_ONLY = "001010000000115"  # no REGISTER in the capture: NOTIFY active/registered
+REG_PROBATION = "001010000000116"   # no REGISTER: NOTIFY active, then terminated/probation retry-after 60
+REG_REREG = "001010000000117"       # NOTIFY deactivated, then the UE registers again
+REG_UE_DEREG = "001010000000118"    # the UE de-registers; NOTIFY terminated/unregistered confirms it
+REG_SUB_403 = "001010000000119"     # the UE's SUBSCRIBE to reg is refused; a NOTIFY with a DTD is ignored
+REG_MSISDN = "15550100115"          # REG_NOTIFY_ONLY's tel URI
+REG_UES = {imsi: f"198.51.100.{80 + i}" for i, imsi in enumerate(
+    (REG_NET_DEREG, REG_SHORTENED, REG_REJECTED, REG_NET_EXPIRED, REG_NOTIFY_ONLY, REG_PROBATION, REG_REREG,
+     REG_UE_DEREG, REG_SUB_403))}
+
+
+def reginfo_xml(aors: list[str], contact: str, *, state: str = "active", event: str = "registered",
+                expires: int | None = 3600, version: int = 0, reg_state: str | None = None,
+                retry_after: int | None = None) -> str:
+    """A reginfo document naming every AoR in ``aors`` with one contact."""
+    attrs = f' expires="{expires}"' if expires is not None else ""
+    attrs += f' retry-after="{retry_after}"' if retry_after is not None else ""
+    regs = "".join(
+        f'<registration aor="{aor}" id="r{i}" state="{reg_state or state}">'
+        f'<contact id="c1" state="{state}" event="{event}"{attrs}><uri>{contact}</uri></contact></registration>'
+        for i, aor in enumerate(aors))
+    return (f'<?xml version="1.0" encoding="UTF-8"?><reginfo xmlns="urn:ietf:params:xml:ns:reginfo" '
+            f'version="{version}" state="full">{regs}</reginfo>')
+
+
+def _reg_dialog(imsi: str, method: str, cseq: int, *, ue: str, call_id: str, body: str = "",
+                sub_state: str = "active;expires=3600", event: str = "reg", ctype: str = "application/reginfo+xml",
+                frm: str | None = None) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    if method == "SUBSCRIBE":
+        lines = [f"SUBSCRIBE {impu} SIP/2.0", f"Via: SIP/2.0/UDP {ue}:5060;branch=z9hG4bKs{cseq}",
+                 f"From: <{frm or impu}>;tag=u{cseq}", f"To: <{impu}>", f"Call-ID: {call_id}", f"CSeq: {cseq} SUBSCRIBE",
+                 f"Event: {event}", "Expires: 600000", f"Contact: <sip:{ue}:5060>", "Max-Forwards: 70"]
+        return _sip(lines)
+    lines = [f"NOTIFY sip:{ue}:5060 SIP/2.0", f"Via: SIP/2.0/UDP {SCSCF_IP}:5060;branch=z9hG4bKn{cseq}",
+             f"From: <{impu}>;tag=n1", f"To: <{frm or impu}>;tag=u1", f"Call-ID: {call_id}", f"CSeq: {cseq} NOTIFY",
+             f"Event: {event}", f"Subscription-State: {sub_state}", f"Contact: <sip:scscf.{IMS_DOMAIN}>",
+             f"Content-Type: {ctype}", "Max-Forwards: 70"]
+    return _sip(lines, body)
+
+
+def _reg_dialog_response(imsi: str, method: str, cseq: int, code: int, reason: str, *, call_id: str,
+                         extra: list[str] | None = None) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return _sip([f"SIP/2.0 {code} {reason}", "Via: SIP/2.0/UDP 192.0.2.50:5060;branch=z9hG4bKr",
+                 f"From: <{impu}>;tag=n1", f"To: <{impu}>;tag=u1", f"Call-ID: {call_id}", f"CSeq: {cseq} {method}",
+                 *(extra or [])])
+
+
+def write_ims_reg_event_pcap(path: Path) -> Path:
+    """Reg-event SUBSCRIBE/NOTIFY for nine test subscribers (the ``REG_*`` IMSIs), next
+    to their REGISTERs where they have one. NOTIFYs travel S-CSCF to P-CSCF to UE (two
+    legs, one transaction). The capture runs to t0+400 s."""
+    t0 = 1_700_040_000.0
+    frames: list[tuple[float, bytes]] = []
+    p, s = PCSCF_IP, SCSCF_IP
+
+    def add(dt: float, src: str, dst: str, msg: bytes) -> None:
+        frames.append((t0 + dt, _udp_frame(src, dst, 5060, 5060, msg)))
+
+    def register(imsi: str, at: float, cseq: int = 1, expires: int = 600000, granted: int = 3600) -> None:
+        ue = REG_UES[imsi]
+        add(at, ue, p, _register(imsi, cseq, expires, response="aa", ue=ue))
+        contact = [f"Contact: <sip:{ue}:5060>;expires={granted}"] if expires else [f"Contact: <sip:{ue}:5060>;expires=0"]
+        add(at + 0.05, p, ue, _reg_response(imsi, cseq, 200, "OK", contact + [
+            f"P-Associated-URI: <sip:{imsi}@{IMS_DOMAIN}>"], ue=ue))
+
+    def notify(imsi: str, at: float, cseq: int, body: str, *, answer: int = 200, legs: int = 2,
+               sub_state: str = "active;expires=3600", ctype: str = "application/reginfo+xml") -> None:
+        ue, cid = REG_UES[imsi], f"sub-{imsi[-3:]}@ue.example"
+        msg = _reg_dialog(imsi, "NOTIFY", cseq, ue=ue, call_id=cid, body=body, sub_state=sub_state, ctype=ctype)
+        if legs == 2:
+            add(at, s, p, msg)
+        add(at + 0.01, p, ue, msg)
+        reason = {200: "OK", 481: "Call/Transaction Does Not Exist"}[answer]
+        add(at + 0.05, ue, p, _reg_dialog_response(imsi, "NOTIFY", cseq, answer, reason, call_id=cid))
+
+    def subscribe(imsi: str, at: float, answer: int = 200) -> None:
+        ue, cid = REG_UES[imsi], f"sub-{imsi[-3:]}@ue.example"
+        add(at, ue, p, _reg_dialog(imsi, "SUBSCRIBE", 1, ue=ue, call_id=cid))
+        reason = {200: "OK", 403: "Forbidden"}[answer]
+        add(at + 0.02, p, ue, _reg_dialog_response(imsi, "SUBSCRIBE", 1, answer, reason, call_id=cid,
+                                                   extra=["Expires: 3600"] if answer == 200 else []))
+
+    def aors(imsi: str) -> list[str]:
+        return [f"sip:{imsi}@{IMS_DOMAIN}"]
+
+    def contact(imsi: str) -> str:
+        return f"sip:{REG_UES[imsi]}:5060"
+
+    # 1. Network-initiated de-registration (deactivated).
+    imsi = REG_NET_DEREG
+    register(imsi, 0.0)
+    subscribe(imsi, 1.0)
+    notify(imsi, 1.2, 1, reginfo_xml(aors(imsi), contact(imsi), version=0))
+    notify(imsi, 100.0, 2, reginfo_xml(aors(imsi), contact(imsi), state="terminated", event="deactivated",
+                                       expires=None, version=1), sub_state="active;expires=3500")
+    # 2. Shortened to 30 s at t=20 and never refreshed.
+    imsi = REG_SHORTENED
+    register(imsi, 2.0)
+    notify(imsi, 20.0, 1, reginfo_xml(aors(imsi), contact(imsi), event="shortened", expires=30))
+    # 3. Rejected; the UE answers the NOTIFY 481.
+    imsi = REG_REJECTED
+    register(imsi, 3.0)
+    notify(imsi, 30.0, 1, reginfo_xml(aors(imsi), contact(imsi), state="terminated", event="rejected", expires=None),
+           answer=481, sub_state="terminated;reason=rejected")
+    # 4. Expired at the S-CSCF.
+    imsi = REG_NET_EXPIRED
+    register(imsi, 4.0)
+    notify(imsi, 40.0, 1, reginfo_xml(aors(imsi), contact(imsi), state="terminated", event="expired", expires=0))
+    # 5. Only a NOTIFY: registered before the capture began (IMSI IMPU and tel URI).
+    imsi = REG_NOTIFY_ONLY
+    notify(imsi, 10.0, 5, reginfo_xml([f"sip:{imsi}@{IMS_DOMAIN}", f"tel:+{REG_MSISDN}"], contact(imsi),
+                                      event="refreshed", expires=3000, version=4))
+    # 6. Only NOTIFYs: active, then probation with retry-after.
+    imsi = REG_PROBATION
+    notify(imsi, 11.0, 1, reginfo_xml(aors(imsi), contact(imsi), expires=2000))
+    notify(imsi, 60.0, 2, reginfo_xml(aors(imsi), contact(imsi), state="terminated", event="probation",
+                                      expires=None, retry_after=60, version=1))
+    # 7. Deactivated, then a fresh registration.
+    imsi = REG_REREG
+    register(imsi, 5.0)
+    notify(imsi, 50.0, 1, reginfo_xml(aors(imsi), contact(imsi), state="terminated", event="deactivated",
+                                      expires=None))
+    register(imsi, 60.0, cseq=2)
+    # 8. The UE de-registers itself; the network confirms with unregistered.
+    imsi = REG_UE_DEREG
+    register(imsi, 6.0)
+    register(imsi, 70.0, cseq=2, expires=0)
+    notify(imsi, 70.2, 1, reginfo_xml(aors(imsi), contact(imsi), state="terminated", event="unregistered",
+                                      expires=0), legs=1)
+    # 9. The UE's SUBSCRIBE is refused; a NOTIFY whose body declares entities is not parsed.
+    imsi = REG_SUB_403
+    register(imsi, 7.0)
+    subscribe(imsi, 8.0, answer=403)
+    hostile = ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x "terminated">]>'
+               '<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="0" state="full">'
+               f'<registration aor="sip:{imsi}@{IMS_DOMAIN}" id="r" state="&x;"/></reginfo>')
+    notify(imsi, 9.0, 1, hostile, legs=1)
+    # A presence NOTIFY for the same user is not a reg event.
+    add(12.0, s, p, _reg_dialog(REG_NET_DEREG, "NOTIFY", 9, ue=REG_UES[REG_NET_DEREG], call_id="pres-1@ue.example",
+                                event="presence", ctype="application/pidf+xml", body="<presence/>"))
+    add(400.0, SERVER_IP, p, b"keepalive")
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 SMS_A = "001010000000201"           # registered with +g.3gpp.smsip
 SMS_B = "001010000000202"           # registered without it
 SMS_A_MSISDN = "15550100201"
@@ -1218,7 +1370,8 @@ def write_ims_pcaps(directory: Path) -> dict[str, Path]:
     """The IMS captures, in their own directory like the voice ones."""
     directory.mkdir(parents=True, exist_ok=True)
     return {"ims_register": write_ims_register_pcap(directory / "ims_register.pcap"),
-            "ims_sms": write_ims_sms_pcap(directory / "ims_sms.pcap")}
+            "ims_sms": write_ims_sms_pcap(directory / "ims_sms.pcap"),
+            "ims_reg_event": write_ims_reg_event_pcap(directory / "ims_reg_event.pcap")}
 
 
 def write_voice_pcaps(directory: Path) -> dict[str, Path]:

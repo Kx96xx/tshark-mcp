@@ -1959,7 +1959,8 @@ def ims_registration(path: str, impu: str | None = None, imsi: str | None = None
         for r in rows:
             by_verdict[r["verdict"]] = by_verdict.get(r["verdict"], 0) + 1
         summary = {"users": len(rows), "by_verdict": by_verdict,
-                   "third_party_registers": sum(len(r.get("third_party") or []) for r in rows)}
+                   "third_party_registers": sum(len(r.get("third_party") or []) for r in rows),
+                   "reg_event_notifications": sum((r.get("counts") or {}).get("reg_notifications", 0) for r in rows)}
         extra: dict[str, Any] = {"summary": summary}
         if end is not None:
             extra["capture_end"] = iso(end)
