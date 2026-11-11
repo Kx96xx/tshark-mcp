@@ -5,7 +5,8 @@ llms: when a transfer slowed down and why: per interval bytes, bps, TCP goodput 
 ---
 
 One `-T fields` pass, computed in the server, copies dropped first (same IP ID, sequence, length and
-ACK within 1 s). `intervals[]` every `interval` seconds (default 1, at most 10,000 intervals):
+ACK within 1 s). `intervals[]` every `interval` seconds (at most 10,000 intervals; without `interval`, 1 s or the
+smallest of 2, 5, 10, 30 s, 1, 5, 10, 30 min, 1, 6 h and 1 day that fits, with `interval_auto`):
 `packets`, `bytes`, `bps`, `goodput_bps` (TCP bytes newly acknowledged, from `tcp.ack_raw`),
 `acked_bytes`, `retransmitted_bytes` (segments ending at or before the highest sequence already
 sent), `zero_windows`, `window_full`, `duplicate_acks`, `syns`, `syns_unanswered`, `dns_queries`,

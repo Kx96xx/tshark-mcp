@@ -265,7 +265,7 @@
     },
     {
       "name": "throughput_timeline",
-      "description": "When did the transfer slow down, and was it loss, the receiver window, the sender or an idle application? `intervals` (every `interval` seconds, default 1): packets, bytes, `bps`, TCP `goodput_bps` (new bytes acknowledged, copies and retransmissions not counted), retransmitted bytes, zero ..."
+      "description": "When did the transfer slow down, and was it loss, the receiver window, the sender or an idle application? `intervals` (every `interval` seconds, default auto): packets, bytes, `bps`, TCP `goodput_bps` (new bytes acknowledged, copies and retransmissions not counted), retransmitted bytes, zero ..."
     },
     {
       "name": "export_subset",

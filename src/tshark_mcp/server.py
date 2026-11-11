@@ -1850,9 +1850,9 @@ def cause_lookup(protocol: str, code: str | int | None = None, application: str 
     """What a telecom cause or result code means, with the spec reference to quote in a
     ticket. No capture is read. `protocol` is one of diameter, gtpv2, gtpv1, pfcp,
     nas_emm, nas_esm, nas_5gmm, nas_5gsm, s1ap, ngap, sip, q850, isup, camel_release,
-    map, tcap_abort, sccp_return, sgsap, rp, cp, tp_status, http_sbi. `code` is the
-    number (78, "0x4e"); for s1ap and ngap a group and value ("radioNetwork:21",
-    "nas:2"); for http_sbi a ProblemDetails cause ("USER_NOT_FOUND"). For Diameter,
+    map, tcap_abort, sccp_return, sgsap, rp, cp, tp_status, http_sbi, dns, tls, icmp,
+    icmpv6, http, nas. `code`: 78, "0x4e"; s1ap/ngap
+    "radioNetwork:21"; icmp "3:13"; http_sbi a cause ("USER_NOT_FOUND"). For Diameter,
     `application` (s6a, s13, gx, gy, rx, cx, sh, swx, s6b, s6c, sgd, t6a, or base)
     picks the Experimental-Result-Code meaning: 5001 or 5004 differ between the base
     Result-Code and an application. `message` (a SIP method such as REGISTER or INVITE)
@@ -3685,7 +3685,8 @@ def rtp_streams(path: str, call_id: str | None = None, ssrc: str | int | None = 
 
 
 @_tool(title="Find identifier across captures", annotations=READ_ONLY)
-def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: int = 20, offset: int = 0) -> models.FindIdentifierResult:
+def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: int | None = None,
+                    offset: int = 0) -> models.FindIdentifierResult:
     """Find which capture files mention an identifier. `path` is one capture or a
     directory inside the allowed roots (its .pcap/.pcapng/.cap files are scanned, not
     subdirectories). `identifier` is an IMSI, MSISDN, IPv4/IPv6 address, SIP Call-ID or
@@ -3702,11 +3703,13 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
         resolved_kind, flt = search.build_filter(identifier, kind)
         flt = lint_display_filter(flt)
         st.runner.validate_display_filter(flt)
-        file_cap = clamp_limit(max_files, st.limits.max_files, min(20, st.limits.max_files))
+        file_cap = clamp_limit(max_files, st.limits.max_files, st.limits.max_files)
 
         target = st.allowlist.resolve_inside(path)
+        subdirs: list[str] = []
         if target.is_dir():
             candidates = search.list_captures(target)
+            subdirs = search.subdirectories_with_captures(target)
         else:
             candidates = [target]
         # Paging is over the directory listing (sorted by name): offset skips files.
@@ -3789,6 +3792,10 @@ def find_identifier(path: str, identifier: str, kind: str = "auto", max_files: i
             truncated_reason = f"offset {start} is past the last file ({files_found} found)"
         if outside:
             out["files_outside_window"] = outside
+        if subdirs:
+            out["subdirectories_with_captures"] = subdirs
+            out["note"] = (f"subdirectories are not searched; {len(subdirs)} of them hold captures: call find_identifier "
+                           "on each (path=<directory>/<name>)")
         if partial:
             out["partially_scanned"] = partial
             note = (f"{len(partial)} file(s) without hits were only read up to the frame cap of "
@@ -4289,10 +4296,10 @@ def diff_captures(path_a: str, path_b: str, by: str = "all", filter: str | None 
 
 
 @_tool(title="Throughput timeline (when it slowed down and why)", annotations=READ_ONLY)
-def throughput_timeline(path: str, interval: float = 1.0, per: str = "total", top: int = 10, filter: str | None = None,
+def throughput_timeline(path: str, interval: float | None = None, per: str = "total", top: int = 10, filter: str | None = None,
                         limit: int = 200, offset: int = 0) -> models.ThroughputTimelineResult:
     """When did the transfer slow down, and was it loss, the receiver window, the sender or
-    an idle application? `intervals` (every `interval` seconds, default 1): packets, bytes,
+    an idle application? `intervals` (every `interval` seconds, default auto): packets, bytes,
     `bps`, TCP `goodput_bps` (new bytes acknowledged, copies and retransmissions not
     counted), retransmitted bytes, zero windows, window-full events, duplicate ACKs, SYNs
     and SYNs never answered, DNS queries, TLS ClientHellos, ICMP errors. `per`
@@ -4308,15 +4315,16 @@ def throughput_timeline(path: str, interval: float = 1.0, per: str = "total", to
     receiver-limited; no packet in at least half of the stream's life is application-idle;
     bytes in flight never above a quarter of the advertised window is sender-limited.
     Bursts: a counter at three times its usual rate per interval and at least 10. At most
-    10,000 intervals: raise `interval` or pass start/end. `intervals` pages with
+    10,000 intervals. `intervals` pages with
     limit/offset; `series` and `streams` are not paged."""
     def run() -> dict[str, Any]:
         capture = _resolve(path)
         st = state()
         if per not in throughput.PERS:
             raise ToolError("invalid_argument", f"per must be one of {', '.join(throughput.PERS)}, not {echo(per)}")
+        auto = interval is None or str(interval).strip() == ""
         try:
-            step = float(interval)
+            step = 1.0 if auto else float(interval)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             raise ToolError("invalid_argument", f"interval must be a number of seconds, got {echo(interval)}") from None
         if not (0.001 <= step <= 86_400):
@@ -4328,6 +4336,8 @@ def throughput_timeline(path: str, interval: float = 1.0, per: str = "total", to
         packets = throughput.parse(stdout)
         if packets:
             span = max(p["_t"] for p in packets) - min(p["_t"] for p in packets)
+            if auto:
+                step = throughput.auto_interval(span)
             if span / step + 1 > throughput.MAX_INTERVALS:
                 raise ToolError("invalid_argument", f"{round(span, 3)} s at interval={step} is more than "
                                 f"{throughput.MAX_INTERVALS} intervals; raise interval or pass start/end")
@@ -4335,6 +4345,7 @@ def throughput_timeline(path: str, interval: float = 1.0, per: str = "total", to
         if per == "total":
             out.pop("series")
         return _envelope("intervals", out["intervals"], cap, scan, offset=offset, interval_s=step, per=per,
+                         **({"interval_auto": True} if auto else {}),
                          **({"display_filter": flt} if flt else {}), summary=out["summary"],
                          **({"series": out["series"]} if "series" in out else {}), streams=out["streams"],
                          issues=out["issues"])
