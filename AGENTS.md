@@ -140,7 +140,8 @@ tools, `roaming_attach_check`, `compare_captures`, the SIP and RTP tools, `ims_r
 `diameter_peers`, `message_rates`), `voice` (`call_kpis`, `call_legs`, `volte_call_chain`,
 `dtmf_events`), `network` (`response_times`, `throughput_timeline`, `tls_certificates`,
 `quic_connections`, `tunnels_overview`, `diff_captures`, `export_subset`) or `all`. A tool outside
-the active toolsets is not listed but still answers a call by name. A prompt that names an
+the active toolsets is not listed but still answers a call by name; an `incident_summary`
+`next_call` to such a tool carries `toolset` (the name to add to `--toolsets`). A prompt that names an
 unlisted tool is not listed either (`slow_data_session` needs `mobile` and `network`). The map
 is `src/tshark_mcp/toolsets.py`; a tool module of `src/tshark_mcp/tools/` names its own with
 `TOOLSET = "<name>"`, and `tests/test_toolsets.py` fails for a tool without one.
