@@ -193,7 +193,7 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-<!-- tool-count -->Fifty-nine<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Sixty<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Only the default toolset (34 tools, about 60% of the
@@ -247,6 +247,7 @@ what it cost in `tokens_estimate`.
 | `response_times` | Network, server and receiver time per TCP flow (HTTP/1, HTTP/2, gRPC) |
 | `tcp_health` | Per-stream loss by location, resets with their likely source, windows, MTU black holes |
 | `tcp_connections` | Every connection attempt: connected, refused, filtered or ICMP-prohibited, who closed it; per destination success rate |
+| `security_triage` | Defensive triage: port scans, host sweeps, SYN floods, beaconing (RITA-style score with raw interval and size statistics), DNS tunnel hints, TLS clients by JA4/JA3 and servers by JA3S, ARP conflicts, cleartext credentials (counts only) |
 | `icmp_errors` | Every ICMP/ICMPv6 error by sender, kind and quoted flow: fragmentation needed, rejects, routing loops, lost pings |
 | `sip_dialogs` | Messages grouped by Call-ID with outcome after any challenge |
 | `sip_call_detail` | One call: timings, SDP, Reason headers, who hung up |

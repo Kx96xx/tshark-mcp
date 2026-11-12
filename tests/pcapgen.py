@@ -2956,6 +2956,106 @@ def write_sbi_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
+# ----------------------------------------------------------------- security triage (security_triage)
+TRIAGE_SCANNER = "203.0.113.66"
+TRIAGE_TARGET = "192.0.2.200"
+TRIAGE_CLIENT = "10.1.0.5"
+TRIAGE_BEACON = "203.0.113.77"
+TRIAGE_AGENT = "203.0.113.78"
+TRIAGE_FTP_PASS = "s3cr3t-pass-value"
+TRIAGE_BASIC = "dXNlcjpodW50ZXIy"     # user:hunter2
+
+
+def _tcp_pkt(src: str, dst: str, sport: int, dport: int, flags: str, seq: int = 1, ack: int = 0,
+             payload: bytes = b"", mac: str = MAC_A) -> bytes:
+    from scapy.all import TCP  # type: ignore
+    return bytes(Ether(src=mac, dst=MAC_B) / IP(src=src, dst=dst) / TCP(sport=sport, dport=dport, flags=flags, seq=seq,
+                                                                         ack=ack) / (Raw(payload) if payload else b""))
+
+
+def _tls_client_hello(sni: str, suites: tuple[int, ...]) -> bytes:
+    def u8(b: bytes) -> bytes:
+        return bytes([len(b)]) + b
+
+    def u16(b: bytes) -> bytes:
+        return struct.pack("!H", len(b)) + b
+    exts = (struct.pack("!H", 0) + u16(u16(b"\x00" + u16(sni.encode())))
+            + struct.pack("!H", 16) + u16(u16(u8(b"h2")))
+            + struct.pack("!H", 43) + u16(u8(struct.pack("!HH", 0x0304, 0x0303))))
+    body = (struct.pack("!H", 0x0303) + bytes(32) + u8(bytes(32)) + u16(b"".join(struct.pack("!H", x) for x in suites))
+            + b"\x01\x00" + u16(exts))
+    hs = b"\x01" + struct.pack("!I", len(body))[1:] + body
+    return struct.pack("!BHH", 22, 0x0301, len(hs)) + hs
+
+
+def write_triage_pcap(path: Path) -> Path:
+    """Security triage scenarios on one capture (about 20 minutes):
+
+    * ``TRIAGE_SCANNER`` probes 50 TCP ports on ``TRIAGE_TARGET`` (22 and 80 answer, the rest RST);
+    * ``TRIAGE_CLIENT`` connects to ``TRIAGE_BEACON``:443 every 60 s with up to 1 s of jitter, 20 times,
+      each connection the same size, among browsing noise to eight servers;
+    * a lognormal "agent-like" series of 15 connections to ``TRIAGE_AGENT``:8443;
+    * 40 TXT queries for long random names under tunnel.example, plus ordinary lookups;
+    * two MAC addresses answering ARP for 192.0.2.1;
+    * FTP USER/PASS and an HTTP Basic Authorization header in clear;
+    * TLS ClientHellos with three different cipher orders (three JA4 groups)."""
+    import random
+    rng = random.Random(7)
+    t0 = 1_700_080_000.0
+    frames: list[tuple[float, bytes]] = []
+    for i, port in enumerate(range(1, 51)):
+        t = t0 + i * 0.01
+        frames.append((t, _tcp_pkt(TRIAGE_SCANNER, TRIAGE_TARGET, 41000, port, "S")))
+        if port in (22, 50):
+            frames.append((t + 0.001, _tcp_pkt(TRIAGE_TARGET, TRIAGE_SCANNER, port, 41000, "SA", seq=9, ack=2)))
+        else:
+            frames.append((t + 0.001, _tcp_pkt(TRIAGE_TARGET, TRIAGE_SCANNER, port, 41000, "RA", seq=0, ack=2)))
+
+    def connection(t: float, client: str, server: str, sport: int, dport: int, payload: bytes, reply: int) -> None:
+        frames.append((t, _tcp_pkt(client, server, sport, dport, "S")))
+        frames.append((t + 0.02, _tcp_pkt(server, client, dport, sport, "SA", seq=100, ack=2)))
+        frames.append((t + 0.021, _tcp_pkt(client, server, sport, dport, "A", seq=2, ack=101)))
+        frames.append((t + 0.022, _tcp_pkt(client, server, sport, dport, "PA", seq=2, ack=101, payload=payload)))
+        frames.append((t + 0.05, _tcp_pkt(server, client, dport, sport, "PA", seq=101, ack=2 + len(payload),
+                                          payload=b"r" * reply)))
+        frames.append((t + 0.06, _tcp_pkt(client, server, sport, dport, "FA", seq=2 + len(payload), ack=101 + reply)))
+
+    hello_beacon = _tls_client_hello("update.beacon.example", (0x1301, 0x1302, 0xC02F))
+    for i in range(20):
+        connection(t0 + 10 + i * 60 + rng.uniform(-1, 1), TRIAGE_CLIENT, TRIAGE_BEACON, 50000 + i, 443, hello_beacon, 300)
+    t = t0 + 15
+    for i in range(15):
+        t += rng.lognormvariate(3.5, 0.9)
+        connection(t, TRIAGE_CLIENT, TRIAGE_AGENT, 52000 + i, 8443, b"x" * rng.randint(100, 3000), rng.randint(50, 5000))
+    hello_browser = _tls_client_hello("www.example.com", (0x1302, 0x1301, 0xC030, 0xC02F))
+    for i in range(30):
+        server = f"198.51.100.{10 + rng.randint(0, 7)}"
+        connection(t0 + 5 + rng.uniform(0, 1200), "10.1.0.9", server, 53000 + i, 443, hello_browser, rng.randint(200, 20000))
+    hello_odd = _tls_client_hello("odd.example.net", (0xC02B, 0x1303))
+    connection(t0 + 30, "10.1.0.12", "198.51.100.30", 54000, 443, hello_odd, 500)
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    for i in range(40):
+        label = "".join(rng.choice(alphabet) for _ in range(40))
+        q = struct.pack("!HHHHHH", 0x100 + i, 0x0100, 1, 0, 0, 0)
+        q += b"".join(bytes([len(x)]) + x.encode() for x in (label, "tunnel", "example")) + b"\x00" + struct.pack("!HH", 16, 1)
+        frames.append((t0 + 100 + i * 2, _udp_frame(TRIAGE_CLIENT, "192.0.2.53", 40000 + i, 53, q)))
+    for i, name in enumerate(("www.example.com", "mail.example.org", "www.example.com")):
+        q = struct.pack("!HHHHHH", 0x900 + i, 0x0100, 1, 0, 0, 0)
+        q += b"".join(bytes([len(x)]) + x.encode() for x in name.split(".")) + b"\x00" + struct.pack("!HH", 1, 1)
+        frames.append((t0 + 50 + i, _udp_frame("10.1.0.9", "192.0.2.53", 45000 + i, 53, q)))
+    from scapy.all import ARP  # type: ignore
+    for i, mac in enumerate(("02:00:00:00:aa:01", "02:00:00:00:bb:02")):
+        frames.append((t0 + 200 + i, bytes(Ether(src=mac, dst="ff:ff:ff:ff:ff:ff")
+                                            / ARP(op=2, hwsrc=mac, psrc="192.0.2.1", hwdst=MAC_B, pdst="192.0.2.9"))))
+    frames.append((t0 + 300, _tcp_pkt("10.1.0.20", "192.0.2.21", 50500, 21, "PA", payload=b"USER alice\r\n")))
+    frames.append((t0 + 300.1, _tcp_pkt("10.1.0.20", "192.0.2.21", 50500, 21, "PA", seq=13,
+                                        payload=f"PASS {TRIAGE_FTP_PASS}\r\n".encode())))
+    frames.append((t0 + 301, _tcp_pkt("10.1.0.20", "192.0.2.22", 50501, 80, "PA", payload=(
+        f"GET /admin HTTP/1.1\r\nHost: intranet.example\r\nAuthorization: Basic {TRIAGE_BASIC}\r\n\r\n").encode())))
+    frames.sort(key=lambda f: f[0])
+    return _frames_to_pcap(path, frames)
+
+
 # --------------------------------------------------------------------------- small samples
 RESOLVER = "192.0.2.53"
 

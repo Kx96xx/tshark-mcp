@@ -310,6 +310,10 @@
     {
       "name": "sbi_transactions",
       "description": "Which 5G core SBI call failed, and why: one row per HTTP/2 request between network functions (AMF, SMF, AUSF, UDM, PCF, NRF, ...) with `service` (nnrf-disc, nausf-auth, nudm-sdm, nsmf-pdusession, ...), `operation` (method plus path template), `consumer` and `producer` NF, `status`, ..."
+    },
+    {
+      "name": "security_triage",
+      "description": "Is anything on this network scanning, beaconing, tunnelling over DNS, spoofing ARP or sending passwords in clear: `findings` ranked by severity, each with `kind` (port_scan, host_sweep, syn_flood, beacon, dns_tunnel_hint, rare_tls_client, arp_conflict, cleartext_credentials), `summary`, ..."
     }
   ],
   "compatibility": {
