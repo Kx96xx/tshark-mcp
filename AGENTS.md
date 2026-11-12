@@ -9,7 +9,7 @@ the tools.
 tshark-mcp is a read-only [MCP](https://modelcontextprotocol.io) server. It runs
 `tshark -r <file>` on packet captures inside directories the operator allowed and returns
 compact JSON. It cannot capture, resolve names or load code, and writes only through `export_subset`
-when the operator enables `--export-dir`. <!-- tool-count -->Fifty-eight<!-- /tool-count -->
+when the operator enables `--export-dir`. <!-- tool-count -->Fifty-nine<!-- /tool-count -->
 tools cover Diameter, GTPv2-C, GTPv1-C, GTP-U, PFCP, SIP, RTP/RTCP, IMS registration, SMS over
 IMS, SCTP/M3UA/SCCP/TCAP/MAP, DNS, TLS handshakes, TCP health and capture quality.
 
@@ -102,6 +102,7 @@ turns on `export_subset`, the only tool that writes; `--export-max-mb` (50) caps
 | VoLTE call rang but no audio, or 503 after the 183: Rx, Gx or the dedicated bearer? | `volte_call_chain(path, call_id=... or ue_ip=...)`: links in order with status, `first_broken_link`, `verdict` |
 | An SS7/SIGTRAN link flapped, an ASP went down, a GT returns UDTS? | `sigtran_health(path, peer=... or point_code=... or gt=...)`: verdict and issues per association |
 | SMS over MAP or SGs not delivered: absent subscriber, paging failed, RP-ERROR? | `sms_delivery(path, imsi=... or msisdn=..., via="map" / "sgs")`: steps and verdict per message |
+| A ladder diagram of a call or a subscriber for a ticket | `call_ladder(path, call_id=...)` or `call_ladder(path, imsi=...)`: Mermaid with `#<frame>` on every arrow |
 | DTMF not working | `dtmf_events(path, call_id=...)` |
 | UE cannot register on IMS | `ims_registration(path, imsi=... or impu=...)` |
 | No SIP on a UE-side or P-CSCF capture, only IPsec ESP | read the `ipsec` block of any SIP/IMS tool; with NULL encryption call again with `esp_null=true` |
@@ -249,7 +250,7 @@ src/tshark_mcp/
   callkpi.py    call_kpis: call KPIs per group, built on sip.py's message parser
   calllegs.py   call_legs: B2BUA/SBC/CSCF legs stitched by icid, Session-ID, X- headers, media or number
   diameter.py gtp.py gtpv1.py pfcp.py sip.py sdp.py rtp.py media.py dtmf.py ims.py sms.py
-  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py ipsec.py sbi.py fiveg.py
+  sigtran.py dns.py tls.py tcphealth.py tcpflow.py timing.py quality.py copies.py tunnels.py ipsec.py sbi.py fiveg.py ladder.py ladder_ui.py
   rates.py compare.py avps.py packets.py expert.py models.py (TypedDict output schemas)
   causes.py     cause_lookup; names from tshark -G values, text in causedata.py
   gtpies.py     gtp_ies: GTPv2-C IE key view, full tree and likely causes
