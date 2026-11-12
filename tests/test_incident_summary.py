@@ -205,7 +205,7 @@ def test_ims_registration_pass(inc, caps: Path):
     out = inc.incident_summary(str(caps / "ims" / "ims_register.pcap"), focus="mobile")
     f = _by_kind(out)
     failed = f["ims_registration_failed"]
-    assert failed["severity"] == "high" and failed["text"].startswith("4 of 9 IMS user(s) failed to register; first: 403")
+    assert failed["severity"] == "high" and failed["text"].startswith("4 of 12 IMS user(s) failed to register; first: 403")
     assert failed["next_call"]["tool"] == "ims_registration" and failed["next_call"]["args"]["impu"]
     assert f["ims_challenge_loop"]["severity"] == "medium"
 
