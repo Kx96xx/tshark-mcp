@@ -1,0 +1,145 @@
+{
+ "note": "Public sample captures used by evals/public. They are GPL/LGPL: fetched on demand, never committed. sha256 is of the file as used (after gunzip).",
+ "captures": [
+  {
+   "file": "ndpi/tls_1.3_unidirectional_client.pcapng",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/tls_1.3_unidirectional_client.pcapng",
+   "sha256": "0efe44b279d953bf4daea64368727e3daabe3065b4d7f54593c47d9e3cd27e56",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  },
+  {
+   "file": "ndpi/tls_1.2_unidirectional_server.pcapng",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/tls_1.2_unidirectional_server.pcapng",
+   "sha256": "99f5418fb575762aba91ada77fcedaf3fa02d15a906289dfaefe22f574ce6489",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-testcaptures/dns-ooo.pcap",
+   "url": "https://gitlab.com/wireshark/wireshark/-/raw/master/test/captures/dns-ooo.pcap",
+   "sha256": "0e81e3d5907f53210f4551335dc4ead39972d9061e381576570495a8e234f8f0",
+   "licence": "GPL-2.0-or-later (Wireshark test/captures)",
+   "gunzip": false
+  },
+  {
+   "file": "ndpi/quic-v2.pcapng",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/quic-v2.pcapng",
+   "sha256": "7ea791625673541086fec92f46a14bab2f9d5c21e14ef4037d26948d07e50b65",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  },
+  {
+   "file": "ndpi/quic.pcap",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/quic.pcap",
+   "sha256": "4595b33f39e1d63d807b8e2f94d8707547d79924da03358f4c9af99f2957dad7",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-testcaptures/quic-with-secrets.pcapng",
+   "url": "https://gitlab.com/wireshark/wireshark/-/raw/master/test/captures/quic-with-secrets.pcapng",
+   "sha256": "b7c9de1238aef44d53dbe1add125a7b9e344e9063b98850c78dec23632b83942",
+   "licence": "GPL-2.0-or-later (Wireshark test/captures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/chargen-tcp.pcap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/chargen-tcp.pcap",
+   "sha256": "8818049027a7a1b0e35a9c0131c4d650664b0a8dcc4574a3d0306522df94cddc",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/sip-rtp-g711.pcap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/sip-rtp-g711.pcap",
+   "sha256": "6be243f86c57646b8b506d7cc0f2b4e37740c5a7db3f22944078c402db37d8f7",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "ndpi/stun_dtls_rtp_unidir.pcapng",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/stun_dtls_rtp_unidir.pcapng",
+   "sha256": "2ef3729850e1a6e7e9078421efbff448a2a6cef846eb56bcd9fa71001e6fb161",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/http_redirects.pcapng",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/http_redirects.pcapng",
+   "sha256": "ff432a6b71d06cd20720f7763e584014edd0a43c3b55981c682d1b7640207abc",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/tcp-ecn-sample.pcap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/tcp-ecn-sample.pcap",
+   "sha256": "e6edf98f9e2e8a9711fb41a4e16840ef3942b40c7d2694ca373b7f285c783648",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "ndpi/ipsec_isakmp_esp.pcap",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/ipsec_isakmp_esp.pcap",
+   "sha256": "7160b8863845f302a02e480394afb442742cafb9315bd225677ffb3c2e2016d6",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/Teredo.pcap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/Teredo.pcap",
+   "sha256": "7389885b99afa82fda1b443bf0362b699050213fb9aabd505f593670d2e29b8b",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/gsm_map_with_ussd_string.pcap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/gsm_map_with_ussd_string.pcap",
+   "sha256": "b5e755469c67d1aba94901c55114fd3acc088cff70dde0375cad948efba63a21",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/camel2.pcap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/camel2.pcap",
+   "sha256": "5ecb324777bd6eb41587184e661d4b15a05d07d1ad897eb4b54b546a2ad89221",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-wiki/SCTP-INIT-Collision.cap",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/SCTP-INIT-Collision.cap",
+   "sha256": "3a3aafd27f46a7daeb8df2db450b81dc1d72d941ba6603c6b9d5638f762a5fa1",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-testcaptures/dns+icmp.pcapng",
+   "url": "https://gitlab.com/wireshark/wireshark/-/raw/master/test/captures/dns+icmp.pcapng.gz",
+   "sha256": "4842dc0bae96aa364d13d013a8b6149c49a60f332cdfd4485ae7c4cd6fa1bea7",
+   "licence": "GPL-2.0-or-later (Wireshark test/captures)",
+   "gunzip": true
+  },
+  {
+   "file": "wireshark-wiki/http2-16-ssl.pcapng",
+   "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/http2-16-ssl.pcapng",
+   "sha256": "3a53d7b87e80bc3a00e9851274f7661a5c51fceffd046cdeda2642d28797e084",
+   "licence": "GPL (Wireshark wiki SampleCaptures)",
+   "gunzip": false
+  },
+  {
+   "file": "wireshark-testcaptures/diameter_coverage.pcapng",
+   "url": "https://gitlab.com/wireshark/wireshark/-/raw/master/test/captures/diameter_coverage.pcapng.gz",
+   "sha256": "72f5abd087e6b0bb71e1f5e0ccee4a4879dd31342703356bb49dac0b3f33d6aa",
+   "licence": "GPL-2.0-or-later (Wireshark test/captures)",
+   "gunzip": true
+  },
+  {
+   "file": "ndpi/coap_mqtt.pcap",
+   "url": "https://raw.githubusercontent.com/ntop/nDPI/dev/tests/cfgs/default/pcap/coap_mqtt.pcap",
+   "sha256": "54c5e28aa9a0eda7312bc1de07924e9bb8fe37c3ffb4bd97c00de97818f5bd1e",
+   "licence": "LGPL-3.0 (ntop/nDPI)",
+   "gunzip": false
+  }
+ ]
+}

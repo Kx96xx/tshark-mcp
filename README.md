@@ -331,6 +331,8 @@ captures under `examples/` come from the same generator, so nothing in the repos
 traffic from a real network (the list of scenarios is in [docs/TOOLS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/TOOLS.md#how-the-tools-are-tested)).
 Sixteen task-success scenarios ([docs/EVALS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/EVALS.md)) check that the right tool answers an
 operator's question with the right facts; a model-driven mode is there and off by default.
+The tools were also checked against 102 public sample captures; what was wrong, what changed and
+how to re-run it are in [docs/VALIDATION.md](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/VALIDATION.md).
 Conventions for contributors and for agents: [CONTRIBUTING.md](https://github.com/Kx96xx/tshark-mcp/blob/main/CONTRIBUTING.md), [AGENTS.md](https://github.com/Kx96xx/tshark-mcp/blob/main/AGENTS.md).
 
 ## Licence
