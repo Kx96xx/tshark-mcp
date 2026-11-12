@@ -11,6 +11,8 @@ from .. import iot, models
 from ..limits import ToolError, clamp_limit, echo, lint_quoted_value
 from ..server import READ_ONLY, _envelope, _fields_run, _guarded, _last_packet_time, _resolve, _tool, state
 
+TOOLSET = "network"  # which --toolsets lists this tool (see tshark_mcp/toolsets.py)
+
 Protocol = Annotated[Literal["mqtt", "coap", "lwm2m"] | None, Field(description="Only this protocol's rows")]
 Client = Annotated[str | None, Field(description="Part of a client address, MQTT client id or LwM2M endpoint")]
 

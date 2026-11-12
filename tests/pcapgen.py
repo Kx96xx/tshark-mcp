@@ -3674,7 +3674,6 @@ def write_iot_pcap(path: Path) -> Path:
     return _frames_to_pcap(path, frames)
 
 
-
 if __name__ == "__main__":  # pragma: no cover
     import sys
 
