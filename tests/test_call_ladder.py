@@ -112,7 +112,8 @@ def test_mcp_apps_resource_and_tool_meta_over_stdio(caps: Path):
 
     async def go():
         params = StdioServerParameters(command=sys.executable,
-                                       args=["-m", "tshark_mcp.server", "--allow-dir", str(caps)])
+                                       args=["-m", "tshark_mcp.server", "--allow-dir", str(caps),
+                                             "--toolsets", "all"])
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
