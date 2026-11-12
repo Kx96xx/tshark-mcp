@@ -1133,10 +1133,15 @@ IMS_ESP = "001010000000106"        # 401, then ESP that never yields a protected
 IMS_DEREG = "001010000000107"
 IMS_SILENT = "001010000000108"     # REGISTER never answered
 IMS_NOTIFY = "001010000000109"     # registered, then a reg-event NOTIFY terminates it (deactivated)
+IMS_SUB_403 = "001010000000110"    # 60 s registration not refreshed; reg-event SUBSCRIBE refused 403; another device's contact ends
+IMS_SHORTENED = "001010000000111"  # registered; NOTIFY shortens it to 30 s, never answered, never refreshed
+IMS_PROBATION = "001010000000112"  # registered; NOTIFY ends its own contact (probation, retry-after 60), answered 481
 IMS_MSISDN = "15550100123"         # IMS_OK's implicit tel URI
+OTHER_DEVICE = "198.51.100.99"     # a second device registered under the same IMPU
 UE_IMS = {IMS_OK: "198.51.100.41", IMS_LOOP: "198.51.100.42", IMS_403: "198.51.100.43", IMS_503: "198.51.100.44",
           IMS_EXPIRED: "198.51.100.45", IMS_ESP: "198.51.100.46", IMS_DEREG: "198.51.100.47", IMS_SILENT: "198.51.100.48",
-          IMS_NOTIFY: "198.51.100.49"}
+          IMS_NOTIFY: "198.51.100.49", IMS_SUB_403: "198.51.100.50", IMS_SHORTENED: "198.51.100.51",
+          IMS_PROBATION: "198.51.100.52"}
 PCSCF_SPI_C, PCSCF_SPI_S = 3333, 4444
 MMTEL_TAG = '+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"'
 
@@ -1195,6 +1200,47 @@ def _notify(imsi: str, cseq: int, body: str, *, src: str) -> bytes:
     ], body)
 
 
+def _reginfo_contacts(imsi: str, state: str, contacts: list[str]) -> str:
+    """A reginfo document with one registration and the ``<contact>`` elements given
+    (each a ready-made element)."""
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return ('<?xml version="1.0"?>\r\n<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="2" state="full">\r\n'
+            f'  <registration aor="{impu}" id="a{imsi[-3:]}" state="{state}">\r\n'
+            + "".join(contacts) + '  </registration>\r\n</reginfo>\r\n')
+
+
+def _contact_el(cid: str, address: str, state: str, event: str, extra: str = "") -> str:
+    return (f'    <contact id="{cid}" state="{state}" event="{event}"{extra}>\r\n'
+            f'      <uri>sip:{address}:5060</uri>\r\n    </contact>\r\n')
+
+
+def _subscribe(imsi: str, cseq: int, *, frm: str, call_id: str, src: str) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return _sip([
+        f"SUBSCRIBE {impu} SIP/2.0", f"Via: SIP/2.0/UDP {src}:5060;branch=z9hG4bKs{imsi[-3:]}{cseq}",
+        f"From: <{frm}>;tag=s{imsi[-3:]}", f"To: <{impu}>", f"Call-ID: {call_id}", f"CSeq: {cseq} SUBSCRIBE",
+        "Event: reg", "Expires: 600000", f"Contact: <sip:{src}:5060>", "Max-Forwards: 70",
+    ])
+
+
+def _subscribe_response(imsi: str, cseq: int, code: int, reason: str, *, frm: str, call_id: str, src: str) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return _sip([
+        f"SIP/2.0 {code} {reason}", f"Via: SIP/2.0/UDP {src}:5060;branch=z9hG4bKs{imsi[-3:]}{cseq}",
+        f"From: <{frm}>;tag=s{imsi[-3:]}", f"To: <{impu}>;tag=n{imsi[-3:]}", f"Call-ID: {call_id}",
+        f"CSeq: {cseq} SUBSCRIBE", *(["Expires: 600000"] if code < 300 else []),
+    ])
+
+
+def _notify_answer(imsi: str, cseq: int, code: int, reason: str, *, via_host: str) -> bytes:
+    impu = f"sip:{imsi}@{IMS_DOMAIN}"
+    return _sip([
+        f"SIP/2.0 {code} {reason}", f"Via: SIP/2.0/UDP {via_host}:5060;branch=z9hG4bKn{imsi[-3:]}{cseq}",
+        f"From: <{impu}>;tag=sub{imsi[-3:]}", f"To: <{impu}>;tag=ue{imsi[-3:]}", f"Call-ID: sub-{imsi[-3:]}@ue.example",
+        f"CSeq: {cseq} NOTIFY",
+    ])
+
+
 def _notify_ok(imsi: str, cseq: int, *, via_host: str) -> bytes:
     impu = f"sip:{imsi}@{IMS_DOMAIN}"
     return _sip([
@@ -1225,13 +1271,15 @@ def _ok(imsi: str, expires: int, tags: str | None = None) -> list[str]:
 
 
 def write_ims_register_pcap(path: Path) -> Path:
-    """IMS registrations of eight test subscribers (see the ``IMS_*`` IMSIs) through a
+    """IMS registrations of twelve test subscribers (see the ``IMS_*`` IMSIs) through a
     P-CSCF (``PCSCF_IP``) and S-CSCF (``SCSCF_IP``): a full AKA registration with a
     copied and a retransmitted REGISTER, third-party REGISTERs to two application
     servers (one refused with 500) and a refresh; a challenge loop ending in AUTS; 403;
     503 with Retry-After; a 60 s registration never refreshed, without smsip or MMTel;
     a challenge followed only by ESP to the P-CSCF's SPI; a de-registration; and a
-    REGISTER nobody answers. The capture runs past every expiry."""
+    REGISTER nobody answers; a network-initiated de-registration by reg-event NOTIFY;
+    and, after 301 s, reg-event SUBSCRIBEs (UE and P-CSCF, one refused 403) and NOTIFYs
+    that end or shorten one contact among several. The capture runs past every expiry."""
     t0 = 1_700_030_000.0
     frames: list[tuple[float, bytes]] = []
 
@@ -1306,6 +1354,49 @@ def write_ims_register_pcap(path: Path) -> Path:
     ue = UE_IMS[IMS_SILENT]
     for dt in (70.0, 70.5, 71.5):
         add(dt, ue, p, _register(IMS_SILENT, 1, 600000))
+    # Reg-event subscriptions and contact-level NOTIFYs, all after 301 s so that no frame
+    # above moves (only the keepalive at the end gets a later number).
+    # IMS_OK refreshes its own SUBSCRIBE and the P-CSCF subscribes too (TS 24.229 5.2.3), both 200.
+    ue = UE_IMS[IMS_OK]
+    impu_ok = f"sip:{IMS_OK}@{IMS_DOMAIN}"
+    add(302.0, ue, p, _subscribe(IMS_OK, 5, frm=impu_ok, call_id="sub-101@ue.example", src=ue))
+    add(302.03, p, ue, _subscribe_response(IMS_OK, 5, 200, "OK", frm=impu_ok, call_id="sub-101@ue.example", src=ue))
+    pcscf_uri = f"sip:pcscf.{IMS_DOMAIN}"
+    add(303.0, p, s, _subscribe(IMS_OK, 1, frm=pcscf_uri, call_id="pcscf-sub-101", src=p))
+    add(303.02, s, p, _subscribe_response(IMS_OK, 1, 200, "OK", frm=pcscf_uri, call_id="pcscf-sub-101", src=p))
+    # 10. Registered for 60 s (never refreshed: the only registered handset stays IMS_OK); its SUBSCRIBE to the reg event refused 403; then a NOTIFY where another
+    # device's contact under the same IMPU is unregistered and its own stays active.
+    ue = UE_IMS[IMS_SUB_403]
+    impu = f"sip:{IMS_SUB_403}@{IMS_DOMAIN}"
+    add(310.0, p, s, _register(IMS_SUB_403, 1, 600000, response="a1"))
+    add(310.04, s, p, _reg_response(IMS_SUB_403, 1, 200, "OK", _ok(IMS_SUB_403, 60)))
+    add(311.0, ue, p, _subscribe(IMS_SUB_403, 1, frm=impu, call_id="sub-110@ue.example", src=ue))
+    add(311.03, p, ue, _subscribe_response(IMS_SUB_403, 1, 403, "Forbidden", frm=impu, call_id="sub-110@ue.example",
+                                           src=ue))
+    body = _reginfo_contacts(IMS_SUB_403, "active", [
+        _contact_el("c0", OTHER_DEVICE, "terminated", "unregistered", ' expires="0"'),
+        _contact_el("c1", ue, "active", "refreshed", ' expires="58"')])
+    add(312.0, s, p, _notify(IMS_SUB_403, 3, body, src=s))
+    add(312.03, p, s, _notify_ok(IMS_SUB_403, 3, via_host=s))
+    # 11. Registered; a NOTIFY shortens the registration to 30 s (re-authentication); no one
+    # answers it and the UE never re-registers.
+    ue = UE_IMS[IMS_SHORTENED]
+    add(320.0, p, s, _register(IMS_SHORTENED, 1, 600000, response="a2"))
+    add(320.04, s, p, _reg_response(IMS_SHORTENED, 1, 200, "OK", _ok(IMS_SHORTENED, 3600)))
+    body = _reginfo_contacts(IMS_SHORTENED, "active", [_contact_el("c1", ue, "active", "shortened", ' expires="30"')])
+    add(330.0, s, p, _notify(IMS_SHORTENED, 2, body, src=s))
+    add(330.01, p, ue, _notify(IMS_SHORTENED, 2, body, src=s))
+    # 12. Registered; a NOTIFY ends its own contact (probation, retry-after 60) while another
+    # device keeps the registration active; the UE answers 481.
+    ue = UE_IMS[IMS_PROBATION]
+    add(340.0, p, s, _register(IMS_PROBATION, 1, 600000, response="a3"))
+    add(340.04, s, p, _reg_response(IMS_PROBATION, 1, 200, "OK", _ok(IMS_PROBATION, 3600)))
+    body = _reginfo_contacts(IMS_PROBATION, "active", [
+        _contact_el("c0", OTHER_DEVICE, "active", "registered", ' expires="3000"'),
+        _contact_el("c1", ue, "terminated", "probation", ' retry-after="60"')])
+    add(350.0, s, p, _notify(IMS_PROBATION, 2, body, src=s))
+    add(350.01, p, ue, _notify(IMS_PROBATION, 2, body, src=s))
+    add(350.03, ue, p, _notify_answer(IMS_PROBATION, 2, 481, "Call/Transaction Does Not Exist", via_host=s))
     # Something unrelated at the end, so the capture outlives every expiry above.
     add(400.0, SERVER_IP, p, b"keepalive")
     frames.sort(key=lambda f: f[0])

@@ -35,7 +35,7 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({
     "evidence",
     # IMS registration and SMS over IMS
     "impu", "impi", "associated_uris", "service_route", "path_header", "contact", "application_server", "warning",
-    "feature_tags", "sec_agree", "reason_phrase",
+    "feature_tags", "sec_agree", "reason_phrase", "subscription_state",
     # capture_metadata: strings the capture file's writer stored (interface names are under "name")
     "description", "capture_filter", "comment",
     # HTTP (host and reason are listed above)

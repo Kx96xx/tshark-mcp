@@ -67,9 +67,10 @@ class TestImsRegistration:
             pcapgen.IMS_OK: "registered", pcapgen.IMS_LOOP: "challenge-loop", pcapgen.IMS_403: "failed",
             pcapgen.IMS_503: "failed", pcapgen.IMS_EXPIRED: "expired", pcapgen.IMS_ESP: "failed",
             pcapgen.IMS_DEREG: "deregistered", pcapgen.IMS_SILENT: "failed", pcapgen.IMS_NOTIFY: "deregistered",
+            pcapgen.IMS_SUB_403: "expired", pcapgen.IMS_SHORTENED: "expired", pcapgen.IMS_PROBATION: "deregistered",
         }
-        assert out["summary"] == {"users": 9, "third_party_registers": 2, "by_verdict": {
-            "registered": 1, "challenge-loop": 1, "failed": 4, "expired": 1, "deregistered": 2}}
+        assert out["summary"] == {"users": 12, "third_party_registers": 2, "by_verdict": {
+            "registered": 1, "challenge-loop": 1, "failed": 4, "expired": 3, "deregistered": 3}}
         assert "403 at frame 20: Forbidden" in rows[pcapgen.IMS_403]["reasons"][0]
         assert rows[pcapgen.IMS_503]["reasons"][0].endswith("Retry-After 120 s")
         assert rows[pcapgen.IMS_503]["transactions"][0]["retry_after"] == 120
@@ -100,6 +101,51 @@ class TestImsRegistration:
         # Users without a NOTIFY carry neither key.
         assert "reg_event_notifies" not in rows[pcapgen.IMS_403] and "reg_event_notifies" not in rows[pcapgen.IMS_403]["counts"]
 
+    def test_reg_subscriptions(self, server, pcap_dir):
+        rows = _by_imsi(server.ims_registration(_ims(pcap_dir)))
+        ok = rows[pcapgen.IMS_OK]
+        ue, pcscf = ok["reg_subscriptions"]
+        assert (ue["subscriber"], ue["status"], ue["requested_expires"], ue["granted_expires"]) == ("ue", 200, 600000, 600000)
+        assert "from" not in ue and ue["cseq"] == 5
+        assert (pcscf["subscriber"], pcscf["from"], pcscf["status"]) == (
+            "network", f"sip:pcscf.{pcapgen.IMS_DOMAIN}", 200)
+        assert ok["counts"]["reg_subscriptions"] == 2 and ok["verdict"] == "registered"
+        assert not any("SUBSCRIBE" in r for r in ok["reasons"])
+        refused = rows[pcapgen.IMS_SUB_403]
+        (sub,) = refused["reg_subscriptions"]
+        assert (sub["subscriber"], sub["status"]) == ("ue", 403) and "granted_expires" not in sub
+        assert refused["verdict"] == "expired"
+        assert any(r.startswith("the UE's SUBSCRIBE to the reg event at frame ") and "refused with 403" in r
+                   for r in refused["reasons"])
+        # Its NOTIFY lists another device's contact (unregistered) first: its own active one is shown.
+        (n,) = refused["reg_event_notifies"]
+        assert (n["contact_state"], n["contact_event"], n["expires"], n["contact_matched"]) == (
+            "active", "refreshed", 58, True)
+        assert "reg_subscriptions" not in rows[pcapgen.IMS_403] and "reg_subscriptions" not in rows[pcapgen.IMS_403]["counts"]
+
+    def test_notify_answers_and_contact_events(self, server, pcap_dir):
+        rows = _by_imsi(server.ims_registration(_ims(pcap_dir)))
+        # The earlier NOTIFY rows now carry the UE's answer.
+        (n,) = rows[pcapgen.IMS_NOTIFY]["reg_event_notifies"]
+        assert (n["status"], n["subscription_state"], n["contact_matched"]) == (200, "active;expires=600000", True)
+        assert "no_final_response" not in n
+        # Shortened to 30 s, nobody answered, no refresh: expired.
+        short = rows[pcapgen.IMS_SHORTENED]
+        (n,) = short["reg_event_notifies"]
+        assert (n["contact_event"], n["expires"], n["no_final_response"]) == ("shortened", 30, True) and "status" not in n
+        assert short["verdict"] == "expired"
+        assert "shortened the registration to 30 s" in short["reasons"][0]
+        assert "got no final response in the capture" in short["reasons"][1]
+        assert "not refreshed before it lapsed" in short["reasons"][2]
+        # Its own contact ends on probation while another device keeps the registration active.
+        prob = rows[pcapgen.IMS_PROBATION]
+        (n,) = prob["reg_event_notifies"]
+        assert (n["state"], n["contact_state"], n["contact_event"], n["retry_after"], n["status"]) == (
+            "active", "terminated", "probation", 60, 481)
+        assert prob["verdict"] == "deregistered" and "registered_until" not in prob
+        assert "the UE's own contact terminated" in prob["reasons"][0] and prob["reasons"][0].endswith("retry-after 60 s")
+        assert "answered 481" in prob["reasons"][1]
+
     def test_reginfo_parser(self):
         body = ('<reginfo xmlns="urn:ietf:params:xml:ns:reginfo" version="3" state="partial">'
                 '<registration state="terminated" aor="tel:+15550100123" id="x"><contact event="rejected" '
@@ -108,9 +154,45 @@ class TestImsRegistration:
                 'event="refreshed" expires="120"/></registration></reginfo>')
         regs = ims.reginfo(body)
         assert [(r["aor"], r["state"]) for r in regs] == [("tel:+15550100123", "terminated"), ("sip:bob@example.org", "active")]
-        assert regs[0]["contacts"] == [{"state": "terminated", "event": "rejected"}]
+        assert regs[0]["contacts"] == [{"state": "terminated", "event": "rejected", "uri": "sip:198.51.100.9"}]
         assert regs[1]["contacts"] == [{"state": "active", "event": "refreshed", "expires": 120}]
         assert ims.reginfo("not xml at all <registration") == []
+
+    def test_reginfo_parser_uri_and_retry_after(self):
+        body = ('<reginfo><registration aor="sip:a@example.org" state="active">'
+                '<contact id="1" state="terminated" event="probation" retry-after="60"/>'
+                '<uri>sip:stray@example.org</uri>'
+                '<contact id="2" state="active" event="registered" expires="300">'
+                '<uri> sip:198.51.100.7:5060;transport=udp </uri><uri>sip:second@example.org</uri></contact>'
+                '</registration></reginfo>')
+        (reg,) = ims.reginfo(body)
+        # A self-closing contact takes no <uri>; a contact keeps its first.
+        assert reg["contacts"] == [
+            {"state": "terminated", "event": "probation", "retry_after": 60},
+            {"state": "active", "event": "registered", "expires": 300, "uri": "sip:198.51.100.7:5060;transport=udp"}]
+
+    def test_own_contact_decides(self):
+        user = {"impu": "sip:u@example.org", "third": [],
+                "own": [{"contact_uri": "sip:198.51.100.7:5060", "associated_uris": None}]}
+        notify = {"time_epoch": 10.0, "frame": 5, "call_id": "c", "to": "sip:u@example.org", "status": 200,
+                  "status_frame": 6, "registrations": [{"aor": "sip:u@example.org", "state": "active", "contacts": [
+                      {"state": "terminated", "event": "deactivated", "uri": "sip:198.51.100.7:5060"},
+                      {"state": "active", "event": "registered", "uri": "sip:198.51.100.8:5060", "expires": 60}]}]}
+        (row,) = ims._notify_rows(user, [notify])
+        assert row["_ends"] and row["contact_matched"] and row["contact_event"] == "deactivated"
+        # Another device's contact ending does not end this UE's registration.
+        notify["registrations"][0]["contacts"] = [
+            {"state": "terminated", "event": "unregistered", "uri": "sip:198.51.100.9:5060"},
+            {"state": "active", "event": "registered", "uri": "<sip:198.51.100.7:5060;ob>", "expires": 60}]
+        (row,) = ims._notify_rows(user, [notify])
+        assert not row["_ends"] and row["contact_state"] == "active" and row["contact_matched"]
+        # No contact is the UE's: the registration state decides, as before.
+        notify["registrations"][0]["contacts"][1]["uri"] = "sip:198.51.100.8:5060"
+        (row,) = ims._notify_rows(user, [notify])
+        assert not row["_ends"] and row["contact_state"] == "terminated" and "contact_matched" not in row
+        notify["registrations"][0]["state"] = "terminated"
+        (row,) = ims._notify_rows(user, [notify])
+        assert row["_ends"]
 
     def test_full_registration(self, server, pcap_dir):
         row = _by_imsi(server.ims_registration(_ims(pcap_dir)))[pcapgen.IMS_OK]
@@ -154,7 +236,7 @@ class TestImsRegistration:
         assert [ims.user_of(r["impu"]) for r in by_tel["registrations"]] == [pcapgen.IMS_OK]
         assert server.ims_registration(_ims(pcap_dir), imsi="001010999999999")["count"] == 0
         page = server.ims_registration(_ims(pcap_dir), limit=3, offset=3)
-        assert page["returned"] == 3 and page["next_offset"] == 6 and page["total_matched"] == 9
+        assert page["returned"] == 3 and page["next_offset"] == 6 and page["total_matched"] == 12
         assert server.ims_registration(_ims(pcap_dir), impu='a"b')["error"]["type"] == "invalid_argument"
         assert server.ims_registration(_ims(pcap_dir), imsi="12ab")["error"]["type"] == "invalid_argument"
         flt = server.ims_registration(_ims(pcap_dir), filter=f"ip.addr == {pcapgen.UE_IMS[pcapgen.IMS_403]}")

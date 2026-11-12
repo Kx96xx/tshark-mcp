@@ -3475,13 +3475,19 @@ def ims_registration(path: str, impu: str | None = None, imsi: str | None = None
     goes on), deregistered (by the UE with expires 0, or by the network through a
     reg-event NOTIFY whose reginfo reports the registration terminated, with the
     contact event named: deactivated, rejected, probation, ...; the NOTIFYs are listed
-    in `reg_event_notifies`), challenge-loop (authenticated REGISTERs challenged again,
+    in `reg_event_notifies` with the UE's answer, Subscription-State and retry-after, the
+    UE's own contact chosen by its Contact URI, so another device's contact under the
+    same IMPU does not decide), challenge-loop (authenticated REGISTERs challenged again,
     AUTS resync), failed (403, 404, 408, 421, 423, 500, 503 with Retry-After and the
     rest named in IMS terms, a 401 never answered, no final response), in_progress
     (a challenge or request within 32 s of the end of the capture) or unknown, with
     `reasons`. When a 401 is never answered in clear, `esp_after_challenge` counts the
     ESP the UE sent to the P-CSCF afterwards and checks its SPI against the ones the
-    P-CSCF offered in Security-Server. Authentication material (nonce, AKA vectors, CK/IK) is never
+    P-CSCF offered in Security-Server. `reg_subscriptions` lists the reg-event SUBSCRIBEs
+    (RFC 3680) for the user, by the UE or the network (P-CSCF, AS), with status and
+    granted expiry; a refused or unanswered one, a decisive NOTIFY refused or never
+    answered, and a contact event `shortened` (re-register by the new expiry, else
+    expired) are named in `reasons`. Authentication material (nonce, AKA vectors, CK/IK) is never
     returned. `impu` keeps users whose IMPU, IMPI or P-Associated-URI contain it (or
     have the same user part); `imsi` keeps IMSI-based identities; `filter` is a raw
     display filter ANDed with the REGISTER filter."""

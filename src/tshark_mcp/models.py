@@ -1792,6 +1792,7 @@ class ImsRegistrationRow(TypedDict, total=False):
     transactions: list[ImsRegisterStep]
     third_party: list[dict[str, Any]]
     reg_event_notifies: list[dict[str, Any]]
+    reg_subscriptions: list[dict[str, Any]]
 
 
 class ImsRegistrationResult(RowsResult, total=False):
