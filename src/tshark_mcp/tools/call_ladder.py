@@ -18,6 +18,7 @@ Source = Annotated[Literal["auto", "trace_subscriber", "call_legs"], Field(
     description="Row producer: auto picks call_legs for call_id, trace_subscriber for imsi/msisdn")]
 MaxRows = Annotated[int, Field(description="Most arrows drawn (1 to 400)")]
 MAX_ROWS_CAP = 400
+TOOLSET = "voice"  # which --toolsets lists this tool (see tshark_mcp/toolsets.py)
 
 
 class LadderArrow(TypedDict, total=False):
