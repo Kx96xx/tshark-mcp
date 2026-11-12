@@ -63,7 +63,32 @@ python -m evals.public --dir ~/pubcaps --report docs/VALIDATION.md   # rewrite t
 ## Results on the current main
 
 <!-- public-validation:begin -->
-(not run yet)
+| Defect | Check | Result | Calls |
+| --- | --- | --- | --- |
+| D2 | A client-only TLS 1.3 stream: not filtered, no high-severity failures. | pass | incident_summary, tcp_connections |
+| D2 | Server-only streams: one_sided, not handshake_incomplete. | pass | tcp_connections |
+| D4 | Loopback QUIC v2 with client and server on ::1: the handshake worked. | pass | quic_connections |
+| D18 | Google QUIC is counted, not silently ignored. | pass | quic_connections |
+| D5 | Distinct QUIC packets with one offloaded checksum are not copies. | pass | capture_quality |
+| D6 | Byte-identical RSTs from Linux are real repeats, not mirror copies. | pass | capture_quality |
+| D7 | The second call's stream is not tagged with the first call's Call-ID. | pass | media_path_check, rtp_streams |
+| D19 | Heuristic RTP finds RTP relayed through TURN. | pass | rtp_streams |
+| D9a | Responses tshark cannot reassemble are read from their first segment. | pass | http_transactions |
+| D9c | The HTTP/2 response whose HPACK block has a table size update is paired. | pass | http_transactions |
+| D11 | A 93 s transfer behind a 451 ms first byte is a slow transfer, not a slow server. | pass | http_transactions, incident_summary |
+| D10 | An INVALID_KE_PAYLOAD retry followed by IKE_AUTH and ESP both ways is established. | pass | tunnels_overview |
+| D22 | Teredo is a tunnel kind. | pass | tunnels_overview |
+| D12 | redact=ids hides the number typed into a USSD string and drops the packed bytes. | pass | filter_packets |
+| D13 | CAMEL operations are named. | pass | sigtran_messages |
+| D14 | INITs refused with ABORT and the INIT collision are reported. | pass | sctp_associations |
+| D15 | A query lost and resent is not a slow resolver. | pass | incident_summary |
+| D16 | An IPv6 refusal followed by an IPv4 connection is low severity. | pass | incident_summary |
+| D17 | The command-level Result-Code is the result; MSCC codes are listed apart. | pass | diameter_transactions |
+| D20 | A capture spanning years gets an interval that fits. | pass | throughput_timeline |
+| D21 | cause_lookup knows nas, dns and tls. | pass | cause_lookup |
+| D23 | A directory of subdirectories names them instead of finding nothing silently. | pass | find_identifier |
+
+22 of 22 checks pass.
 <!-- public-validation:end -->
 
 ## Limits
