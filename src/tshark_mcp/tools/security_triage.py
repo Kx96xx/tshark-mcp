@@ -15,6 +15,8 @@ from ..runner import check_result
 from ..server import (READ_ONLY, _envelope, _fields_run, _guarded, _parse_capinfos, _parse_conversations, _resolve,
                       _tool, _window_clause, state)
 
+TOOLSET = "network"  # which --toolsets lists this tool (see tshark_mcp/toolsets.py)
+
 Kinds = Annotated[list[str] | None, Field(
     description="Checks to run: scans, beacons, dns_tunnels, tls_fingerprints, arp, cleartext_credentials (default all)")]
 Raw = Annotated[bool, Field(description="Also return JA4_r (the raw cipher and extension lists)")]
