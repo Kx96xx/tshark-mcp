@@ -157,6 +157,8 @@ def kind_for_key(key: str) -> str | None:
         return "number"
     if k.endswith("user_name") or k in ("identity", "public_identity", "private_identity", "impi", "impu"):
         return "subscriber"
+    if k in ("client_id", "endpoint", "device_id"):  # iot_sessions: MQTT client ids, LwM2M endpoint names
+        return "sip_user"
     if k.startswith("sip_") and k.endswith("_user"):  # sip.from.user, sip.to.user, sip.r-uri.user, ...
         return "sip_user"
     return None

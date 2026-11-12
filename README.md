@@ -193,7 +193,7 @@ How to report a vulnerability: [SECURITY.md](https://github.com/Kx96xx/tshark-mc
 
 ## Tools
 
-<!-- tool-count -->Sixty<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Sixty-one<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Only the default toolset (34 tools, about 60% of the
@@ -249,6 +249,7 @@ what it cost in `tokens_estimate`.
 | `tcp_connections` | Every connection attempt: connected, refused, filtered or ICMP-prohibited, who closed it; per destination success rate |
 | `security_triage` | Defensive triage: port scans, host sweeps, SYN floods, beaconing (RITA-style score with raw interval and size statistics), DNS tunnel hints, TLS clients by JA4/JA3 and servers by JA3S, ARP conflicts, cleartext credentials (counts only) |
 | `icmp_errors` | Every ICMP/ICMPv6 error by sender, kind and quoted flow: fragmentation needed, rejects, routing loops, lost pings |
+| `iot_sessions` | IoT devices: MQTT connections (CONNACK named, keepalive violations, reconnect loops, PUBACK latency, how it ended), CoAP retransmissions and exhausted requests, LwM2M registrations and expiry; GTP-U inner traffic names its TEID; payloads never read |
 | `sip_dialogs` | Messages grouped by Call-ID with outcome after any challenge |
 | `sip_call_detail` | One call: timings, SDP, Reason headers, who hung up |
 | `call_kpis` | ASR, NER, SER, PDD and ACD per peer, trunk, number prefix, user agent or interval |

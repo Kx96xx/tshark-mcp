@@ -304,6 +304,10 @@
       "description": "Why a 5G SA UE does not register, has no data or no VoNR: one row per UE (NGAP UE association) joining N1/N2 (NGAP and NAS-5GS), N4 (PFCP) and N3 (GTP-U)."
     },
     {
+      "name": "iot_sessions",
+      "description": "Why IoT devices fail to stay connected: one row per MQTT connection (client id, protocol level, keepalive, CONNACK named, `keepalive_violated`, PUBLISH counts per topic, PUBACK latency, DISCONNECT reason, how it `ended`, `reconnect_loop`), per CoAP client and server (CON/NON/ACK/RST, ..."
+    },
+    {
       "name": "open_capture",
       "description": "Pin one capture for an investigation of several calls: returns a `handle` (\"cap:...\"), accepted by every capture tool in place of `path` (also `path_a`/`path_b`)."
     },
