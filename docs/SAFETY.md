@@ -1,6 +1,6 @@
 # Safety model
 
-How tshark-mcp stays read-only and bounded, in detail. The [README](../README.md) has the
+How tshark-mcp stays read-only and bounded, in detail. The [guide](GUIDE.md#safety-model) has the
 three-bullet version; [SECURITY.md](../SECURITY.md) says how to report a vulnerability.
 
 ## Transport
