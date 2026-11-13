@@ -2,7 +2,7 @@
 
 The reference for every tool of tshark-mcp: arguments, what each returns, the output
 contract they share, and worked examples with real output on synthetic captures. The
-[README](../README.md) has the one-line summary of each; [SAFETY.md](SAFETY.md) has the caps
+[guide](GUIDE.md#tools) has the one-line summary of each; [SAFETY.md](SAFETY.md) has the caps
 and the redaction rules.
 
 ## Every tool, its arguments and what it returns

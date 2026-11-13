@@ -331,7 +331,7 @@ Anything that needs a newer tshark must be gated on `tests/conftest.py: tshark_v
   It also gets `docs/tools/<name>.md` (its README line, llms.txt line, reference text and
   `order`; format in `docs/tools/README.md`). A new prompt gets a skill under `plugin/skills/`
   that points at it.
-- Generated, never edited by hand: the tool tables of the README and `docs/TOOLS.md`, the tool
+- Generated, never edited by hand: the tool tables of `docs/GUIDE.md` and `docs/TOOLS.md`, the tool
   list of `llms.txt`, the tool count (`<!-- tool-count -->` in README, this file and llms.txt)
   and `mcpb/manifest.json`. After adding a tool, changing its arguments or editing a
   `docs/tools/` file, run `python scripts/gen_docs.py` and commit what it rewrites; CI

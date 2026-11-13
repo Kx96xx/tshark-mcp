@@ -34,11 +34,11 @@ def test_cli_check_passes():
 def test_every_tool_has_one_doc_and_appears_in_every_list():
     docs = gen.load_docs(server.TOOLS)
     assert sorted(d.name for d in docs) == sorted(server.tool_names())
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "GUIDE.md").read_text(encoding="utf-8")
     llms = (ROOT / "llms.txt").read_text(encoding="utf-8")
     reference = (ROOT / "docs" / "TOOLS.md").read_text(encoding="utf-8")
     for name in server.tool_names():
-        assert f"| `{name}` |" in readme, name
+        assert f"| `{name}` |" in guide, name
         assert f"- `{name}(" in llms, name
         assert f"| `{name}(" in reference, name
     count = gen.spelled(len(server.TOOLS))
