@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "tshark-mcp",
   "display_name": "tshark-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read-only packet capture analysis with tshark: Diameter, GTP, PFCP, SIP, RTP, IMS, SIGTRAN, DNS, TLS and TCP.",
   "long_description": "Runs tshark -r on capture files inside the directories you choose and returns compact JSON: request/answer pairs with cause names, call and media checks, subscriber traces and capture quality. It cannot capture, write files, resolve names or load code. tshark 4.0 or newer must be installed (Wireshark includes it).",
   "author": {

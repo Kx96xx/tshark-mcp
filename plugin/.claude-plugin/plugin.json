@@ -1,7 +1,7 @@
 {
   "name": "tshark-mcp",
   "displayName": "tshark-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read-only packet capture analysis with tshark (Diameter, GTP, PFCP, SIP, RTP, IMS, SIGTRAN, DNS, TLS, TCP), with investigation skills.",
   "author": {
     "name": "Karl Hulse",
@@ -15,7 +15,7 @@
     "tshark-mcp": {
       "command": "uvx",
       "args": [
-        "--from", "tshark-mcp-server>=0.2.0", "tshark-mcp",
+        "--from", "tshark-mcp-server>=0.3.0", "tshark-mcp",
         "--allow-dir", "${user_config.capture_dir}",
         "--redact", "${user_config.redact}"
       ]
