@@ -38,11 +38,11 @@ COUNT = re.compile(r"(<!-- tool-count -->)([^<]*)(<!-- /tool-count -->)")
 
 # file -> generated blocks it holds
 BLOCKS = {
-    "README.md": ("readme-tools",),
+    "docs/GUIDE.md": ("readme-tools",),
     "docs/TOOLS.md": ("tools-reference",),
     "llms.txt": ("llms-tools",),
 }
-COUNTED = ("README.md", "AGENTS.md", "llms.txt")
+COUNTED = ("README.md", "docs/GUIDE.md", "AGENTS.md", "llms.txt")
 
 _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
          "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
