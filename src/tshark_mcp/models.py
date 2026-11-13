@@ -2103,6 +2103,7 @@ class IncidentSummaryResult(ToolResult, total=False):
     passes: list[dict[str, Any]]
     budget_s: float
     thresholds: dict[str, float]
+    explanation: dict[str, Any]  # audience="support": headline, points, caveats, ticket_lines
 
 
 class CaptureDifference(TypedDict, total=False):

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
-from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, smsdelivery, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
+from . import __version__, avps, callkpi, calllegs, capmeta, causes, compare, diameter, dns, dtmf, expert, explain, gtp, gtpies, gtpv1, httptx, icmperr, ims, media, models, nasproc, packets, quality, rates, roaming, rtp, sdp, search, sigtran, sigtranhealth, sip, sms, smsdelivery, tcpconn, tcphealth, timing, tls, tunnels, untrusted, volte
 from .fields import (
     compact, dicts_with, field_catalogue, iso, lookup_field, parse_packets, parse_time, search_fields, split_fields_line,
     to_float, to_int, validate_fields,
@@ -4001,7 +4001,8 @@ def _capinfos_interfaces(stdout: str) -> int | None:
 
 
 @_tool(title="Incident summary (what is wrong in this capture)", annotations=READ_ONLY)
-def incident_summary(path: str, focus: str = "auto", budget_s: float | None = None) -> models.IncidentSummaryResult:
+def incident_summary(path: str, focus: str = "auto", budget_s: float | None = None,
+                     audience: str = "engineer") -> models.IncidentSummaryResult:
     """Start here on any capture nobody has looked at yet: "what is wrong here?". Runs
     pcap_info, capture_quality, conversations and the protocol tools the capture carries
     under one time budget and returns `findings` ranked by severity (high, medium, low):
@@ -4011,6 +4012,8 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
     (passes skipped and why) and `not_analysed` (protocols present that no pass reads, each
     with its `next_call`). `focus`: auto (default), web, dns, tls, voip or mobile;
     `budget_s` caps the whole call (default and maximum: the server's run timeout).
+    `audience="support"` adds `explanation`: the same findings in plain words for a support
+    agent or a ticket (what it means, who to involve, frames, `ticket_lines` ready to paste).
     Details: A `next_call` whose tool the active toolsets do not list carries `toolset` (the
     `--toolsets` name that lists it); the tool still answers a call by name. Passes after the first three: tcp_connections, tcp_health, dns_transactions,
     tls_handshakes, quic_connections, http_transactions, icmp_errors, tunnels_overview
@@ -4035,6 +4038,8 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
         st = state()
         if focus not in incident.FOCUSES:
             raise ToolError("invalid_argument", f"focus must be one of {', '.join(incident.FOCUSES)}, not {echo(focus)}")
+        if audience not in ("engineer", "support"):
+            raise ToolError("invalid_argument", f"audience must be engineer or support, not {echo(audience)}")
         try:
             budget = float(budget_s) if budget_s is not None else st.limits.timeout_seconds
         except (TypeError, ValueError):
@@ -4157,10 +4162,13 @@ def incident_summary(path: str, focus: str = "auto", budget_s: float | None = No
             if not _listed(step["tool"]):
                 # Not in tools/list under the active toolsets (it still answers by name): say which one lists it.
                 step["toolset"] = toolsets.of(step["tool"], TOOLS.get(step["tool"]))
-        return {"path": p, "focus": focus, "summary": summary, "findings": findings, "capture": cap, "top_talkers": top,
-                "timeline": timeline, "not_checked": not_checked, "not_analysed": unread, "passes": passes,
-                "budget_s": round(budget, 3), "thresholds": dict(incident.THRESHOLDS)}
-    return _guarded("incident_summary", {"path": path, "focus": focus, "budget_s": budget_s}, run)
+        out = {"path": p, "focus": focus, "summary": summary, "findings": findings, "capture": cap, "top_talkers": top,
+               "timeline": timeline, "not_checked": not_checked, "not_analysed": unread, "passes": passes,
+               "budget_s": round(budget, 3), "thresholds": dict(incident.THRESHOLDS)}
+        if audience == "support":
+            out["explanation"] = explain.explanation(findings, cap, unread)
+        return out
+    return _guarded("incident_summary", {"path": path, "focus": focus, "budget_s": budget_s, "audience": audience}, run)
 
 
 def _window_args() -> dict[str, Any]:

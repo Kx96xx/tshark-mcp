@@ -110,6 +110,7 @@ PER_TOOL: dict[str, str] = {
     "capture_index.min_gap_s": "Shortest gap between files reported as a hole, seconds",
     "incident_summary.focus": "auto, web, dns, tls, voip or mobile",
     "incident_summary.budget_s": "Time budget for the whole call, seconds",
+    "incident_summary.audience": "engineer (default) or support: adds plain-language explanation",
     "export_subset.name": "File name to create in the export directory (no path)",
     "export_subset.max_packets": "Most packets written",
     "export_subset.snaplen": "Cut each packet to this many bytes",
