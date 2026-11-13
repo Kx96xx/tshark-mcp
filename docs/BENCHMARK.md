@@ -54,8 +54,34 @@ Scripted driver, 2026-11-05 (proves every answer is in the tool output; no model
 | --- | --- | --- | --- | --- | --- | --- |
 | tshark-mcp | 35/35 (100.0%) | 1.23 | 1,388 | - | - | 0.37 |
 
-Model runs (both arms): not run yet. The environment that built this page had no API
-credentials. The command above produces them, and the PR that adds them reports the cost.
+Claude Code driver, Sonnet 5.5, 2026-11-12, one run per question
+([results](../evals/results/2026-11-12-claude-code.json)):
+
+| Arm | Success | Mean calls | Mean result tokens | Model input / output tokens | Cost (USD, reported) | Mean s |
+| --- | --- | --- | --- | --- | --- | --- |
+| tshark-mcp | 30/35 (85.7%) | 2.51 | 1,637 | 6,259,135 / 22,513 | 1.63 | 13.55 |
+| tshark-only | 27/35 (77.1%) | 3.26 | 1,616 | 439,422 / 41,825 | 1.17 | 16.97 |
+
+What it says:
+
+- With tshark-mcp the model answered 3 more questions, with a quarter fewer calls and in less
+  time. The baseline missed where the answer has to be assembled across packets or files: which
+  captures hold a subscriber, a subscriber's Diameter session found through a redacted IMSI (it
+  also leaked the IMSI), the false-alarm Delete Session at the capture's end, the trunk with the lowest
+  ASR, failed IMS registrations.
+- tshark-mcp sends far more input tokens: every tool definition (61 with `--toolsets all`) rides
+  along on every turn. Most are cache reads, so the reported cost is 1.4 times the baseline's,
+  not 14 times. The default toolset (34 tools) lists fewer.
+- tshark-mcp's five misses: two call budgets overrun (4 calls for 3 finding a subscriber's files,
+  9 for 8 to a PAA), a wrong GTP-U byte count after a detour, a tool name it invented, and an
+  unanswered-AIR answer that named neither the command nor its frame. None was a wrong tool result.
+- One run per question: a model's path varies between runs, so a difference of one or two
+  questions is noise. `--repeats` reruns each question.
+
+Scoring note: this run's own scorer read only the `<response>` value, which failed free-text
+answers that wrap a short value in the tags (`one_way_audio` on both arms). The rule was changed
+to accept the value or the whole reply, and the same transcripts were rescored without another
+model call: tshark-mcp 26 to 30, baseline 24 to 27.
 
 ## Demo script (90 seconds)
 

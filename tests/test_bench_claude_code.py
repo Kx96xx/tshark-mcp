@@ -100,3 +100,13 @@ def test_reported_cost_feeds_the_cap():
     assert not budget.exhausted()
     budget.add({"input_tokens": 1, "output_tokens": 1, "reported_cost_usd": 0.015})
     assert budget.exhausted()
+
+
+def test_answer_checks_read_the_response_tags():
+    from evals.harness import Scenario, score
+    q = Scenario(id="x", question="?", steps=(), answer=(r"^\s*AMR-WB\s*$",), forbidden=(r"secret",))
+    assert score(q, [], set(), "The refusing side wants **AMR-WB**.", []).passed is False
+    assert score(q, [], set(), "Frame 314 offers AMR-WB/16000.\n<response>AMR-WB</response>", []).passed
+    assert not score(q, [], set(), "secret <response>AMR-WB</response>", []).passed  # forbidden reads it all
+    words = Scenario(id="y", question="?", steps=(), answer=(r"one[- ]way",))
+    assert score(words, [], set(), "One-way audio: nothing comes back.\n<response>192.0.2.70</response>", []).passed
