@@ -296,6 +296,10 @@
       "description": "A ladder diagram to paste into a ticket: the messages of one call (`call_id`, every SIP leg from call_legs) or one subscriber (`imsi` or `msisdn`, Diameter, GTP, PFCP, SIP, ."
     },
     {
+      "name": "correlate_captures",
+      "description": "Where between two capture points did packets disappear or change? `path_a` and `path_b` hold the same traffic captured at two places on its path (A upstream, B downstream: client side and server side, before and after a firewall, NAT or tunnel)."
+    },
+    {
       "name": "diameter_peers",
       "description": "Is the DRA or a peer unhealthy, and which realm is unroutable: one row per Diameter peer connection (the two IP addresses) with a `verdict` (healthy, degraded, restarted, down) and `issues`."
     },

@@ -116,7 +116,7 @@ investigation of a failed attach is in [docs/EXAMPLE.md](EXAMPLE.md).
 
 ## Tools
 
-<!-- tool-count -->Sixty-two<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Sixty-three<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Only the default toolset (34 tools, about 60% of the
@@ -144,6 +144,7 @@ what it cost in `tokens_estimate`.
 | `pcap_info` | Packet count, duration, link type, protocol hierarchy, active limits |
 | `capture_metadata` | pcapng writer, interfaces, snaplen, capture filter and the drop counters tshark cannot show |
 | `capture_quality` | Can loss and timing conclusions be drawn from this file? Verdict with reasons |
+| `correlate_captures` | The same traffic captured at two points (client and server side, either side of a firewall or NAT): packets lost between them, NAT rewrites, hops, DSCP changes, clock offset and delay variation |
 | `conversations` | Top talkers at IP, TCP, UDP, SCTP or Ethernet level |
 | `filter_packets` | Rows of fields for any display filter (the escape hatch) |
 | `packet_detail` | One frame's full dissection, as in Wireshark's details pane |
