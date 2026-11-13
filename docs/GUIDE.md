@@ -116,7 +116,7 @@ investigation of a failed attach is in [docs/EXAMPLE.md](EXAMPLE.md).
 
 ## Tools
 
-<!-- tool-count -->Sixty-one<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
+<!-- tool-count -->Sixty-two<!-- /tool-count --> tools. Every one returns JSON with a typed `outputSchema`, pages with `limit`
 and `offset`, takes `start`/`end` to read one time window of a capture (ISO 8601, epoch seconds, `"+120s"` after the capture start, `"-30s"` before its end), and returns failures as `{"error": {...}}` with `isError: true` and a `fix` hint. The tool list is
 compact by default (less than half the size of the full list); each tool's full schema is the resource `schema://tools/<name>`, and
 `--schema-profile full` publishes them all. Only the default toolset (34 tools, about 60% of the
@@ -156,6 +156,7 @@ what it cost in `tokens_estimate`.
 | `diameter_sessions` | The same grouped by Session-Id, with per-session counts |
 | `diameter_avps` | The AVPs behind each transaction: flags with bit names, Subscription-Data digest, Gy/Rx/Cx/Sh/S13 digests with failed codes explained, full tree; authentication material never returned |
 | `gtp_sessions` | GTPv2-C requests paired with responses across NATs and proxy chains, cause names, PAA |
+| `procedure_check` | Does a capture follow the standard flow (EPS attach, 2G/3G location update, SIP REGISTER, SIP call)? Each step ok, failed, unanswered, missing or out of order, with frames, the spec clause and the first deviation |
 | `gtp_ies` | The IEs behind each GTPv2-C transaction: APN, PDN type, QoS, ULI, PCO names, offending IE, likely causes of a reject |
 | `gtpv1_sessions` | GTPv1-C (Gn/Gp) PDP contexts paired, with cause names |
 | `gtp_user_plane` | GTP-U packets, bytes and inner addresses per tunnel |

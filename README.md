@@ -34,7 +34,7 @@ VS Code, Docker and the Claude Code plugin: [the guide](https://github.com/Kx96x
 - **Checked against public captures.** 102 public sample captures, 1,064 tool calls; every
   wrong answer found was fixed and is re-tested ([results](https://github.com/Kx96xx/tshark-mcp/blob/main/docs/VALIDATION.md)).
 
-<!-- tool-count -->Sixty-one<!-- /tool-count --> tools in all; a default set of 34 keeps the tool list small.
+<!-- tool-count -->Sixty-two<!-- /tool-count --> tools in all; a default set of 34 keeps the tool list small.
 
 ## Learn more
 
