@@ -3,7 +3,7 @@
   "name": "io.github.Kx96xx/tshark-mcp",
   "title": "tshark-mcp",
   "description": "Read-only packet capture analysis with tshark: Diameter, GTP, SIP, RTP, SIGTRAN, DNS, TCP and TLS.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "websiteUrl": "https://github.com/Kx96xx/tshark-mcp",
   "repository": {
     "url": "https://github.com/Kx96xx/tshark-mcp",
@@ -15,7 +15,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "tshark-mcp-server",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
