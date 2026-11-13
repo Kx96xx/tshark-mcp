@@ -1548,7 +1548,9 @@ def http_transactions(path: str, host: str | None = None, path_prefix: str | Non
 
 @_tool(title="Conversations (top talkers)", annotations=READ_ONLY)
 def conversations(path: str, layer: str = "ip", filter: str | None = None, limit: int = 200, offset: int = 0) -> models.ConversationsResult:
-    """List conversations (top talkers) at one layer: `layer` is one of ip, ipv6, tcp,
+    """List conversations (top talkers) at one layer: who talked to whom and how much.
+    Use it to find the busy or unexpected peers; for whether TCP connections succeeded use
+    tcp_connections, for media streams rtp_streams. `layer` is one of ip, ipv6, tcp,
     udp, sctp or eth. Each row has both endpoints, frames and bytes in each direction,
     totals, relative start time and duration. `filter` is an optional display filter
     that restricts which packets are counted, e.g. `gtp` or `sctp.port == 3868`.
@@ -1918,7 +1920,10 @@ def _protocol_column(runner: Runner) -> str | None:
 @_tool(title="Diameter transactions", annotations=READ_ONLY)
 def diameter_transactions(path: str, filter: str | None = None, limit: int = 200, offset: int = 0) -> models.DiameterTransactionsResult:
     """Pair Diameter requests with their answers (Hop-by-Hop + End-to-End id, checked
-    against Session-Id). Each transaction gives command code and name (ULR/ULA, AIR/AIA,
+    against Session-Id). Use it for which requests failed or went unanswered and how slow
+    the answers were; group them per Session-Id with diameter_sessions, read the AVPs
+    behind a transaction with diameter_avps, follow one subscriber across protocols with
+    trace_subscriber. Each transaction gives command code and name (ULR/ULA, AIR/AIA,
     CCR/CCA, ...), application, origin/destination host and realm, User-Name (IMSI),
     Result-Code or Experimental-Result-Code with its name, round-trip ms and
     `unanswered: true` for requests with no answer. An unanswered request whose capture
@@ -2885,7 +2890,9 @@ def response_times(path: str, filter: str | None = None, limit: int = 100,
 def sip_dialogs(path: str, call_id: str | None = None, number: str | None = None, method: str | None = None,
                 filter: str | None = None, limit: int = 200, offset: int = 0,
                 esp_null: EspNull = False) -> models.SipDialogsResult:
-    """Group SIP messages by Call-ID. Each dialog lists the method/response sequence with
+    """Group SIP messages by Call-ID: the list of calls and other dialogs and how each
+    ended. Use it to find a call; then sip_call_detail for one call's timings and SDP,
+    ims_registration for REGISTER flows, sms_over_ims for SIP MESSAGE delivery. Each dialog lists the method/response sequence with
     timestamps, From, To, Request-URI, P-Asserted-Identity, the method chain, the final
     status of the initial request, time to that final response and the dialog duration;
     `outcome_status` is the final status after any 401/407 challenge was retried (a
@@ -3455,8 +3462,10 @@ def dtmf_events(path: str, call_id: str | None = None, heuristic: bool = False, 
 @_tool(title="IMS registration", annotations=READ_ONLY)
 def ims_registration(path: str, impu: str | None = None, imsi: str | None = None, filter: str | None = None,
                      limit: int = 50, offset: int = 0, esp_null: EspNull = False) -> models.ImsRegistrationResult:
-    """IMS registration per UE (public identity in the To header), built from every
-    SIP REGISTER transaction in the capture; the legs of one REGISTER through the
+    """IMS registration per UE: whether each UE is registered on IMS and, if not, why.
+    Use it for "why can't this UE register" or "is it registered for SMS/voice"; for calls
+    use sip_dialogs, for SMS over IMS sms_over_ims. Built from every
+    SIP REGISTER transaction in the capture (public identity in the To header); the legs of one REGISTER through the
     CSCFs (same Call-ID and CSeq) count once, copies of a packet are told apart from
     retransmissions. Each row has the REGISTER transactions, Contact feature tags (smsip,
     MMTel), implicit IMPUs, third-party REGISTERs and a `verdict` (registered, expired,

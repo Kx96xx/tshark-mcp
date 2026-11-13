@@ -105,7 +105,7 @@
     },
     {
       "name": "conversations",
-      "description": "List conversations (top talkers) at one layer: `layer` is one of ip, ipv6, tcp, udp, sctp or eth."
+      "description": "List conversations (top talkers) at one layer: who talked to whom and how much."
     },
     {
       "name": "filter_packets",
@@ -197,7 +197,7 @@
     },
     {
       "name": "sip_dialogs",
-      "description": "Group SIP messages by Call-ID."
+      "description": "Group SIP messages by Call-ID: the list of calls and other dialogs and how each ended."
     },
     {
       "name": "call_kpis",
@@ -237,7 +237,7 @@
     },
     {
       "name": "ims_registration",
-      "description": "IMS registration per UE (public identity in the To header), built from every SIP REGISTER transaction in the capture; the legs of one REGISTER through the CSCFs (same Call-ID and CSeq) count once, copies of a packet are told apart from retransmissions."
+      "description": "IMS registration per UE: whether each UE is registered on IMS and, if not, why."
     },
     {
       "name": "sms_over_ims",
