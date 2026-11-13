@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 # package is published as tshark-mcp-server; the import name (tshark_mcp) and the command
 # (tshark-mcp) are unchanged.
 name = "tshark-mcp-server"
-version = "0.3.0"
+version = "0.4.0"
 description = "Read-only MCP server for analysing packet captures with tshark: Diameter, GTP, SIP, SIGTRAN, with hard safety limits"
 readme = "README.md"
 license = { text = "MIT" }

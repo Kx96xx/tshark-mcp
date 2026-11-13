@@ -7,6 +7,46 @@ the project uses [semantic versioning](https://semver.org/).
 
 Changes merged since the last release are fragments in [changelog.d/](https://github.com/Kx96xx/tshark-mcp/tree/main/changelog.d); `python scripts/changelog.py --release X.Y.Z` moves them here.
 
+## 0.4.0 - 2026-11-12
+
+### Added
+
+- PcapBench `--driver claude-code`: each question is one `claude -p` session with only the arm's
+  MCP server, so a benchmark run can use a Claude subscription instead of API credits; usage and
+  the session's reported cost are recorded, and `--max-usd` stops on that cost. With a model, both
+  arms are now judged alike (answer, budgets, at least one tool call) instead of holding the
+  tshark-mcp arm to the scripted path; `redaction_join` gained an answer check.
+- PcapBench answers: the system prompt asks for a value-only answer inside `<response>` tags (the
+  mcp-builder evaluation format), and an answer check passes on that value or on the whole reply.
+  First model results (Claude Code, Sonnet 5.5): tshark-mcp 30/35, plain tshark 27/35
+  (docs/BENCHMARK.md, evals/results/2026-11-12-claude-code.json).
+- `correlate_captures` (toolset `network`): the same traffic captured at two points on its path
+  (client and server side, either side of a firewall, NAT or tunnel), matched packet by packet on
+  an identity that survives NAT (IP protocol, ID and length plus TCP raw sequence and ack, or UDP
+  length). Returns packets lost between the points per flow, NAT address and port rewrites, the
+  TTL drop (hops), DSCP changes, the clock offset between the captures and the delay variation
+  around it, with `issues` and a `verdict`.
+- `incident_summary(audience="support")` adds `explanation`: the same findings in plain words for
+  a support agent or a ticket. Each point says what happened, what it means for the user and which
+  team usually owns it, with its frames; a headline, caveats (an untrusted capture, protocols no
+  check reads, findings beyond the first five) and `ticket_lines` ready to paste. No new judgement:
+  the findings are identical to the default `audience="engineer"`.
+- `procedure_check` (toolset `mobile`): does a capture follow the standard flow, and which step
+  goes wrong first? Reference flows as data in `tshark_mcp/procedure.py`: `eps_attach` (S6a AIR
+  optional, ULR, GTPv2 Create Session, Modify Bearer) and `location_update` (MAP) from the
+  subscriber's trace_subscriber timeline; `sip_register` (REGISTER, optional 401/407 challenge,
+  REGISTER with credentials, 200) and `sip_call` (INVITE, optional 100 and 180/183, 200, ACK)
+  from sip_dialogs, for one Call-ID or every dialog of the method (up to 20). Each step is ok,
+  failed, unanswered, missing, out_of_order or not_seen, with frames and the spec clause;
+  `first_deviation` and a one-sentence `verdict`.
+
+### Changed
+
+- `diameter_transactions`, `sip_dialogs`, `ims_registration` and `conversations` say in their
+  description when to use them and which sibling answers the neighbouring question
+  (`diameter_sessions`, `sip_call_detail`, `sms_over_ims`, `tcp_connections`, ...), so an agent
+  picks the right tool first.
+
 ## 0.3.0 - 2026-11-12
 
 ### Added
