@@ -144,6 +144,7 @@ what it cost in `tokens_estimate`.
 | `pcap_info` | Packet count, duration, link type, protocol hierarchy, active limits |
 | `capture_metadata` | pcapng writer, interfaces, snaplen, capture filter and the drop counters tshark cannot show |
 | `capture_quality` | Can loss and timing conclusions be drawn from this file? Verdict with reasons |
+| `correlate_captures` | The same traffic captured at two points (client and server side, either side of a firewall or NAT): packets lost between them, NAT rewrites, hops, DSCP changes, clock offset and delay variation |
 | `conversations` | Top talkers at IP, TCP, UDP, SCTP or Ethernet level |
 | `filter_packets` | Rows of fields for any display filter (the escape hatch) |
 | `packet_detail` | One frame's full dissection, as in Wireshark's details pane |

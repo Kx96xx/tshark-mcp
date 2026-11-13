@@ -126,6 +126,8 @@ PER_TOOL: dict[str, str] = {
     "call_kpis.group_by": _one_of(callkpi.GROUP_BY),
     "call_kpis.prefix_len": "Digits of the destination prefix",
     "call_legs.ladder": "Also return a text ladder of the legs",
+    "correlate_captures.path_a": "Capture taken upstream (client side, before the firewall or NAT): absolute path",
+    "correlate_captures.path_b": "Capture of the same traffic taken downstream: absolute path",
     "call_ladder.roles": "Name each participant by its guessed role (MME, HSS, PGW, ...)",
     "nas_procedures.guti": "M-TMSI: an int or 0x hex",
     "nas_procedures.ue_id": "mme_ue_s1ap_id:enb_ue_s1ap_id, such as 7:3",
