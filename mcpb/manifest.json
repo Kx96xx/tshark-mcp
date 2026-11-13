@@ -312,6 +312,10 @@
       "description": "Pin one capture for an investigation of several calls: returns a `handle` (\"cap:...\"), accepted by every capture tool in place of `path` (also `path_a`/`path_b`)."
     },
     {
+      "name": "procedure_check",
+      "description": "Does this capture follow the standard procedure, and if not, which step is the first to go wrong? Compares the messages seen with a reference flow and returns each step as ok, failed, unanswered, missing, out_of_order or not_seen (optional), with frames and the spec clause, plus ..."
+    },
+    {
       "name": "sbi_transactions",
       "description": "Which 5G core SBI call failed, and why: one row per HTTP/2 request between network functions (AMF, SMF, AUSF, UDM, PCF, NRF, ...) with `service` (nnrf-disc, nausf-auth, nudm-sdm, nsmf-pdusession, ...), `operation` (method plus path template), `consumer` and `producer` NF, `status`, ..."
     },
