@@ -15,23 +15,35 @@ capture is synthetic (`tests/pcapgen.py`). No real capture is committed or sent 
 
 **Scoring.** A question passes when every one of these holds:
 
-- the answer matches (the XML answers exactly);
-- the model called the tools the question needs (`run_tshark` in the baseline arm);
+- the answer matches (the XML answers exactly) and says nothing the question forbids;
+- the model called at least one tool;
 - the calls stay inside the call and result-token budgets.
 
-For each arm and question the run records the calls, the model's input and output tokens (from
-the API `usage`), the summed result size, wall time and refused calls (`path_not_allowed`,
-forbidden arguments).
+Both arms are judged the same way. A model is not held to the path the scripted driver takes
+through tshark-mcp's tools (the scripted driver still checks every step and fact); the baseline
+arm, with its one tool, could not be held to anything comparable.
+
+For each arm and question the run records the calls, the model's input and output tokens, the
+summed result size, wall time and refused calls (`path_not_allowed`, forbidden arguments).
+
+Three drivers:
 
 ```sh
-python -m evals.bench                                  # scripted driver, tshark-mcp arm: CI, no cost
+python -m evals.bench                                  # scripted: tshark-mcp arm, CI, no cost
 python -m evals.bench --driver llm --model claude-opus-5-5 --max-runs 70 \
-    --price-in <USD/MTok> --price-out <USD/MTok> --max-usd 20 --out evals/results/<date>.json
+    --price-in <USD/MTok> --price-out <USD/MTok> --max-usd 20   # Messages API, ANTHROPIC_API_KEY
+python -m evals.bench --driver claude-code --model claude-sonnet-5-5 --max-runs 70 --max-usd 15
 ```
 
+`claude-code` runs each question as one `claude -p` session on a Claude subscription (the logged-in
+CLI, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`), with only the arm's MCP server: no
+built-in tools, settings or other servers. Its input tokens include Claude Code's own framing and
+cached tokens, so compare its rows with each other, not with the `llm` driver's.
+
 **Cost guard.** A model run must state `--max-runs`, the cap on questions x arms x repeats; a
-larger plan is refused before any call. With prices, the run stops before the next question once
-the measured cost passes `--max-usd`, and records the questions it skipped. Results go to
+larger plan is refused before any call. The run stops before the next question once the cost
+passes `--max-usd`: priced from `--price-in`/`--price-out`, or the cost a `claude-code` session
+reports. Skipped questions are recorded. Results go to
 `evals/results/<date>-<driver>.json` (`meta`, `summary` per arm, `rows`) and the table below.
 
 ## Results

@@ -20,6 +20,7 @@ patterns that must not). The model driver is optional and off by default; see
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -323,6 +324,8 @@ async def run_all(scenarios: list[Scenario], *, captures: str, server_dir: str |
             for scenario in scenarios:
                 if driver == "scripted":
                     out.append(await run_scripted(scenario, call_tool, listed, seen_dir))
+                elif driver == "claude-code":  # its own session and server; this one only lists the tools
+                    out.append(await asyncio.to_thread(model.run, scenario, listed, seen_dir, command))
                 else:
                     from .llm import run_llm  # noqa: PLC0415
                     out.append(await run_llm(scenario, call_tool, tools, listed, seen_dir, model))
