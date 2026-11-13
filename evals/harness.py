@@ -20,6 +20,7 @@ patterns that must not). The model driver is optional and off by default; see
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -242,8 +243,13 @@ def score(scenario: Scenario, calls: list[Call], listed: set[str], answer: str |
     if tokens > scenario.max_tokens:
         failures.append(f"results cost about {tokens} tokens, budget {scenario.max_tokens}")
     text = scenario.reference_answer if answer is None else answer
+    # An answer check passes on the <response> part (the mcp-builder evaluation format: the value
+    # alone, anchored checks need it) or on the whole reply (free-text checks look for words around
+    # it); forbidden checks read the whole reply.
+    tagged = re.findall(r"<response>(.*?)</response>", text, re.S | re.IGNORECASE)
+    judged = [tagged[-1], text] if tagged else [text]
     for pattern in scenario.answer:
-        if not re.search(pattern, text, re.IGNORECASE):
+        if not any(re.search(pattern, part, re.IGNORECASE) for part in judged):
             failures.append(f"answer does not say /{pattern}/")
     for pattern in scenario.forbidden:
         if re.search(pattern, text, re.IGNORECASE):
@@ -323,6 +329,8 @@ async def run_all(scenarios: list[Scenario], *, captures: str, server_dir: str |
             for scenario in scenarios:
                 if driver == "scripted":
                     out.append(await run_scripted(scenario, call_tool, listed, seen_dir))
+                elif driver == "claude-code":  # its own session and server; this one only lists the tools
+                    out.append(await asyncio.to_thread(model.run, scenario, listed, seen_dir, command))
                 else:
                     from .llm import run_llm  # noqa: PLC0415
                     out.append(await run_llm(scenario, call_tool, tools, listed, seen_dir, model))

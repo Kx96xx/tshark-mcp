@@ -27,7 +27,8 @@ SYSTEM = (
     "You investigate packet captures with the tshark-mcp tools. Capture files are under {captures} "
     "(subdirectories voice/, ims/ and examples/). Use absolute paths. Answer the question in a few "
     "sentences, quote the verdicts, codes and frame numbers the tools return, and never conclude that "
-    "something is absent from a page that says more rows exist."
+    "something is absent from a page that says more rows exist. When the question asks for a value "
+    "only, end with that value alone inside <response></response>."
 )
 
 

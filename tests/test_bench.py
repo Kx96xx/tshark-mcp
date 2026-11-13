@@ -25,6 +25,9 @@ def test_baseline_arm_may_only_call_run_tshark():
     q = bench.questions("xml")[0]
     assert bench.for_arm("tshark-only", q).expected_tools == {"run_tshark"}
     assert bench.for_arm("tshark-mcp", q) is q
+    for arm in bench.ARMS:  # a model is judged on its answer and budgets, the same in both arms
+        judged = bench.for_arm(arm, q, "claude-code")
+        assert judged.expected_tools == frozenset() and judged.answer == q.answer and judged.max_calls == q.max_calls
 
 
 def test_cost_guard_refuses_an_unstated_cap(capsys):
