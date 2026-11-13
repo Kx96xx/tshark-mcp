@@ -317,3 +317,50 @@ def test_next_call_names_the_toolset_of_an_unlisted_tool(inc, caps: Path):
     assert steps["sctp_init_rejected"]["tool"] == "sctp_associations" and steps["sctp_init_rejected"]["toolset"] == "mobile"
     assert steps["map_errors"]["toolset"] == "mobile"
     assert all("toolset" not in f["next_call"] for f in inc.incident_summary(p)["findings"])  # every toolset listed
+
+
+def test_support_audience_explains_findings_in_plain_words(inc, caps: Path):
+    eng = inc.incident_summary(str(caps / "web.pcap"))
+    assert "explanation" not in eng
+    out = inc.incident_summary(str(caps / "web.pcap"), audience="support")
+    assert "error" not in out, out
+    TypeAdapter(models.IncidentSummaryResult).validate_python(out)
+    assert out["findings"] == eng["findings"]  # same judgement, only reworded
+    ex = out["explanation"]
+    first = ex["points"][0]
+    assert first["what_happened"] == out["findings"][0]["text"] and first["who_to_involve"]
+    assert ex["headline"].startswith("Main problem: ") and first["what_it_means"] in ex["headline"]
+    assert len(ex["points"]) == min(5, len(out["findings"]))
+    assert ex["ticket_lines"][0] == ex["headline"] and len(ex["ticket_lines"]) >= 1 + len(ex["points"])
+    assert all(p["who_to_involve"] and p["what_it_means"] for p in ex["points"])
+    assert "more finding(s) are in `findings`" in " ".join(ex["caveats"])  # web.pcap has more than five
+
+
+def test_support_audience_rejects_unknown_values(inc, caps: Path):
+    out = inc.incident_summary(str(caps / "web.pcap"), audience="manager")
+    assert out["error"]["type"] == "invalid_argument" and "audience" in out["error"]["message"]
+
+
+def test_every_finding_kind_has_its_own_wording():
+    import re
+
+    from tshark_mcp import explain
+    src = (Path(incident.__file__)).read_text(encoding="utf-8")
+    kinds = set(re.findall(r'finding\(\s*"([a-z0-9_]+)"', src))
+    kinds |= set(re.findall(r'\(\s*"([a-z0-9_]+)",\s*"(?:high|medium|low)"', src))
+    kinds |= set(re.findall(r'kind = "([a-z0-9_]+)"', src))
+    kinds |= {"ims_registration_failed", "ims_challenge_loop"}
+    kinds |= {f"{p}_{s}" for p in explain.PROTOCOL_WORDS for s in ("failed", "unanswered")}
+    assert len(kinds) > 40
+    kinds -= {"high", "medium", "low"}
+    generic = [k for k in sorted(kinds) if explain.plain(k, "high")[1] == "the engineer who owns this service"]
+    assert not generic, f"add these kinds to explain.PLAIN: {generic}"
+
+
+def test_explanation_without_findings_and_with_an_untrusted_capture():
+    from tshark_mcp import explain
+    ex = explain.explanation([], {"trust": {"loss_conclusions": "not trustworthy"}}, [{"protocol": "dhcp"}])
+    assert ex["headline"] == "Nothing in this capture failed the checks that ran." and ex["points"] == []
+    assert any("not trustworthy" in c for c in ex["caveats"]) and any("dhcp" in c for c in ex["caveats"])
+    assert explain.plain("diameter_failed", "medium")[1] == "mobile core team"
+    assert explain.plain("brand_new_kind", "low")[0].startswith("Minor problem")
