@@ -43,7 +43,7 @@ passes start with `/captures`.
 
 Claude Code plugin: `plugin/` (manifest `plugin/.claude-plugin/plugin.json`, marketplace entry
 `.claude-plugin/marketplace.json`), installed with `/plugin install tshark-mcp --marketplace
-Kx96xx/tshark-mcp`. It starts the server with `uvx --from "tshark-mcp-server>=0.2.0" tshark-mcp`
+Kx96xx/tshark-mcp`. It starts the server with `uvx --from "tshark-mcp-server>=0.3.0" tshark-mcp`
 (the released package from PyPI), asks for the capture directory and redaction,
 and adds seven skills: `pcap-investigation` (when to reach for the tools) and one per MCP prompt,
 each pointing at that prompt. Tools appear as `mcp__plugin_tshark-mcp_tshark-mcp__<tool>`.
