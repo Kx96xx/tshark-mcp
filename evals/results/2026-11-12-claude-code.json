@@ -1,0 +1,1541 @@
+{
+ "meta": {
+  "schema_version": 1,
+  "date": "2026-11-12",
+  "driver": "claude-code",
+  "model": "claude-sonnet-5-5",
+  "arms": [
+   "tshark-mcp",
+   "tshark-only"
+  ],
+  "questions": 35,
+  "repeats": 1,
+  "planned_runs": 70,
+  "price_in": null,
+  "price_out": null,
+  "note": "Account: a Claude subscription through claude -p. Scored with the rule in this commit: an answer check passes on the <response> value or the whole reply. The run's own scorer read only the <response> part; the same transcripts were rescored offline, no model call repeated."
+ },
+ "summary": {
+  "tshark-mcp": {
+   "questions": 35,
+   "passed": 30,
+   "success_pct": 85.7,
+   "mean_calls": 2.51,
+   "mean_result_tokens": 1637,
+   "input_tokens": 6259135,
+   "output_tokens": 22513,
+   "cost_usd": null,
+   "mean_seconds": 13.55,
+   "reported_cost_usd": 1.6289,
+   "refused_calls": 1,
+   "skipped": 0
+  },
+  "tshark-only": {
+   "questions": 35,
+   "passed": 27,
+   "success_pct": 77.1,
+   "mean_calls": 3.26,
+   "mean_result_tokens": 1616,
+   "input_tokens": 439422,
+   "output_tokens": 41825,
+   "cost_usd": null,
+   "mean_seconds": 16.97,
+   "reported_cost_usd": 1.165,
+   "refused_calls": 3,
+   "skipped": 0
+  }
+ },
+ "rows": [
+  {
+   "arm": "tshark-mcp",
+   "id": "one_way_audio",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "call_kpis",
+    "media_path_check"
+   ],
+   "result_tokens_estimate": 1033,
+   "seconds": 15.83,
+   "refused_calls": 0,
+   "answer": "The missing direction is answerer to offerer. `media_path_check` reports \"no RTP seen answerer to offerer (192.0.2.70:30010 > 198.51.100.9:40010): one-way audio as captured\".\n\n- **Caller to callee:** present. The caller at 198.51.100.9:40010 sends 250 PCMA packets (SSRC 0x6a6a6a6a, first at frame 6) to 192.0.2.70:30010, as negotiated.\n- **Callee to caller:** missing. Nothing comes back from the callee's media address 192.0.2.70:30010 to the caller, which is why the caller hears nothing.\n- **Signalling:** the call itself worked. It was answered with a 200 (frame 4) and both sides negotiated PCMA with sendrecv, so this is not a codec or direction mismatch. The fault is that the callee side (192.0.2.70) never sent RTP.\n\n<response>\nanswerer to offerer (192.0.2.70:30010 > 198.51.100.9:40010)\n</response>",
+   "input_tokens": 178475,
+   "output_tokens": 651,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0416
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "codec_mismatch_488",
+   "passed": true,
+   "failures": [],
+   "calls": 4,
+   "tools": [
+    "call_kpis",
+    "call_kpis",
+    "media_path_check",
+    "sip_call_detail"
+   ],
+   "result_tokens_estimate": 2008,
+   "seconds": 23.51,
+   "refused_calls": 0,
+   "answer": "The 488 was a codec mismatch. The tools found no codec shared by the offer and the answer.\n\nThe call is `voice-488-4@ue.example`. It is the only failed call in the capture: two of the three calls were answered.\n\n- **Offer (frame 312):** the caller at 198.51.100.9 sent an INVITE offering only PCMU/8000 and PCMA/8000.\n- **Rejection (frame 314):** 192.0.2.50 answered 488 Not Acceptable Here, about 300 ms after the INVITE. The 488 carries `Reason: SIP;cause=488;text=\"Not Acceptable Here\"`.\n- **Warning header:** the 488 also carries `Warning: 305 pcscf.example \"Incompatible media format\"`.\n- **SDP in the 488:** it lists only AMR-WB/16000, so the rejecting side supports only AMR-WB.\n- **Verdict (`media_path_check`):** \"488: no codec in common; the offer has PCMU/8000, PCMA/8000 and the 488 lists AMR-WB/16000\".\n\nThe caller offered only G.711 and the far side accepts only AMR-WB, so there was nothing to negotiate. The fix is to offer AMR-WB, or to add transcoding at the SBC or P-CSCF.\n\n<response>\n488 Not Acceptable Here (Warning 305 \"Incompatible media format\"): codec mismatch. The INVITE (frame 312) offered only PCMU/PCMA, and the 488 (frame 314) lists only AMR-WB/16000, so there was no common codec.\n</response>",
+   "input_tokens": 240595,
+   "output_tokens": 1126,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0598
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "unknown_eps_subscription",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "diameter_transactions"
+   ],
+   "result_tokens_estimate": 629,
+   "seconds": 10.65,
+   "refused_calls": 0,
+   "answer": "The attach fails on the second Update-Location exchange. The MME (mme01) sent a ULR (frame 3) for IMSI 001010222333444. The HSS (hss01) answered in frame 4, 37 ms later, with Experimental-Result-Code 5420, **DIAMETER_ERROR_UNKNOWN_EPS_SUBSCRIPTION**.\n\nIn practice, the HSS has no EPS subscription for that IMSI. Either the subscriber isn't provisioned for EPS/LTE, or the IMSI is wrong or missing from the HSS. The fix is to provision the subscriber, or to check the IMSI the UE presented.\n\nThe other exchanges are fine:\n- The first ULR (frame 1), for IMSI 001010123456789, got 2001 SUCCESS in frame 2.\n- The watchdog in frames 5 and 6 also succeeded.\n\n<response>\nDIAMETER_ERROR_UNKNOWN_EPS_SUBSCRIPTION (5420): the HSS rejected the ULR for IMSI 001010222333444 (answer in frame 4) because it has no EPS subscription for that IMSI.\n</response>",
+   "input_tokens": 118062,
+   "output_tokens": 518,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0304
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "gtp_cause_78",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "gtp_sessions",
+    "gtp_ies"
+   ],
+   "result_tokens_estimate": 1271,
+   "seconds": 10.57,
+   "refused_calls": 0,
+   "answer": "The second Create Session Request was rejected: seq 21, request frame 5 and response frame 6. It was sent from 192.0.2.30 (SGW) to 192.0.2.40 (PGW) for IMSI 001010987654321 (MSISDN 15550100999).\n\nThe PGW answered with cause 78, \"Missing or unknown APN\". The request asked for the APN `internet.wrong.apn`, which the PGW doesn't know. The check is to compare that APN against the PGW configuration, the DNS APN selection, and the APN in the subscriber's subscription.\n\nThe other Create Session (seq 20, frames 3 and 4, APN `internet.test.apn`) was accepted with cause 16. It was allocated address 100.64.0.7.\n\n<response>\nCreate Session Request seq 21 (frame 5, IMSI 001010987654321) was rejected in frame 6 with cause 78, \"Missing or unknown APN\". The APN it requested was internet.wrong.apn.\n</response>",
+   "input_tokens": 119506,
+   "output_tokens": 612,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0371
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "unanswered_air",
+   "passed": false,
+   "failures": [
+    "answer does not say /AIR/",
+    "answer does not say /frame 5\\b/"
+   ],
+   "calls": 3,
+   "tools": [
+    "diameter_transactions",
+    "find_identifier",
+    "diameter_transactions"
+   ],
+   "result_tokens_estimate": 710,
+   "seconds": 16.45,
+   "refused_calls": 0,
+   "answer": "There is no file named `diameter.pcap`. The `examples` folder holds only three captures, and `diameter_error_answer.pcap` is the only Diameter one. I used that file instead.\n\nYes, every Diameter request in it got an answer. `diameter_transactions` returned 3 transactions and `unanswered: 0`, so no request is missing a reply.\n\n| Request frame | Answer frame | Request | Result |\n|---|---|---|---|\n| 1 | 2 | ULR (Update-Location) | 2001 DIAMETER_SUCCESS |\n| 3 | 4 | ULR (Update-Location) | Experimental-Result 5420 DIAMETER_ERROR_UNKNOWN_EPS_SUBSCRIPTION |\n| 5 | 6 | DWR (Device-Watchdog) | 2001 DIAMETER_SUCCESS |\n\nFrame 4 is an error answer rather than a missing one. It is the reply to the second ULR (frames 3\u20134), for IMSI 001010222333444.\n\nIf you meant a different file, tell me which one and I'll check that instead.\n\n<response>\nAll 3 requests were answered; none went unanswered. (`diameter.pcap` doesn't exist, so I checked `diameter_error_answer.pcap`. Its only failure is an error answer, 5420 on frame 4.)\n</response>",
+   "input_tokens": 236995,
+   "output_tokens": 957,
+   "turns": 4,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0501
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "cause_lookup_5001",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "cause_lookup"
+   ],
+   "result_tokens_estimate": 212,
+   "seconds": 7.66,
+   "refused_calls": 0,
+   "answer": "On S6a, Experimental-Result-Code 5001 is **DIAMETER_ERROR_USER_UNKNOWN** (TS 29.272 \u00a77.4.3). It means the HSS doesn't know the user, i.e. the IMSI isn't provisioned there.\n\n- **MME behaviour:** The MME rejects the attach with EMM cause 8 or 2.\n- **Typical causes:** The IMSI isn't provisioned in the HSS, or the request reached the wrong HSS (for example, a routing or realm problem).\n- **Where to look in a capture:** Filter on `diameter.Experimental-Result-Code == 5001`, then check the Error-Diagnostic AVP.\n\n<response>DIAMETER_ERROR_USER_UNKNOWN: the IMSI is unknown to the HSS (TS 29.272)</response>",
+   "input_tokens": 117218,
+   "output_tokens": 392,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0257
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "ims_challenge_loop",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "ims_registration"
+   ],
+   "result_tokens_estimate": 647,
+   "seconds": 11.67,
+   "refused_calls": 0,
+   "answer": "IMS registration for 001010000000102 fails because the network keeps rejecting its authentication. The tool's verdict is `challenge-loop`.\n\nThe UE (`test-ue/1.0`) sent three REGISTERs for `sip:001010000000102@ims.mnc001.mcc001.3gppnetwork.org`, and each got a 401 Unauthorized with an AKAv1-MD5 challenge:\n\n- **Frames 13/14:** the initial REGISTER (CSeq 1) got a 401 challenge, which is normal.\n- **Frames 15/16:** the UE answered the challenge (CSeq 2) and got another 401. The network did not accept the AKA response.\n- **Frames 17/18:** the UE's third REGISTER (CSeq 3) carried an AUTS. The network answered with a 401 again.\n\nThe AUTS means the UE's sequence number (SQN) is out of sync with the HSS, so it asked for resynchronisation. The response was still a 401 and the loop ended with no 200 OK.\n\nThe likely cause is an SQN mismatch between the SIM/UE and the HSS/AuC. Wrong K/OPc, or an IMPI the HSS doesn't hold, would also give a 401 on the response, but the AUTS points to SQN. The fix is to resynchronise the SQN in the HSS and check the subscriber's K/OPc and IMPI provisioning.\n\nI couldn't see everything. Three ESP packets on SPI 0x0000115c (first at frame 29) are not readable as captured, and there may be more SIP inside them. I did not re-run with `esp_null=true`, which only helps if that security association uses NULL encryption.\n\n<response>\nThe AKA authentication fails: the S-CSCF/HSS rejects the UE's challenge response with repeated 401s (frames 14, 16, 18). The UE's AUTS shows its SQN is out of sync with the HSS, so it needs an SQN resync (or its K/OPc/IMPI checked).\n</response>",
+   "input_tokens": 118081,
+   "output_tokens": 813,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0334
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "sms_rp_error",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "sms_over_ims"
+   ],
+   "result_tokens_estimate": 2261,
+   "seconds": 11.65,
+   "refused_calls": 0,
+   "answer": "No. Only one of the five mobile-originated SMS from 001010000000201 was fully accepted.\n\nThe UE sent five SMS (RP-DATA, MO). All five MESSAGEs got a SIP 202 or 200, but the RP layer is what shows whether the SMSC accepted each one:\n\n| Frame | RP-MR | Result |\n|---|---|---|\n| 5 | 5 | **Accepted.** RP-ACK in frame 9, and a status report (\"received by the recipient\") in frame 11. |\n| 15 | 7 | **Rejected.** RP-ERROR in frame 17, cause 21 (Short message transfer rejected). |\n| 19 | 17 | **Not cleanly acknowledged** (`ack_not_delivered`). The RP-ACK in frame 21 is coded \"MS to network\" even though the network sent it. The MESSAGE carrying it was answered 408 (frame 24), after 2 retransmissions. |\n| 35 | 50 | **No answer** (`no_rp_ack`). The 202 in frame 36 came back, but no RP-ACK or RP-ERROR followed within 60 s. |\n| 43 | 60 | **Undetermined** (`in_progress`). The 202 is in frame 44, but the capture ends 5 s later, before an answer could arrive. |\n\nThe three MT messages in the capture are a separate matter. Two were delivered, and the one in frame 31 was rejected by the UE with RP-ERROR cause 22 (Memory capacity exceeded).",
+   "input_tokens": 121202,
+   "output_tokens": 656,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0443
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "find_subscriber_files",
+   "passed": false,
+   "failures": [
+    "4 calls, budget 3"
+   ],
+   "calls": 4,
+   "tools": [
+    "find_identifier",
+    "find_identifier",
+    "find_identifier",
+    "find_identifier"
+   ],
+   "result_tokens_estimate": 782,
+   "seconds": 23.41,
+   "refused_calls": 0,
+   "answer": "Four capture files mention IMSI 001010987654321. I searched the top-level directory and all three subdirectories (examples, ims, voice).\n\nTop-level directory:\n- `all.pcap` has 2 hits: a Diameter message at frame 3 and a GTPv2 message at frame 12. They fall between 22:13:21 and 22:15:02 UTC on 2023-11-14.\n- `diameter.pcap` has 1 Diameter hit, at frame 3 (22:13:21 UTC).\n- `gtpv2.pcap` has 1 GTPv2 hit, at frame 5 (22:15:02 UTC).\n\n`examples/` subdirectory:\n- `examples/gtpv2_create_session_rejected.pcap` has 1 GTPv2 hit, at frame 5 (23:03:22 UTC).\n\nThe `ims/` and `voice/` subdirectories have no hits.\n\nThe search matches the IMSI in E.212, Diameter User-Name, SIP From and SIP auth fields.\n\n<response>\nall.pcap, diameter.pcap, gtpv2.pcap, examples/gtpv2_create_session_rejected.pcap\n</response>",
+   "input_tokens": 178194,
+   "output_tokens": 1048,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0452
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "trace_subscriber_failures",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "find_identifier",
+    "trace_subscriber"
+   ],
+   "result_tokens_estimate": 876,
+   "seconds": 15.08,
+   "refused_calls": 0,
+   "answer": "In all.pcap, 001010987654321 fails twice. It never gets past authentication, and its one bearer attempt is also rejected.\n\n1. **S6a Authentication-Information (frames 3/4, 2023-11-14 22:13:21):** the MME `mme01.epc.mnc001.mcc001.3gppnetwork.org` (192.0.2.10) sent an AIR to 192.0.2.20. The answer came back `DIAMETER_ERROR_USER_UNKNOWN` after 31 ms. This is the first failure. The HSS doesn't know the IMSI, so the attach can't proceed.\n\n2. **GTPv2 Create Session (frames 12/13, 22:15:02):** the SGW (192.0.2.30) sent a Create Session Request to 192.0.2.40 with APN `bogus.apn`. The response was \"Missing or unknown APN\" after 30 ms. This is the second failure.\n\nThe two failures are about 100 seconds apart. The trace shows no other messages for this IMSI: no Update-Location, no SIP and no MAP.\n\nThe first failure is the S6a AIR/AIA, rejected with USER_UNKNOWN.\n\n<response>\nFailed first at S6a AIR/AIA (frames 3/4) with DIAMETER_ERROR_USER_UNKNOWN. A later GTPv2 Create Session (frames 12/13, APN \"bogus.apn\") was rejected with \"Missing or unknown APN\".\n</response>",
+   "input_tokens": 178104,
+   "output_tokens": 770,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0413
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "redaction_join",
+   "passed": true,
+   "failures": [],
+   "calls": 3,
+   "tools": [
+    "find_identifier",
+    "trace_subscriber",
+    "diameter_sessions"
+   ],
+   "result_tokens_estimate": 1379,
+   "seconds": 18.6,
+   "refused_calls": 0,
+   "answer": "With identifiers redacted, the IMSI shows as the token `imsi:9e0fe31244`. It has two failed procedures in all.pcap.\n\n**Trace**\n- **S6a (frames 3/4):** the AIR/AIA from `mme01` failed with DIAMETER_ERROR_USER_UNKNOWN. The round trip was 31 ms.\n- **GTPv2 (frames 12/13):** the Create Session Request for APN `bogus.apn` was answered \"Missing or unknown APN\". The round trip was 30 ms.\n\n**Diameter sessions for `imsi:9e0fe31244`**\nThere is one session, `mme01.epc.mnc001.mcc001.3gppnetwork.org;1700000000;2`.\n- It is S6a/S6d (application 16777251), from `mme01` (192.0.2.10) to `hss01` (192.0.2.20).\n- It has one transaction, an AIR (command 318) answered by an AIA, with experimental result 5001 (USER_UNKNOWN).\n- The request was frame 3 and the answer frame 4. Nothing was left unanswered, and the failed count is 1.\n\nThe HSS does not know this subscriber. The later GTP session failed separately because of the bad APN.\n\n<response>\nimsi:9e0fe31244 has one Diameter session, mme01.epc.mnc001.mcc001.3gppnetwork.org;1700000000;2: an S6a AIR/AIA (frames 3/4) that failed with 5001 DIAMETER_ERROR_USER_UNKNOWN.\n</response>",
+   "input_tokens": 239698,
+   "output_tokens": 1001,
+   "turns": 4,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0541
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "truncated_page_not_absent",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "call_kpis",
+    "sip_dialogs"
+   ],
+   "result_tokens_estimate": 4200,
+   "seconds": 11.42,
+   "refused_calls": 0,
+   "answer": "Yes. Of the 10 INVITE dialogs in the capture, 5 failed (ASR 50%). I checked all 10 in the full list.\n\n- **Call a (frames 1\u201315):** `legs-a1`, `legs-a2` and `legs-a3` are three legs of one call: UE to 192.0.2.90 to 192.0.2.51 to 203.0.113.10. The far end sent 480 with Q.850 cause 18 (No user responding), frames 10 and 11. The 192.0.2.90 leg returned 503 with Q.850 cause 34 (No circuit/channel available) to the UE at frame 14. The 480 was turned into a 503 at 192.0.2.90.\n- **Call d (frames 40\u201347):** `legs-d1` and `legs-d2` are two legs of one call, both rejected with 404 and Q.850 cause 1 (Unallocated number), at frames 46 and 44. The called number is +15550100700 on the first leg and 015550100700 on the second.\n\nThe other five dialogs were answered with 200 and ended normally with a BYE. These are `legs-b1`, `legs-b2`, `legs-c1`, `legs-c2` and `legs-e1`. `legs-e1` also dialled 015550100700, the same number that got the 404 earlier, and was answered at frame 50.\n\n<response>\nYes. 5 of the 10 INVITE dialogs failed: the 503/480 chain (`legs-a1`, `legs-a2`, `legs-a3`) and the 404 pair (`legs-d1`, `legs-d2`).\n</response>",
+   "input_tokens": 125195,
+   "output_tokens": 837,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0621
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "wrong_dir_recovers",
+   "passed": true,
+   "failures": [],
+   "calls": 5,
+   "tools": [
+    "pcap_info",
+    "find_identifier",
+    "pcap_info",
+    "pcap_info",
+    "pcap_info"
+   ],
+   "result_tokens_estimate": 752,
+   "seconds": 20.9,
+   "refused_calls": 1,
+   "answer": "`/etc/hosts` was refused. The server only reads files under its allowed capture directory, and `/etc/hosts` resolves to `/private/etc/hosts`, outside it.\n\nI then summarised `diameter.pcap`, which sits at the top of that directory.\n\n- **Format:** classic pcap, Ethernet link type, 2,106 bytes. It has no pcapng metadata, so I can't tell whether any packets were dropped.\n- **Size and timing:** 7 packets over 3.004 s, from 2023-11-14 22:13:20.000Z to 22:13:23.004Z.\n- **Protocols:** all 7 frames are Diameter carried over SCTP over IP.\n\nI haven't looked at the Diameter messages themselves, such as command codes or result codes.\n\n<response>\ndiameter.pcap: 7 packets, 3.004 s, all eth/ip/sctp/diameter\n</response>",
+   "input_tokens": 296636,
+   "output_tokens": 927,
+   "turns": 6,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0573
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "call_kpis_worst_peer",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "call_kpis",
+    "call_kpis"
+   ],
+   "result_tokens_estimate": 2351,
+   "seconds": 10.91,
+   "refused_calls": 0,
+   "answer": "The carrier at **203.0.113.10** has the lower ASR. `call_kpis` (grouped by peer, and again by trunk) gives these figures:\n\n| Carrier | Calls | Answered | ASR |\n|---|---|---|---|\n| 203.0.113.10 | 5 | 2 | **40%** |\n| 203.0.113.20 | 5 | 2 | 50% |\n\n- **203.0.113.10:** its three failures were a 486 User busy, a 487 and a 503 with Q.850 cause 34 (No circuit/channel available).\n- **203.0.113.20:** it had one 404 and one call, mix-8 at frame 37, that was still open when the capture ended. The tool leaves that call out of its ratios, which are computed on only the four decided calls. That would make 2 of 4, or 50%, but the tool's own ASR figure is also 50%. Even counting the open call as a failure, this carrier would be at 2 of 5, or 40%, level with the other. So the ranking holds only on the tool's own calculation.\n\n<response>\n203.0.113.10\n</response>",
+   "input_tokens": 121298,
+   "output_tokens": 714,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0453
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "b2bua_status_rewrite",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "call_legs"
+   ],
+   "result_tokens_estimate": 2517,
+   "seconds": 9.41,
+   "refused_calls": 0,
+   "answer": "**The hop that failed:** The failure started at the deepest leg, leg 2 (`legs-a3@scscf.example`). The responder 203.0.113.10 sent a 480 Temporarily Unavailable with Q.850 cause 18, \"No user responding\" (frame 11). The call went from the UE through 192.0.2.90 and 192.0.2.51 to 203.0.113.10.\n\n**Who rewrote the status:** 192.0.2.90, the element that took the caller's INVITE from 198.51.100.70, rewrote it. The tool marks it `rewritten: true`:\n- It received the 480 with Q.850 cause 18 on leg 1 (frame 10).\n- It sent the caller a 503 with Q.850 cause 34 on leg 0 (frame 14).\n\n192.0.2.51 passed the 480 upstream unchanged (frame 11 in, frame 10 out), so it did not rewrite it.\n\n<response>\nThe failure originated at leg 2: 203.0.113.10 returned 480 (Q.850 18) in frame 11. 192.0.2.90 rewrote the status, turning the 480 (Q.850 18) it received in frame 10 into the 503 (Q.850 34) it sent to the caller in frame 14.\n</response>",
+   "input_tokens": 121142,
+   "output_tokens": 539,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0429
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "dtmf_wrong_payload_type",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "dtmf_events"
+   ],
+   "result_tokens_estimate": 517,
+   "seconds": 13.37,
+   "refused_calls": 0,
+   "answer": "Digits are lost because the call (voice-dtmf-5@ue.example) mixes two DTMF methods, and three of the four digits hit a fault. The tool flags issues on three of the four events.\n\n- **Digit \"1\" (RFC 4733, frame 84):** It has no end-of-event packet. It sent only 2 packets and 0 end packets, with a duration of 40 ms. The receiver may hold it, repeat it, or drop it.\n- **Digit \"#\" (RFC 4733, frame 185):** It was sent as payload type 101, but the negotiated telephone-event type is 100. The receiver may treat these packets as audio or drop them.\n- **Digit \"9\" (SIP INFO, frame 249):** It used `application/dtmf`, and the far end rejected it with 415 Unsupported Media Type.\n- **Digit \"*\" (SIP INFO, frame 301):** It used `application/dtmf-relay` and got 200 OK. This is the only digit with no flagged problem.\n\nThe sender switches between RTP events and SIP INFO, and uses two different INFO content types. If the far end honours only one method, it misses the other digits. If it honours both, it can act on a digit twice.\n\nThe likely fixes are to send one method only, use payload type 100 consistently, and send proper end-of-event packets. For INFO, use `application/dtmf-relay`, which the far end accepted.\n\n<response>\nDigits are lost because of mismatched or faulty DTMF signalling. Digit \"1\" has no RFC 4733 end packet (frame 84). Digit \"#\" uses payload type 101 instead of the negotiated 100 (frame 185). Digit \"9\" was sent as INFO `application/dtmf` and rejected with 415 (frame 249). Only \"*\" (INFO `application/dtmf-relay`, 200 OK, frame 301) went through cleanly.\n</response>",
+   "input_tokens": 117776,
+   "output_tokens": 741,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0314
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "s6a-unknown-subscriber",
+   "passed": true,
+   "failures": [],
+   "calls": 4,
+   "tools": [
+    "find_identifier",
+    "gtp_sessions",
+    "filter_packets",
+    "filter_packets"
+   ],
+   "result_tokens_estimate": 139,
+   "seconds": 22.14,
+   "refused_calls": 0,
+   "answer": "The HSS returned experimental result code 5001 in the failed Authentication-Information-Answer (frame 4). The gateway's \"APN not recognised\" rejection (GTPv2 cause 78) is in frame 13, after it.\n\nI did not check that both frames belong to the same IMSI. They are the only failures of either kind in all.pcap, so I took them to be the same subscriber.\n\n<response>5001</response>",
+   "input_tokens": 237547,
+   "output_tokens": 970,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0488
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "paa-of-attached-subscriber",
+   "passed": false,
+   "failures": [
+    "9 calls, budget 8"
+   ],
+   "calls": 9,
+   "tools": [
+    "diameter_transactions",
+    "find_identifier",
+    "find_identifier",
+    "capture_index",
+    "capture_index",
+    "capture_index",
+    "capture_index",
+    "diameter_transactions",
+    "gtp_sessions"
+   ],
+   "result_tokens_estimate": 4858,
+   "seconds": 21.03,
+   "refused_calls": 0,
+   "answer": "The subscriber whose location update succeeded is IMSI 001010123456789. Its ULR (frame 1) was answered by the ULA in frame 2 with DIAMETER_SUCCESS (2001). The other IMSI, 001010987654321, got DIAMETER_ERROR_USER_UNKNOWN (5001) on its AIR.\n\nFor that same IMSI, the Create Session Request/Response in frames 10 and 11 was accepted (cause 16, \"Request accepted\"). The PAA, which is the address the packet gateway assigned, is 100.64.0.7.\n\n<response>\n100.64.0.7\n</response>",
+   "input_tokens": 371326,
+   "output_tokens": 1224,
+   "turns": 10,
+   "cost_usd": null,
+   "reported_cost_usd": 0.1
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "gtpu-downlink-bytes",
+   "passed": false,
+   "failures": [
+    "answer does not say /^\\s*444\\s*$/"
+   ],
+   "calls": 7,
+   "tools": [
+    "filter_packets",
+    "gtp_user_plane",
+    "pcap_info",
+    "find_identifier",
+    "find_identifier",
+    "find_identifier",
+    "pcap_info"
+   ],
+   "result_tokens_estimate": 272,
+   "seconds": 23.67,
+   "refused_calls": 0,
+   "answer": "I can't give you the number. Neither `gtpu.pcap` nor `gtpv2.pcap` is in the capture directory.\n\nI looked in `examples/`, `ims/` and `voice/`. These are the only captures there:\n\n- **`examples/`:** `diameter_error_answer.pcap`, `gtpv2_create_session_rejected.pcap` and `sip_one_way_audio.pcap`.\n- **`ims/`:** `diameter_apps.pcap`, `ims_register.pcap` and `ims_sms.pcap`.\n- **`voice/`:** `call_legs.pcap`, `call_mix.pcap`, `rtp_no_sdp.pcap`, `voice_call.pcap`, `voice_dtmf.pcap` and `voice_problems.pcap`.\n\nThe closest match is `gtpv2_create_session_rejected.pcap`. Its name says the session was rejected, so it doesn't fit your \"accepted\" session, and there is no user-plane capture to go with it. I didn't want to guess which file you meant.\n\nIf the files are somewhere else, or you meant one of these, tell me the path and I'll run it.\n\n<response>\nunavailable\n</response>",
+   "input_tokens": 301425,
+   "output_tokens": 1505,
+   "turns": 8,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0668
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "false-alarm-delete-session",
+   "passed": true,
+   "failures": [],
+   "calls": 5,
+   "tools": [
+    "gtp_sessions",
+    "filter_packets",
+    "find_identifier",
+    "capture_index",
+    "gtp_sessions"
+   ],
+   "result_tokens_estimate": 1397,
+   "seconds": 28.7,
+   "refused_calls": 0,
+   "answer": "False. There is no file named gtpv2.pcap in the capture directory, so I checked the closest match, gtpv2_create_session_rejected.pcap. That capture doesn't show an unanswered teardown request.\n\n- It has one Delete Session Request (frame 7, seq 22). The gateway answered it with a Delete Session Response in frame 8, cause 16 \"Request accepted\", after 41 ms.\n- The tool reports `unanswered: 0` across all four transactions.\n\nIf you meant a different capture that does contain an unanswered teardown, I haven't seen it.\n\n<response>False</response>",
+   "input_tokens": 301161,
+   "output_tokens": 1028,
+   "turns": 6,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0652
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "trunk-lowest-asr",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "call_kpis"
+   ],
+   "result_tokens_estimate": 1153,
+   "seconds": 10.58,
+   "refused_calls": 0,
+   "answer": "Peer 203.0.113.10 has the lower ASR. It answered 2 of 5 calls (40%), against 2 of 5 for 203.0.113.20. The tool reports 50% for .20 because it left one call out of that ratio: that call had no final response and the capture ended before it could be judged.\n\n<response>\n203.0.113.10\n</response>",
+   "input_tokens": 118987,
+   "output_tokens": 259,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0314
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "rtp-lost-packets",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "rtp_streams"
+   ],
+   "result_tokens_estimate": 1211,
+   "seconds": 6.05,
+   "refused_calls": 0,
+   "answer": "<response>3</response>",
+   "input_tokens": 119192,
+   "output_tokens": 130,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0309
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "nat-public-address",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "rtp_streams",
+    "call_kpis"
+   ],
+   "result_tokens_estimate": 2235,
+   "seconds": 11.78,
+   "refused_calls": 0,
+   "answer": "The caller whose SDP offer advertised an unreachable address was the one in call voice-nat-2@ue.example. Its INVITE (frame 1) offered the private address 10.0.0.5:40000. The audio actually arrived from 203.0.113.7:61000 (SSRC 0x33333333, frame 5 onward).\n\n<response>\n203.0.113.7\n</response>",
+   "input_tokens": 121260,
+   "output_tokens": 387,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0417
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "488-codec",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "sip_dialogs",
+    "sip_call_detail"
+   ],
+   "result_tokens_estimate": 807,
+   "seconds": 10.14,
+   "refused_calls": 0,
+   "answer": "The refusing side said it would accept AMR-WB. The call is `voice-488-4@ue.example`. The caller offered PCMU/8000 and PCMA/8000 in the INVITE (frame 312). The callee answered 488 Not Acceptable Here (frame 314), with a Warning of 305 \"Incompatible media format\". The SDP in that 488 listed only AMR-WB/16000, so the two sides had no codec in common.\n\n<response>AMR-WB</response>",
+   "input_tokens": 177695,
+   "output_tokens": 495,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0384
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "dtmf-in-band",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "dtmf_events"
+   ],
+   "result_tokens_estimate": 517,
+   "seconds": 7.23,
+   "refused_calls": 0,
+   "answer": "The caller pressed `1#` as RTP telephone events (RFC 4733).\n\n- **Frame 84:** digit `1`, on payload type 100, the negotiated telephone-event type.\n- **Frame 185:** digit `#`, on payload type 101, which wasn't negotiated.\n\nThe other two keys, `9` and `*`, went by SIP INFO (frames 249 and 301).\n\n<response>1#</response>",
+   "input_tokens": 117874,
+   "output_tokens": 262,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0269
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "b2bua-rewrote-status",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "call_legs"
+   ],
+   "result_tokens_estimate": 2517,
+   "seconds": 8.96,
+   "refused_calls": 0,
+   "answer": "The element at 192.0.2.90 rewrote the failure. It received a 480 with Q.850 cause 18 (frame 10) from 192.0.2.51 and sent the caller a 503 with Q.850 cause 34 (frame 14). The tool's `status_mapping` marks this hop `rewritten: true`. The callee side's own answer was the 480 (cause 18), sent by 203.0.113.10 in frame 11.\n\n<response>\n192.0.2.90\n</response>",
+   "input_tokens": 121222,
+   "output_tokens": 279,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0404
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "ims-retry-after",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "filter_packets"
+   ],
+   "result_tokens_estimate": 100,
+   "seconds": 7.32,
+   "refused_calls": 0,
+   "answer": "The network sent a 503 (service unavailable) in frame 22 with a Retry-After header of 120 seconds. It was the only match in the capture.\n\n<response>120</response>",
+   "input_tokens": 117225,
+   "output_tokens": 267,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0244
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "ims-third-party-as",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "ims_registration"
+   ],
+   "result_tokens_estimate": 5729,
+   "seconds": 8.46,
+   "refused_calls": 0,
+   "answer": "The only handset that ended up registered is IMPU `sip:001010000000101@ims.mnc001.mcc001.3gppnetwork.org`, and the registration tool's verdict for it is \"registered\". The S-CSCF sent two third-party REGISTERs for it. as1 answered 200 (frame 10). as2 answered 500 (frame 12), so as2 does not know the user is registered.\n\n<response>\nas2.ims.mnc001.mcc001.3gppnetwork.org\n</response>",
+   "input_tokens": 127325,
+   "output_tokens": 285,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0649
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "ims-esp-spi",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "filter_packets"
+   ],
+   "result_tokens_estimate": 338,
+   "seconds": 7.1,
+   "refused_calls": 0,
+   "answer": "0x115c = 4444.\n\n<response>4444</response>",
+   "input_tokens": 117738,
+   "output_tokens": 231,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.026
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "ims-failed-count",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "ims_registration"
+   ],
+   "result_tokens_estimate": 1905,
+   "seconds": 8.44,
+   "refused_calls": 0,
+   "answer": "There are 4 failed handsets. That is the `failed` count in the `ims_registration` summary, which covers all 12 users. It was the only verdict I read, so I haven't checked the other 3 failed users individually. The summary splits the 12 users as 1 registered, 1 challenge-loop, 4 failed, 3 expired and 3 deregistered.\n\nThree ESP packets on SPI 0x0000115c (first unreadable frame 29) could not be read, and I didn't re-run with `esp_null=true`. They might hold more SIP that would change a verdict.\n\n<response>4</response>",
+   "input_tokens": 120403,
+   "output_tokens": 366,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0381
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "sms-storage-full",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "sms_over_ims"
+   ],
+   "result_tokens_estimate": 2857,
+   "seconds": 7.34,
+   "refused_calls": 0,
+   "answer": "The refused message is the mobile-terminated SMS in frame 31. The handset answered with an RP-ERROR in frame 33 carrying cause 22, \"Memory capacity exceeded\".\n\n<response>22</response>",
+   "input_tokens": 122293,
+   "output_tokens": 195,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0439
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "sms-not-registered",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "ims_registration",
+    "sms_over_ims"
+   ],
+   "result_tokens_estimate": 3510,
+   "seconds": 8.37,
+   "refused_calls": 0,
+   "answer": "The recipient is 15550100202. Its REGISTER at frame 3 had no `+g.3gpp.smsip` feature tag in the Contact, so it never registered for SMS over IP.\n\nThe MT SMS to it (frame 29) was answered 488 Not Acceptable Here (frame 30). `sms_over_ims` gave that message the verdict `not_registered_for_sms`. The other recipient, 15550100201, registered with `+g.3gpp.smsip`.\n\n<response>15550100202</response>",
+   "input_tokens": 123696,
+   "output_tokens": 410,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0517
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "map-unanswered-dpc",
+   "passed": true,
+   "failures": [],
+   "calls": 4,
+   "tools": [
+    "sms_delivery",
+    "find_identifier",
+    "capture_index",
+    "sigtran_messages"
+   ],
+   "result_tokens_estimate": 1394,
+   "seconds": 15.1,
+   "refused_calls": 0,
+   "answer": "The mobile-originated SMS is the `mo-forwardSM` in frame 3. It went from OPC 100 to DPC 300 (called GT 15550109003) and has no answer (`unanswered: true`). The packet is in `sigtran.pcap`.\n\nI didn't count frame 4 as a reply. It comes from OPC 300 but is addressed to DPC 200, and it is a segmented XUDT that tshark didn't dissect as TCAP.\n\n<response>300</response>",
+   "input_tokens": 299362,
+   "output_tokens": 641,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0589
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "sctp-heartbeats",
+   "passed": false,
+   "failures": [
+    "called capture_index_placeholder, which is not in tools/list"
+   ],
+   "calls": 8,
+   "tools": [
+    "sctp_associations",
+    "find_identifier",
+    "capture_index_placeholder",
+    "capture_index",
+    "capture_index",
+    "capture_index",
+    "capture_index",
+    "sctp_associations"
+   ],
+   "result_tokens_estimate": 3772,
+   "seconds": 21.62,
+   "refused_calls": 0,
+   "answer": "<response>1</response>",
+   "input_tokens": 497395,
+   "output_tokens": 954,
+   "turns": 9,
+   "cost_usd": null,
+   "reported_cost_usd": 0.1012
+  },
+  {
+   "arm": "tshark-mcp",
+   "id": "gy-credit-limit",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "diameter_avps"
+   ],
+   "result_tokens_estimate": 437,
+   "seconds": 9.02,
+   "refused_calls": 0,
+   "answer": "The charging system gave Result-Code 4012 (DIAMETER_CREDIT_LIMIT_REACHED) for the quota of rating group 10. It came in the CCA in frame 2, which answers the update request in frame 1. That answer carried an overall Result-Code of 2001 (DIAMETER_SUCCESS), but the granted quota was 0 octets and the final-unit action was TERMINATE, so the service was cut off.\n\n<response>4012</response>",
+   "input_tokens": 117832,
+   "output_tokens": 323,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0273
+  },
+  {
+   "arm": "tshark-only",
+   "id": "one_way_audio",
+   "passed": true,
+   "failures": [],
+   "calls": 3,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 7378,
+   "seconds": 14.77,
+   "refused_calls": 0,
+   "answer": "The missing media direction is callee to caller, from 192.0.2.70:30010 back to 198.51.100.9:40010.\n\n- **Signalling:** The call set up normally. The INVITE is in frame 1, and 180 Ringing and 200 OK (INVITE) are in frames 3 and 4. The ACK is in frame 5. The BYE and its 200 OK are in frames 256 and 257.\n- **SDP:** The caller offered 198.51.100.9, audio port 40010, G.711 PCMA (payload type 8). The answer in frame 4 gave 192.0.2.70, audio port 30010, also payload type 8.\n- **Caller to callee:** This direction is present. Frames 6\u2013255 are 250 RTP packets (PCMA, SSRC 0x6A6A6A6A, Seq 1\u2013250), all from 198.51.100.9:40010 to 192.0.2.70:30010.\n- **Callee to caller:** No packets came from 192.0.2.70 at all. A second filter on 192.0.2.70 as source, or on 198.51.100.9 as destination excluding SIP, returned no frames. So the callee's RTP never arrived at the caller, which is why the caller hears nothing.\n\nThe capture can't show why the audio is missing. Likely causes are the media endpoint at 192.0.2.70 not sending, or a firewall, NAT or media-relay problem on that return path.\n\n<response>callee \u2192 caller (192.0.2.70:30010 \u2192 198.51.100.9:40010)</response>",
+   "input_tokens": 44766,
+   "output_tokens": 1326,
+   "turns": 4,
+   "cost_usd": null,
+   "reported_cost_usd": 0.1004
+  },
+  {
+   "arm": "tshark-only",
+   "id": "codec_mismatch_488",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 2155,
+   "seconds": 10.92,
+   "refused_calls": 0,
+   "answer": "The call was rejected because the two sides had no audio codec in common.\n\n- **Frame 312, the INVITE:** 198.51.100.9 offered audio on RTP/AVP with payload types 0 and 8, which are G.711 PCMU and PCMA.\n- **Frame 314, the rejection:** 192.0.2.50 answered `488 Not Acceptable Here`. It carried the header `Warning: 305 pcscf.example \"Incompatible media format\"` and `Reason: SIP;cause=488;text=\"Not Acceptable Here\"`. Its SDP listed only payload type 96, `AMR-WB/16000`.\n\nWarning 305 is the standard \"incompatible media format\" code. The INVITE offered only G.711 and the network side supports only AMR-WB, so the offer could not be matched. Frame 313 was a 100 Trying, and the caller sent an ACK in frame 315.\n\nThe call is Call-ID `voice-488-4@ue.example`.\n\n<response>\n488 Not Acceptable Here, with Warning 305 \"Incompatible media format\". The INVITE in frame 312 offered only G.711 PCMU/PCMA, and the 488 in frame 314 listed only AMR-WB, so there was no common codec.\n</response>",
+   "input_tokens": 9685,
+   "output_tokens": 850,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0283
+  },
+  {
+   "arm": "tshark-only",
+   "id": "unknown_eps_subscription",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 3761,
+   "seconds": 12.86,
+   "refused_calls": 0,
+   "answer": "The attach fails because the HSS has no EPS subscription for the subscriber.\n\n- **Request (frame 3):** The MME `mme01.epc.mnc001.mcc001.3gppnetwork.org` sends an S6a Update-Location-Request (command 316). It is for IMSI 001010222333444 and has the Initial-Attach-Indicator set in ULR-Flags (0x22). The Session-Id ends in `;2`.\n- **Answer (frame 4):** `hss01.epc.mnc001.mcc001.3gppnetwork.org` replies with the same hop-by-hop and end-to-end IDs. It carries an Experimental-Result (vendor 10415, 3GPP) with code **DIAMETER_ERROR_UNKNOWN_EPS_SUBSCRIPTION (5420)**. The answer has no Result-Code AVP, and the \"Error\" (E) flag in the Diameter header is not set. The failure is signalled only through the Experimental-Result.\n- **Comparison:** The first Update-Location exchange (frames 1\u20132, session `;1`) succeeded with Result-Code 2001. The device watchdog exchange (frames 5\u20136) also returned 2001. The transport and the Diameter peering are fine, so the problem is limited to this subscriber's attach request.\n\nThe capture doesn't show why the HSS has no subscription for this IMSI. The likely cause is that the IMSI isn't provisioned in the HSS, or it has no EPS/LTE subscription data.\n\n<response>DIAMETER_ERROR_UNKNOWN_EPS_SUBSCRIPTION (5420)</response>",
+   "input_tokens": 12444,
+   "output_tokens": 1160,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0433
+  },
+  {
+   "arm": "tshark-only",
+   "id": "gtp_cause_78",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 164,
+   "seconds": 10.69,
+   "refused_calls": 0,
+   "answer": "The rejected Create Session Request is frame 5. It came from 192.0.2.30 to 192.0.2.40, with sequence 0x000015, IMSI 001010987654321 and APN \"internet.wrong.apn\". Frame 6 is the matching Create Session Response, and it carries cause 78, \"Missing or unknown APN\". The APN in the request wasn't valid for the gateway.\n\nThe other Create Session Request, in frame 3 (sequence 0x000014, APN \"internet.test.apn\"), was accepted. Its response in frame 4 shows cause 16, \"Request accepted\".\n\n<response>\nFrame 5 (IMSI 001010987654321, APN internet.wrong.apn) was rejected. The response in frame 6 has cause 78, Missing or unknown APN.\n</response>",
+   "input_tokens": 6055,
+   "output_tokens": 880,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0162
+  },
+  {
+   "arm": "tshark-only",
+   "id": "unanswered_air",
+   "passed": true,
+   "failures": [],
+   "calls": 6,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 246,
+   "seconds": 17.05,
+   "refused_calls": 0,
+   "answer": "No. One Diameter request in diameter.pcap got no answer.\n\nThe capture has 7 Diameter frames: 4 requests and 3 answers. Matching on hop-by-hop and end-to-end IDs gives these pairs:\n- **Frame 1 (code 316):** answered by frame 2.\n- **Frame 3 (code 318):** answered by frame 4.\n- **Frame 6 (code 280):** answered by frame 7.\n- **Frame 5 (code 318):** no answer. Its hop-by-hop ID is 0x00001003 and its end-to-end ID is 0x0000a003, and no answer frame carries either ID.\n\nFrame 5 is the unanswered request. It is a command code 318 request, the same type as frames 3 and 4.\n\nThe file wasn't in the examples/ folder. I found it directly under the capture root.\n\n<response>Frame 5</response>",
+   "input_tokens": 13111,
+   "output_tokens": 1555,
+   "turns": 7,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0284
+  },
+  {
+   "arm": "tshark-only",
+   "id": "cause_lookup_5001",
+   "passed": false,
+   "failures": [
+    "answered without calling a tool"
+   ],
+   "calls": 0,
+   "tools": [],
+   "result_tokens_estimate": 0,
+   "seconds": 6.68,
+   "refused_calls": 0,
+   "answer": "Experimental-Result-Code 5001 is **DIAMETER_ERROR_USER_UNKNOWN**. It's defined in 3GPP TS 29.272 for S6a/S6d, the interface between the MME/SGSN and the HSS.\n\nThe HSS returns it when the subscriber (IMSI) isn't known, so there's no subscription record for it. It usually appears in an Authentication-Information-Answer, Update-Location-Answer, or similar answer. The value is carried in the Experimental-Result AVP, in the Experimental-Result-Code field, together with Vendor-Id 10415 (3GPP).\n\nIn practice it means the HSS doesn't have the IMSI provisioned. Common causes are an unprovisioned SIM, a wrong PLMN or IMSI in the request, or the request being routed to the wrong HSS. The MME normally rejects the UE's attach with EMM cause #8 (EPS services and non-EPS services not allowed) or #15, depending on the case.\n\nI answered from the 3GPP specification and didn't check any capture file.\n\n<response>DIAMETER_ERROR_USER_UNKNOWN</response>",
+   "input_tokens": 1571,
+   "output_tokens": 383,
+   "turns": 1,
+   "cost_usd": null,
+   "reported_cost_usd": 0.007
+  },
+  {
+   "arm": "tshark-only",
+   "id": "ims_challenge_loop",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 6070,
+   "seconds": 13.86,
+   "refused_calls": 0,
+   "answer": "001010000000102 can't register because it's stuck in an AKA authentication failure loop. The P-CSCF (192.0.2.50) answers every REGISTER with a 401 Unauthorized and never forwards one to the S-CSCF (192.0.2.51). By contrast, 001010000000101 got a 200 OK in frame 8, and 001010000000105 got one in frame 26.\n\n- **Frame 13 (CSeq 1):** The UE (198.51.100.42) sends its initial REGISTER. The 401 in frame 14 carries an AKAv1-MD5 challenge with nonce `cmFuZGF1dG4=`.\n- **Frame 15 (CSeq 2):** The UE answers with `nonce=\"\"` and `response=\"aa\"`. It doesn't use the challenge nonce, and the response is bogus. The reply in frame 16 is another 401 with the same nonce.\n- **Frame 17 (CSeq 3):** The UE retries with `nonce=\"\"`, `response=\"bb\"` and `auts=\"QVVUU1RPS0VO\"`. The `auts` parameter means the UE reported a sequence-number (SQN) synchronization failure. Frame 18 is a third 401.\n\nThe UE never computes a valid AKA response to the challenge. Its Authorization headers have an empty nonce and junk responses. The `auts` in the last attempt points to a USIM/HSS SQN mismatch. The network never accepted the credentials, so the registration never completes.\n\nThis is a different failure from the other subscribers. 001010000000103 got a 403 Forbidden and 001010000000104 got a 503.\n\nThe likely fix is to resynchronize the SQN between the USIM and the HSS/AuC and check that the subscriber's keys (K/OPc) match.",
+   "input_tokens": 20614,
+   "output_tokens": 1088,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0645
+  },
+  {
+   "arm": "tshark-only",
+   "id": "sms_rp_error",
+   "passed": true,
+   "failures": [],
+   "calls": 3,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 2173,
+   "seconds": 26.6,
+   "refused_calls": 0,
+   "answer": "**No. Not every SMS from 001010000000201 was accepted.** The SIP responses all look fine, but at least one message was rejected at the SMS (RP) layer.\n\nThe UE sent five RP-DATA messages (frames 5, 15, 19, 35 and 43):\n\n- **mo1 (frame 5):** The network answered 202 Accepted (frames 7 and 8). An RP-ACK followed in frame 9, so this one was accepted and acknowledged.\n- **mo2 (frame 15):** The network answered 202 Accepted in frame 16. However, frame 17 is an RP-ERROR (Network to MS) with cause 21, so this SMS was rejected.\n- **mo3 (frame 19):** The reply in frame 20 was 200 OK, not 202 Accepted. The later messages in this exchange (ack3, frames 21\u201323) are the same RP-ACK sent three times, and frame 24 is a 408 Request Timeout. This one is not cleanly confirmed.\n- **mo7 (frame 35):** 202 Accepted in frame 36. I saw no RP-ACK or RP-ERROR for it.\n- **mo11 (frame 43):** 202 Accepted in frame 44. I saw no RP-ACK or RP-ERROR for it.\n\nThe 202 on mo7 and mo11 only shows the IMS accepted the message for delivery. It doesn't show the SMSC accepted it.\n\nOther messages from this UE that aren't RP-DATA submissions:\n- **Frame 33:** the UE sent an RP-ERROR with cause 22 for a network-originated SMS (mt6). This is a rejection by the UE, not of its own SMS.\n- **Frames 39 and 41:** plain-text MESSAGEs (text9 and nobody10) with no RP payload.\n\n<response>\nNo. mo2 (frame 15) got a 202 Accepted but was then rejected by an RP-ERROR with cause 21 (frame 17). mo3 (frame 19) got a 200 OK instead of 202 (frame 20) and was never confirmed with an RP-ACK. Only mo1 (frame 5) was clearly acknowledged with an RP-ACK (frame 9).\n</response>",
+   "input_tokens": 19755,
+   "output_tokens": 2130,
+   "turns": 4,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0499
+  },
+  {
+   "arm": "tshark-only",
+   "id": "find_subscriber_files",
+   "passed": false,
+   "failures": [
+    "answer does not say /diameter\\.pcap/",
+    "answer does not say /gtpv2\\.pcap/"
+   ],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 0,
+   "seconds": 11.52,
+   "refused_calls": 0,
+   "answer": "I can't answer this yet. My only tool is `run_tshark`, and it opens one named capture file at a time. It can't list a directory or expand wildcards. I tried the top-level folder `/private/var/folders/qw/kl78kcts7b3fw16n4jgqdyz40000gn/T/pcapbench-f7wpsq2z`. The tool rejected it with \"not a regular file\", so I have no list of the captures in `voice/`, `ims/` or `examples/`.\n\nI don't want to guess filenames and then report a partial result as if it were complete.\n\nIf you give me the filenames, or the output of `ls` for those three folders, I'll check each one. I'd use a filter such as `e212.imsi == \"001010987654321\"`. I'd also search the raw text with `frame contains \"001010987654321\"`. That second search catches IMSIs that appear inside other fields, such as SIP, Diameter usernames, or NAI strings like `0001010987654321@...`.",
+   "input_tokens": 3538,
+   "output_tokens": 743,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0123
+  },
+  {
+   "arm": "tshark-only",
+   "id": "trace_subscriber_failures",
+   "passed": true,
+   "failures": [],
+   "calls": 6,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 755,
+   "seconds": 24.82,
+   "refused_calls": 0,
+   "answer": "`001010987654321` shows up in two places in all.pcap, and both fail. The file is at the capture root, `.../pcapbench-f7wpsq2z/all.pcap`, not in a subdirectory.\n\n1. **Diameter S6a, frames 3\u20134:** Frame 3 is an Authentication-Information Request (session `...;1700000000;2`) with this IMSI as User-Name. Frame 4 is the answer, and it carries Experimental-Result-Code **5001**, which is DIAMETER_ERROR_USER_UNKNOWN. The HSS rejected the subscriber at authentication.\n2. **GTPv2-C, frames 12\u201313:** Frame 12 is a Create Session Request for this IMSI. Frame 13 is the response, and it carries cause **78**. As far as I recall, cause 78 is \"Missing or unknown APN\", but I didn't check that against a reference. The session was refused.\n\nThe other IMSI, `001010123456789`, behaves differently. Its Update-Location got result 2001 (success), and its Create Session Response in frame 11 shows cause 16. I recall 16 as \"Request accepted\", also unchecked.\n\nFrame 14, a Delete Session Request, carries no IMSI. I haven't tied it to either subscriber.\n\nSo the failure was first at the Diameter authentication step (5001, frame 4). The GTPv2 session setup also failed (cause 78, frame 13).\n\n<response>\nFailed twice: Diameter Authentication-Information Answer (frame 4) returned Experimental-Result-Code 5001 (USER_UNKNOWN) for the request in frame 3, and the GTPv2 Create Session Response (frame 13) returned cause 78 for the request in frame 12.\n</response>",
+   "input_tokens": 18935,
+   "output_tokens": 2225,
+   "turns": 7,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0416
+  },
+  {
+   "arm": "tshark-only",
+   "id": "redaction_join",
+   "passed": false,
+   "failures": [
+    "answer says the forbidden /001010987654321/",
+    "answer does not say /\\bAIR\\b|Authentication[- ]Information/"
+   ],
+   "calls": 4,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 0,
+   "seconds": 13.08,
+   "refused_calls": 0,
+   "answer": "I couldn't trace IMSI 001010987654321 because I couldn't find `all.pcap`. I tried it in three places under `/private/var/folders/qw/kl78kcts7b3fw16n4jgqdyz40000gn/T/pcapbench-f7wpsq2z/`: `ims/`, `voice/` and `examples/`. Each attempt returned a \"no such file\" error, and tshark never opened a capture. So I have no Diameter sessions to list, and I won't guess at any.\n\nCan you give me the exact path to `all.pcap`, or the name of the file if it's called something else? Once I have it, I'll filter on the IMSI and list the Diameter sessions by Session-Id.\n\n<response>\nall.pcap not found; no Diameter sessions could be listed\n</response>",
+   "input_tokens": 6718,
+   "output_tokens": 1006,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0187
+  },
+  {
+   "arm": "tshark-only",
+   "id": "truncated_page_not_absent",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 1235,
+   "seconds": 12.27,
+   "refused_calls": 0,
+   "answer": "Yes. Three of the calls failed, and the output wasn't truncated, so this covers every SIP call in the capture.\n\n- **Call A (frames 1\u201315):** It failed. The UE's INVITE (`legs-a1@ue.example`, frame 1) got a 180 in frame 9. The downstream legs `legs-a2` and `legs-a3` returned **480** in frames 10 and 11. The caller then got a **503** in frame 14.\n- **Call D (frames 40\u201347):** It failed. The INVITE (`legs-d1@ue.example`) went to the next hop as `legs-d2` with the number rewritten to `015550100700`. That hop returned **404** in frame 44, and the caller got a **404** in frame 46.\n- **Call E (frames 48\u201353):** It was answered with a 200 (frame 50) and ended normally with a BYE. This INVITE to `015550100700` was a separate call, `legs-e1`, that reached the same next hop (203.0.113.10) as the failed `legs-d2` leg. It succeeded even though D's attempt to the same number got a 404.\n\nThe other two calls completed:\n- **Call B (frames 16\u201327):** It got a 200 on both legs (frames 20 and 22) and ended with a BYE answered by 200.\n- **Call C (frames 28\u201339):** It also got a 200 on both legs (frames 32 and 33) and ended with a BYE answered by 200.\n\n<response>Yes. Two calls failed: call A (`legs-a1`) ended in 503, after 480 on its downstream legs, and call D (`legs-d1`) ended in 404.</response>",
+   "input_tokens": 8371,
+   "output_tokens": 945,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0267
+  },
+  {
+   "arm": "tshark-only",
+   "id": "wrong_dir_recovers",
+   "passed": false,
+   "failures": [
+    "8 calls, budget 6"
+   ],
+   "calls": 8,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 320,
+   "seconds": 20.76,
+   "refused_calls": 1,
+   "answer": "`/etc/hosts` was refused. The tool returned `path_not_allowed` because it resolves to `/private/etc/hosts`, which is outside the allowed directory. I then summarised `diameter.pcap` instead. It wasn't in `ims/`, `examples/` or `voice/`, so I found it at the root of the allowed directory.\n\n**Overview:** The capture has 7 frames and 1970 bytes. Every frame is Ethernet, IP, SCTP and Diameter. All traffic is between 192.0.2.10 and 192.0.2.20.\n\n**Exchanges:**\n- **Frames 1\u20132:** Command code 316 (3GPP Update-Location). 192.0.2.10 sends the request in frame 1 and 192.0.2.20 answers in frame 2 with Result-Code 2001 (success). The Session-Id is `mme01.epc.mnc001.mcc001.3gppnetwork.org;1700000000;1`.\n- **Frames 3\u20134:** Command code 318 (3GPP Authentication-Information), session `...;2`. The request is in frame 3 and the answer in frame 4. The answer shows no Result-Code in the fields I extracted.\n- **Frame 5:** A second 318 request, session `...;3`. I saw no answer to it in the capture.\n- **Frames 6\u20137:** Command code 280 (Device-Watchdog). The request in frame 6 comes from 192.0.2.20, and 192.0.2.10 answers in frame 7 with Result-Code 2001.",
+   "input_tokens": 15152,
+   "output_tokens": 1978,
+   "turns": 9,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0355
+  },
+  {
+   "arm": "tshark-only",
+   "id": "call_kpis_worst_peer",
+   "passed": true,
+   "failures": [],
+   "calls": 4,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 1617,
+   "seconds": 24.72,
+   "refused_calls": 0,
+   "answer": "Neither carrier is lower if you count distinct calls. They tie at 40%. If you count every INVITE sent, 203.0.113.20 is lower.\n\n**Carrier 203.0.113.10 (calls mix-1 to mix-5): 2 of 5 answered, 40%.**\n- mix-1 and mix-2 got a 200 to the INVITE (frames 4 and 8).\n- mix-3 got 486 (frame 13).\n- mix-4 was cancelled. The 200 in frame 22 answers the CANCEL, and the INVITE got 487 in frame 23.\n- mix-5 got 503 (frame 27).\n\n**Carrier 203.0.113.20 (calls mix-6 to mix-10): 2 of 5 answered, 40%.**\n- mix-6 got a 200 (frame 31).\n- mix-9 got 407 (frame 40), then was retried and answered with a 200 in frame 44.\n- mix-7 got 404 (frame 35).\n- mix-8 was sent twice (frames 37 and 38) and got no response.\n- mix-10 (frame 48) got no response. Frame 49 is a 4-byte UDP packet from 203.0.113.20, not a SIP reply.\n\nCounting raw INVITE requests changes the result. 203.0.113.20 then has 7 INVITEs (frames 29, 33, 37, 38, 39, 42 and 48) with 2 answered, about 29%. 203.0.113.10 has 5 INVITEs with 2 answered, 40%. The extra INVITEs are the mix-8 retransmission and the mix-9 retry after the 407, so that count penalizes 203.0.113.20 for retries rather than new calls.\n\n<response>\nTie by distinct calls: 203.0.113.10 and 203.0.113.20 are both at 2/5 = 40% ASR. Counting every INVITE, 203.0.113.20 is lower at 2/7, about 29%.\n</response>",
+   "input_tokens": 18765,
+   "output_tokens": 2587,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0532
+  },
+  {
+   "arm": "tshark-only",
+   "id": "b2bua_status_rewrite",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 1342,
+   "seconds": 12.34,
+   "refused_calls": 0,
+   "answer": "The failure started at the last hop, the terminating side at 203.0.113.10, and 192.0.2.90 rewrote the status to 503.\n\nThe call (Call-ID legs-a1) went through these hops:\n- **Frames 1, 3, 5:** The caller at 198.51.100.70 sent an INVITE to 192.0.2.90. 192.0.2.90 forwarded it to 192.0.2.51, and 192.0.2.51 forwarded it to 203.0.113.10. The Call-IDs on the three legs are legs-a1, legs-a2 and legs-a3.\n- **Frames 8, 7, 9:** 180 Ringing went back along the same path, so the call reached the far end before it failed.\n- **Frame 11:** 203.0.113.10 answered 192.0.2.51 with **480**, Reason `Q.850;cause=18`. This is the first failure.\n- **Frame 10:** 192.0.2.51 passed the **480** (`cause=18`) unchanged to 192.0.2.90.\n- **Frame 14:** 192.0.2.90 sent the caller **503**, Reason `Q.850;cause=34`.\n\nThe 503 the caller saw was not what the failing hop sent. 192.0.2.90 changed the 480 with cause 18 into a 503 with cause 34. 192.0.2.51 only relayed the 480 and did not change it.\n\n<response>\n203.0.113.10 (the last hop, behind 192.0.2.51) failed with 480 (Q.850 cause 18) in frame 11. 192.0.2.90 rewrote it to 503 (cause 34) in frame 14.\n</response>",
+   "input_tokens": 6780,
+   "output_tokens": 956,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0274
+  },
+  {
+   "arm": "tshark-only",
+   "id": "dtmf_wrong_payload_type",
+   "passed": true,
+   "failures": [],
+   "calls": 4,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 834,
+   "seconds": 18.32,
+   "refused_calls": 0,
+   "answer": "Some digits are lost because the sender doesn't follow what was negotiated. Several of the digit signals are also malformed or sent by other means.\n\n- **Negotiation:** The INVITE (frame 1) and 200 OK (frame 2) both offer `telephone-event/8000` as payload type 100.\n- **Digit \"1\" (frames 84\u201385):** It uses payload type 100, so it matches the negotiation. It looks incomplete, though. Frame 84 has duration 160 and frame 85 has duration 320. Neither has the end-of-event bit set, and there are only two packets. A receiver may drop or never finalize this digit.\n- **Digit with event ID 11 (frames 185\u2013188):** It is sent as payload type 101, which was never negotiated. Wireshark labels it \"RTPType-101\". A receiver that only expects 100 can ignore these packets. Frames 186\u2013188 do carry the end bit, with duration 400.\n- **Out-of-band INFO:** The INFO at frame 249 got `415 Unsupported Media Type` (frame 252). So that digit was rejected. The INFO at frame 301 got `200 OK` (frame 304).\n\nOnly 6 RTP-event packets exist, covering two digits. The RTP stream shows no packet loss (0 lost). The digits are lost because of the unnegotiated payload type 101, the unterminated first event, and the rejected SIP INFO. Network loss isn't the cause.\n\n<response>\nDigits are lost due to signalling and encoding mismatches, not packet loss. The SDP negotiated telephone-event as payload type 100, but the second digit (frames 185\u2013188) is sent as unnegotiated payload type 101. The first digit (frames 84\u201385) never carries an end-of-event bit. The SIP INFO digit at frame 249 was rejected with `415 Unsupported Media Type` (frame 252).\n</response>",
+   "input_tokens": 8305,
+   "output_tokens": 1661,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0308
+  },
+  {
+   "arm": "tshark-only",
+   "id": "s6a-unknown-subscriber",
+   "passed": true,
+   "failures": [],
+   "calls": 8,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 269,
+   "seconds": 31.48,
+   "refused_calls": 1,
+   "answer": "The HSS returned experimental result code 5001 for that subscriber (IMSI 001010987654321).\n\n- **Unknown APN:** Frame 12 is a GTPv2 request from that IMSI for `bogus.apn`. Frame 13 is the gateway's reply with cause 78, which is \"Missing or unknown APN\".\n- **Failed authentication:** Frame 3 is the Authentication-Information Request (command 318) for the same IMSI, in session `...;1700000000;2`. The answer in frame 4 carries Experimental-Result-Code 5001.\n\n<response>5001</response>",
+   "input_tokens": 23503,
+   "output_tokens": 2343,
+   "turns": 9,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0425
+  },
+  {
+   "arm": "tshark-only",
+   "id": "paa-of-attached-subscriber",
+   "passed": true,
+   "failures": [],
+   "calls": 8,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 9260,
+   "seconds": 27.24,
+   "refused_calls": 0,
+   "answer": "The subscriber is IMSI 001010123456789, and the packet gateway assigned it 100.64.0.7.\n\n- **Location update:** The Diameter Update-Location Request in frame 1 was for IMSI 001010123456789. Frame 2 is its answer, with Result-Code 2001 (success). It is the only Diameter location update in the capture.\n- **Data session:** Frame 10 is a Create Session Request for the same IMSI on APN internet.test.apn. Frame 11 is the response, with cause \"Request accepted (16)\" and PDN Address Allocation 100.64.0.7.\n- **The other subscriber:** IMSI 001010987654321 sent a Create Session Request in frame 12. Frame 13 rejected it with \"Missing or unknown APN (78)\", so it got no address.\n\nThe capture also has a MAP updateLocation for the same IMSI in frames 39 and 40. I didn't read its result, but it is the same subscriber, so it doesn't change the answer.\n\n<response>100.64.0.7</response>",
+   "input_tokens": 39415,
+   "output_tokens": 2125,
+   "turns": 9,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0999
+  },
+  {
+   "arm": "tshark-only",
+   "id": "gtpu-downlink-bytes",
+   "passed": false,
+   "failures": [
+    "11 calls, budget 8",
+    "answer does not say /^\\s*444\\s*$/"
+   ],
+   "calls": 11,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 0,
+   "seconds": 39.55,
+   "refused_calls": 0,
+   "answer": "I couldn't answer this, because I couldn't find `gtpv2.pcap` or `gtpu.pcap`. I tried both names in the `examples/`, `voice/` and `ims/` folders, plus `gtpv2.pcapng` in `examples/`. Each attempt returned \"no such file\". The three folders themselves exist, but I have no tool that lists their contents, so I don't know what the captures are actually called or where they are.\n\nI haven't read any packets, so I have no byte count to give. Any number from me would be a guess.\n\nPlease send the exact paths to the two captures. Once I have them, I'll do two things:\n- Take the UE address from the accepted Create Session Response in `gtpv2.pcap`.\n- Add up the inner IP payload of the downlink packets in `gtpu.pcap` that are addressed to that UE.\n\n<response>unknown</response>",
+   "input_tokens": 19880,
+   "output_tokens": 2383,
+   "turns": 12,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0425
+  },
+  {
+   "arm": "tshark-only",
+   "id": "false-alarm-delete-session",
+   "passed": false,
+   "failures": [
+    "answer does not say /^\\s*False\\s*$/"
+   ],
+   "calls": 5,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 98,
+   "seconds": 22.13,
+   "refused_calls": 0,
+   "answer": "Yes, the capture shows an unanswered Delete Session Request. It's in `gtpv2.pcap`, in the top-level directory.\n\n- **Request:** frame 7 is a Delete Session Request (message type 36) from 192.0.2.30 to 192.0.2.40, sequence 0x00000c.\n- **Missing reply:** no Delete Session Response (type 37) with sequence 0x00000c follows it. Frame 7 is the last packet in the capture.\n- **Other exchanges:** every other request has a matching reply. Frames 1 and 2 are an Echo request and response. Frames 3 and 4 are a Create Session exchange (types 32 and 33), where frame 4 carries cause 16. Frames 5 and 6 are another Create Session exchange, where frame 6 carries cause 78.\n\nThe capture can only show that no reply was recorded. It can't show whether the gateway never sent one or the reply was dropped before capture.\n\n<response>True</response>",
+   "input_tokens": 9681,
+   "output_tokens": 1575,
+   "turns": 6,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0274
+  },
+  {
+   "arm": "tshark-only",
+   "id": "trunk-lowest-asr",
+   "passed": false,
+   "failures": [
+    "answer does not say /^\\s*203\\.0\\.113\\.10\\s*$/"
+   ],
+   "calls": 4,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 2300,
+   "seconds": 24.53,
+   "refused_calls": 0,
+   "answer": "Peer 203.0.113.20 has the lower answer-seizure ratio, on the usual definition that counts a 486 Busy as a completed attempt. If you count only calls that got a 200 OK, the two peers tie at 40%.\n\n| Peer | Calls | Answered (200 OK) | Not answered |\n|---|---|---|---|\n| 203.0.113.10 | 5 (mix-1 to mix-5) | 2 (mix-1, mix-2) | mix-3 got a 486 (frame 13), mix-4 was cancelled and got a 487 (frame 23), mix-5 got a 503 (frame 27) |\n| 203.0.113.20 | 5 (mix-6 to mix-10) | 2 (mix-6, mix-9) | mix-7 got a 404 (frame 35), mix-8 got no response to its INVITE and retransmission (frames 37\u201338), mix-10 got no response to its INVITE (frame 48) |\n\n- **Strict count (200 OK only):** both peers sit at 2 of 5, or 40%.\n- **Busy counted as completed:** the 486 on mix-3 makes 203.0.113.10 3 of 5, or 60%, so 203.0.113.20 is lower at 40%.\n- **mix-9:** I counted it as one call. It was challenged with a 407 (frame 40), re-sent with credentials, and answered with a 200 (frame 44).\n- **Frame 49:** it is a 4-byte keepalive from 203.0.113.20, not a SIP reply, so mix-8 and mix-10 stay unanswered.\n\n<response>203.0.113.20</response>",
+   "input_tokens": 17837,
+   "output_tokens": 1924,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0482
+  },
+  {
+   "arm": "tshark-only",
+   "id": "rtp-lost-packets",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 380,
+   "seconds": 9.94,
+   "refused_calls": 0,
+   "answer": "3 RTP packets were lost on the calling handset's direction.\n\nThe INVITE in frame 1 comes from 198.51.100.9, so that is the caller. Its RTP stream (SSRC 0x11111111, port 40000 to 30000) shows 251 packets received and \"3 (1.2%)\" lost. The stream's maximum inter-packet delta is 80 ms, which fits a gap of 3 missing packets at the usual 20 ms spacing. The other direction (SSRC 0x22222222) shows 0 lost.\n\n<response>3</response>",
+   "input_tokens": 4377,
+   "output_tokens": 703,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0152
+  },
+  {
+   "arm": "tshark-only",
+   "id": "nat-public-address",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 2233,
+   "seconds": 14.21,
+   "refused_calls": 0,
+   "answer": "The caller in call `voice-nat-2@ue.example` (frame 1) put a private address in its SDP offer: `10.0.0.5`, media port 40000. That address can't be reached from the internet. The SIP signalling for that call came from 198.51.100.9.\n\nThe RTP for that call actually arrived at the media server, 192.0.2.70:30002, from 203.0.113.7:61000. The server's replies went to `10.0.0.5:40000`, the unreachable address. Every RTP packet I listed followed this pattern.\n\nThe other two calls offered `198.51.100.9`, a public address, so they don't fit the question.\n\n<response>203.0.113.7</response>",
+   "input_tokens": 11514,
+   "output_tokens": 722,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0353
+  },
+  {
+   "arm": "tshark-only",
+   "id": "488-codec",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 5570,
+   "seconds": 12.94,
+   "refused_calls": 0,
+   "answer": "The call with Call-ID `voice-488-4@ue.example` was refused. The caller's INVITE (frame 312) offered PCMU/8000 and PCMA/8000. The refusing side answered in frame 314 with \"488 Not Acceptable Here\". That response carries the warning `305 pcscf.example \"Incompatible media format\"`. Its SDP lists only `rtpmap:96 AMR-WB/16000`, so AMR-WB is the codec it said it would accept.\n\n<response>AMR-WB</response>",
+   "input_tokens": 14659,
+   "output_tokens": 558,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0473
+  },
+  {
+   "arm": "tshark-only",
+   "id": "dtmf-in-band",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 69,
+   "seconds": 11.95,
+   "refused_calls": 0,
+   "answer": "The RTP telephone events in `voice_dtmf.pcap` are two key presses. The first is event ID 1, in frames 84\u201385 (RTP timestamp 6400). The second is event ID 11, in frames 185\u2013188 (timestamp 14400), and its end-of-event flag is set in frames 186\u2013188. Event ID 11 is the `#` key, so the keys in order are `1` then `#`.\n\nI only looked at packets that tshark decoded as RTP events. I didn't check for telephone events on a stream tshark failed to decode.\n\n<response>1#</response>",
+   "input_tokens": 3652,
+   "output_tokens": 544,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0106
+  },
+  {
+   "arm": "tshark-only",
+   "id": "b2bua-rewrote-status",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 124,
+   "seconds": 16.35,
+   "refused_calls": 0,
+   "answer": "The element at 192.0.2.90 changed the failure.\n\nThe Call-IDs are different on each leg, but the \"a\" group lines up as one call:\n- **Frame 11:** 203.0.113.10 sent 480 with Q.850 cause 18 to 192.0.2.51 (Call-ID legs-a3).\n- **Frame 10:** 192.0.2.51 passed the 480 with cause 18 to 192.0.2.90 (Call-ID legs-a2).\n- **Frame 14:** 192.0.2.90 sent 503 with Q.850 cause 34 to the caller at 198.51.100.70 (Call-ID legs-a1).\n\nI matched the legs by the a1/a2/a3 naming and the order of the frames. I didn't check the INVITE headers to confirm they belong to the same call.\n\n<response>192.0.2.90</response>",
+   "input_tokens": 3809,
+   "output_tokens": 686,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0126
+  },
+  {
+   "arm": "tshark-only",
+   "id": "ims-retry-after",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 17,
+   "seconds": 9.4,
+   "refused_calls": 0,
+   "answer": "The network sent a 503 response in frame 22 with a Retry-After of 120, so the handset was told to wait 120 seconds before retrying.\n\n<response>120</response>",
+   "input_tokens": 3483,
+   "output_tokens": 261,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0071
+  },
+  {
+   "arm": "tshark-only",
+   "id": "ims-third-party-as",
+   "passed": true,
+   "failures": [],
+   "calls": 2,
+   "tools": [
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 3286,
+   "seconds": 20.58,
+   "refused_calls": 0,
+   "answer": "The application server that was not informed is as2.ims.mnc001.mcc001.3gppnetwork.org.\n\nThe capture has several 200 OK registrations, so \"the only handset\" is my reading of the question. I took it to mean the handset for IMPU 001010000000101 (Call-ID reg-101), because it is the one with third-party REGISTER traffic. It completed registration with a 200 OK in frame 45. The S-CSCF (192.0.2.51) then sent two third-party REGISTERs for that IMPU:\n- **Frame 9:** to sip:as1.ims.mnc001.mcc001.3gppnetwork.org. It got a 200 OK in frame 10.\n- **Frame 11:** to sip:as2.ims.mnc001.mcc001.3gppnetwork.org (192.0.2.53). It got a \"500 Server Internal Error\" in frame 12.\n\nSo as2 never accepted the registration notice.\n\n<response>\nas2.ims.mnc001.mcc001.3gppnetwork.org\n</response>",
+   "input_tokens": 14052,
+   "output_tokens": 844,
+   "turns": 3,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0403
+  },
+  {
+   "arm": "tshark-only",
+   "id": "ims-esp-spi",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 1777,
+   "seconds": 11.47,
+   "refused_calls": 0,
+   "answer": "The handset at 198.51.100.46 was challenged with a 401 in frame 28. That 401 offered `spi-c=3333; spi-s=4444`. Frames 29\u201331 are then ESP packets from 198.51.100.46 to the P-CSCF at 192.0.2.50, all with SPI 0x0000115c, which is 4444 in decimal. No reply to 198.51.100.46 follows them. I read \"unanswered\" from that silence in the SIP/ESP-filtered output and did not check for other traffic to that host.\n\n<response>4444</response>",
+   "input_tokens": 8033,
+   "output_tokens": 549,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0282
+  },
+  {
+   "arm": "tshark-only",
+   "id": "ims-failed-count",
+   "passed": false,
+   "failures": [
+    "answer does not say /^\\s*4\\s*$/"
+   ],
+   "calls": 3,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 1494,
+   "seconds": 20.69,
+   "refused_calls": 0,
+   "answer": "Two handsets simply failed to register. The SIP exchanges show these outcomes:\n\n- **Failed:** 001010000000103 got a 403 (frames 19\u201320). 001010000000104 got a 503 (frames 21\u201322).\n- **Challenge loop (not counted):** 001010000000102 was answered with 401 three times in a row (frames 13\u201318).\n- **Not counted as failures:**\n  - 001010000000108 sent three REGISTERs (frames 36\u201338) and got no response.\n  - 001010000000107 was de-registered (Expires 0, frames 34\u201335).\n  - 001010000000105 registered with a 60-second expiry (frame 26).\n  - 001010000000106 got a 401 (frame 28) and then only encrypted ESP packets (frames 29\u201331). That looks like a continuing registration, but I couldn't read the encrypted traffic to confirm it.\n- **Succeeded:** the other handsets registered with 200 OK.\n\n<response>2</response>",
+   "input_tokens": 14532,
+   "output_tokens": 1257,
+   "turns": 4,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0345
+  },
+  {
+   "arm": "tshark-only",
+   "id": "sms-storage-full",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 874,
+   "seconds": 9.88,
+   "refused_calls": 0,
+   "answer": "The relay-layer cause value is 22, which is \"Memory capacity exceeded\". It comes in frame 33, an RP-ERROR sent from the handset (MS) to the network, which answers the message delivered to it.\n\nThe capture has one other RP-ERROR. Frame 17 is sent from the network to the MS with cause 21. It doesn't match, because it isn't the handset reporting that its storage is full.\n\n<response>22</response>",
+   "input_tokens": 5408,
+   "output_tokens": 453,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0168
+  },
+  {
+   "arm": "tshark-only",
+   "id": "sms-not-registered",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 528,
+   "seconds": 8.8,
+   "refused_calls": 0,
+   "answer": "The registration for 001010000000202 (frame 3) has no `+g.3gpp.smsip` feature tag, which the registration for ...201 does have. Frame 30 shows a 488 response to a MESSAGE sent to +15550100202. The registered IMSI is 001010000000202, so the phone number is 15550100202.\n\n<response>15550100202</response>",
+   "input_tokens": 4845,
+   "output_tokens": 348,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0134
+  },
+  {
+   "arm": "tshark-only",
+   "id": "map-unanswered-dpc",
+   "passed": true,
+   "failures": [],
+   "calls": 4,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 57,
+   "seconds": 16.46,
+   "refused_calls": 0,
+   "answer": "The mobile-originated short message is in frame 3. It is a TCAP `invoke mo-forwardSM` (TID 00000002) sent from point code 100 to point code 300. The capture has no response to it. The earlier `updateLocation` (frames 1\u20132, between 100 and 200) did get a `returnResultLast`, but the `mo-forwardSM` did not.\n\n<response>300</response>",
+   "input_tokens": 9477,
+   "output_tokens": 1208,
+   "turns": 5,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0223
+  },
+  {
+   "arm": "tshark-only",
+   "id": "sctp-heartbeats",
+   "passed": true,
+   "failures": [],
+   "calls": 6,
+   "tools": [
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark",
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 131,
+   "seconds": 24.51,
+   "refused_calls": 1,
+   "answer": "<response>1</response>",
+   "input_tokens": 13087,
+   "output_tokens": 1301,
+   "turns": 7,
+   "cost_usd": null,
+   "reported_cost_usd": 0.026
+  },
+  {
+   "arm": "tshark-only",
+   "id": "gy-credit-limit",
+   "passed": true,
+   "failures": [],
+   "calls": 1,
+   "tools": [
+    "run_tshark"
+   ],
+   "result_tokens_estimate": 37,
+   "seconds": 10.59,
+   "refused_calls": 0,
+   "answer": "The charging answer in frame 2 was a Credit-Control-Answer for an update request (CC-Request-Type 2). It carried two result codes: 2001 (overall success) and 4012 for the quota of rating group 10. Frame 2 also has Final-Unit-Action 0, which is TERMINATE. That matches the service being cut off. I didn't print the code-to-field mapping, so I'm taking 4012 as the per-service code because it is the second code and differs from the overall 2001. 4012 is the standard code for credit limit reached.\n\n<response>4012</response>",
+   "input_tokens": 3613,
+   "output_tokens": 568,
+   "turns": 2,
+   "cost_usd": null,
+   "reported_cost_usd": 0.0107
+  }
+ ]
+}

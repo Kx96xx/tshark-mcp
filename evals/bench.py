@@ -58,11 +58,16 @@ def arm_command(arm: str) -> list[str] | None:
     return [sys.executable, "-m", "evals.tshark_only"]
 
 
-def for_arm(arm: str, scenario: Scenario) -> Scenario:
-    """In the baseline arm the model may only call run_tshark; budgets stay the same."""
-    if arm == "tshark-mcp":
-        return scenario
-    return dataclasses.replace(scenario, tools=frozenset({"run_tshark"}))
+def for_arm(arm: str, scenario: Scenario, driver: str = "scripted") -> Scenario:
+    """The question as one arm is scored; budgets stay the same in both arms.
+
+    The scripted driver replays the scenario's steps, so it keeps them. With a model, both arms
+    are judged alike: the answer, the call and token budgets, and at least one tool call (see
+    :func:`row`). A model is not held to the scenario's own path through tshark-mcp's tools; the
+    baseline arm, which has one tool, could not be held to anything comparable."""
+    if driver == "scripted":
+        return scenario if arm == "tshark-mcp" else dataclasses.replace(scenario, tools=frozenset({"run_tshark"}))
+    return dataclasses.replace(scenario, steps=(), tools=frozenset())
 
 
 class Metered:
@@ -93,20 +98,20 @@ def cost_usd(usage: dict[str, int], price_in: float | None, price_out: float | N
 async def run_arm(arm: str, qs: list[Scenario], captures: str, driver: str, model: Any,
                   budget: "Budget") -> list[dict[str, Any]]:
     rows = []
-    if not isinstance(model, Metered):  # no cost to watch: one server for the whole arm
-        results = await run_all([for_arm(arm, q) for q in qs], captures=captures,
+    metered = hasattr(model, "usage")  # Metered or a driver that meters itself (not isinstance: see __main__)
+    if not metered:  # no cost to watch: one server for the whole arm
+        results = await run_all([for_arm(arm, q, driver) for q in qs], captures=captures,
                                 command=_with_dir(arm_command(arm), captures), driver=driver, model=model)
         return [row(arm, r, None, r.seconds, budget) for r in results] if results else []
     for q in qs:  # one server per question, so the cost cap is checked between questions
         if budget.exhausted():
             rows.append({"arm": arm, "id": q.id, "skipped": "cost cap reached"})
             continue
-        if isinstance(model, Metered):
-            model.current = f"{arm}/{q.id}"
+        model.current = f"{arm}/{q.id}"
         t0 = time.monotonic()
-        (result,) = await run_all([for_arm(arm, q)], captures=captures, command=_with_dir(arm_command(arm), captures),
+        (result,) = await run_all([for_arm(arm, q, driver)], captures=captures, command=_with_dir(arm_command(arm), captures),
                                   driver=driver, model=model)
-        usage = model.usage.get(f"{arm}/{q.id}") if isinstance(model, Metered) else None
+        usage = model.usage.get(f"{arm}/{q.id}")
         rows.append(row(arm, result, usage, time.monotonic() - t0, budget))
         if usage:
             budget.add(usage)
@@ -118,7 +123,10 @@ def _with_dir(command: list[str] | None, captures: str) -> list[str] | None:
 
 
 def row(arm: str, r: CaseResult, usage: dict[str, int] | None, seconds: float, budget: "Budget") -> dict[str, Any]:
-    out = {"arm": arm, "id": r.id, "passed": r.passed, "failures": r.failures[:5], "calls": len(r.calls),
+    failures = list(r.failures)
+    if not r.calls:
+        failures.append("answered without calling a tool")
+    out = {"arm": arm, "id": r.id, "passed": not failures, "failures": failures[:5], "calls": len(r.calls),
            "tools": [c.tool for c in r.calls], "result_tokens_estimate": r.tokens, "seconds": round(seconds, 2),
            "refused_calls": sum(1 for c in r.calls if c.is_error and isinstance(c.result, dict)
                                 and (c.result.get("error") or {}).get("type") in ("path_not_allowed", "forbidden_argument")),
@@ -126,6 +134,8 @@ def row(arm: str, r: CaseResult, usage: dict[str, int] | None, seconds: float, b
     if usage:
         out.update(input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"], turns=usage["turns"],
                    cost_usd=cost_usd(usage, budget.price_in, budget.price_out))
+        if "reported_cost_usd" in usage:  # claude-code: what the session itself reports
+            out["reported_cost_usd"] = round(usage["reported_cost_usd"], 4)
     return out
 
 
@@ -136,13 +146,15 @@ class Budget:
     max_usd: float | None = None
     spent: float = 0.0
 
-    def add(self, usage: dict[str, int]) -> None:
+    def add(self, usage: dict[str, Any]) -> None:
         c = cost_usd(usage, self.price_in, self.price_out)
+        if c is None:  # no prices given: the cost the session reports (claude-code), if any
+            c = usage.get("reported_cost_usd")
         if c is not None:
             self.spent += c
 
     def exhausted(self) -> bool:
-        return self.max_usd is not None and self.price_in is not None and self.spent >= self.max_usd
+        return self.max_usd is not None and self.spent >= self.max_usd
 
 
 def summarise(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -157,8 +169,10 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             "mean_result_tokens": round(sum(r["result_tokens_estimate"] for r in done) / n),
             "input_tokens": sum(r.get("input_tokens", 0) for r in done),
             "output_tokens": sum(r.get("output_tokens", 0) for r in done),
-            "cost_usd": round(sum(r.get("cost_usd") or 0 for r in done), 4) if any("cost_usd" in r for r in done) else None,
+            "cost_usd": round(sum(r.get("cost_usd") or 0 for r in done), 4) if any(r.get("cost_usd") is not None for r in done) else None,
             "mean_seconds": round(sum(r["seconds"] for r in done) / n, 2),
+            "reported_cost_usd": round(sum(r["reported_cost_usd"] for r in done), 4)
+            if any("reported_cost_usd" in r for r in done) else None,
             "refused_calls": sum(r["refused_calls"] for r in done),
             "skipped": sum(1 for r in rows if r["arm"] == arm and "skipped" in r),
         }
@@ -172,6 +186,8 @@ def markdown(summary: dict[str, dict[str, Any]], meta: dict[str, Any]) -> str:
              "| --- | --- | --- | --- | --- | --- | --- |"]
     for arm, s in summary.items():
         cost = "-" if s["cost_usd"] is None else f"{s['cost_usd']:.2f}"
+        if s["cost_usd"] is None and s.get("reported_cost_usd") is not None:
+            cost = f"{s['reported_cost_usd']:.2f} (reported)"
         io = "-" if not s["input_tokens"] else f"{s['input_tokens']:,} / {s['output_tokens']:,}"
         lines.append(f"| {arm} | {s['passed']}/{s['questions']} ({s['success_pct']}%) | {s['mean_calls']} | "
                      f"{s['mean_result_tokens']:,} | {io} | {cost} | {s['mean_seconds']} |")
@@ -180,9 +196,10 @@ def markdown(summary: dict[str, dict[str, Any]], meta: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m evals.bench", description=__doc__.splitlines()[0])
-    p.add_argument("--driver", choices=("scripted", "llm"), default="scripted")
+    p.add_argument("--driver", choices=("scripted", "llm", "claude-code"), default="scripted",
+                   help="claude-code: each question is a `claude -p` session on a Claude subscription")
     p.add_argument("--model", default=None, help="llm driver: Anthropic model id, or 'scripted' (offline stand-in)")
-    p.add_argument("--arms", default=None, help="comma-separated: tshark-mcp, tshark-only (default: both with llm, "
+    p.add_argument("--arms", default=None, help="comma-separated: tshark-mcp, tshark-only (default: both with a model driver, "
                                                 "tshark-mcp with the scripted driver)")
     p.add_argument("--questions", choices=("all", "scenarios", "xml"), default="all")
     p.add_argument("--only", action="append", default=[], metavar="ID")
@@ -196,18 +213,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--captures", type=Path, default=None)
     args = p.parse_args(argv)
 
-    arms = [a.strip() for a in (args.arms or ("tshark-mcp,tshark-only" if args.driver == "llm" else "tshark-mcp")).split(",")]
+    arms = [a.strip() for a in (args.arms or ("tshark-mcp,tshark-only" if args.driver != "scripted" else "tshark-mcp")).split(",")]
     if set(arms) - set(ARMS):
         p.error(f"unknown arm(s): {', '.join(sorted(set(arms) - set(ARMS)))}")
     if args.driver == "scripted" and arms != ["tshark-mcp"]:
         p.error("the scripted driver replays tshark-mcp calls: use --arms tshark-mcp")
     qs = [q for q in questions(args.questions) if not args.only or q.id in args.only]
     planned = len(qs) * len(arms) * args.repeats
-    real_model = args.driver == "llm" and args.model != "scripted"
+    real_model = (args.driver == "llm" and args.model != "scripted") or args.driver == "claude-code"
     if real_model and (args.max_runs is None or planned > args.max_runs):
         p.error(f"{planned} model runs planned; state the cap with --max-runs N (at least {planned}) before spending")
     model: Any = None
-    if args.driver == "llm":
+    if args.driver == "claude-code":
+        from .claude_code import ClaudeCodeModel  # noqa: PLC0415
+        model = ClaudeCodeModel(args.model)
+    elif args.driver == "llm":
         if args.model == "scripted":
             model = "scripted"
         else:
@@ -221,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
             for arm in arms:
                 rows += asyncio.run(run_arm(arm, qs, captures, args.driver, model, budget))
     meta = {"schema_version": SCHEMA_VERSION, "date": dt.date.today().isoformat(), "driver": args.driver,
-            "model": (args.model or "claude-opus-5-5") if args.driver == "llm" else None, "arms": arms,
+            "model": (args.model or "claude-opus-5-5") if args.driver == "llm" else
+            (args.model or "claude default") if args.driver == "claude-code" else None, "arms": arms,
             "questions": len(qs), "repeats": args.repeats, "planned_runs": planned,
             "price_in": args.price_in, "price_out": args.price_out}
     summary = summarise(rows)
@@ -230,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     out.write_text(json.dumps({"meta": meta, "summary": summary, "rows": rows}, indent=1) + "\n", encoding="utf-8")
     print(markdown(summary, meta), end="")
     print(f"results: {out}", file=sys.stderr)
-    return 0 if all(s["passed"] == s["questions"] for s in summary.values()) or args.driver == "llm" else 1
+    return 0 if all(s["passed"] == s["questions"] for s in summary.values()) or args.driver != "scripted" else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

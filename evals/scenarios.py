@@ -154,6 +154,7 @@ SCENARIOS: list[Scenario] = [
             Step("diameter_sessions", {"path": "{captures}/diameter.pcap", "imsi": "{step0:identity.imsi}", "redact": "ids"},
                  (C("count", "ge", 1),)),
         ),
+        answer=(r"\bAIR\b|Authentication[- ]Information",),
         forbidden=(IMSI_OTHER,),
         reference_answer="The token imsi:<hex> from trace_subscriber finds the same subscriber's AIR session in diameter.pcap; no raw IMSI appears.",
     ),
