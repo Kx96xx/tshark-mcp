@@ -5,6 +5,7 @@
 [![CI](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Kx96xx/tshark-mcp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/tshark-mcp-server)](https://pypi.org/project/tshark-mcp-server/)
 ![Licence MIT](https://img.shields.io/badge/licence-MIT-green)
+[![tshark-mcp MCP server](https://glama.ai/mcp/servers/Kx96xx/tshark-mcp/badges/score.svg)](https://glama.ai/mcp/servers/Kx96xx/tshark-mcp)
 
 **Drop a pcap, ask your AI assistant what went wrong, get an answer with frame numbers.**
 tshark-mcp is a read-only MCP server that runs `tshark -r` on captures you allow and turns
